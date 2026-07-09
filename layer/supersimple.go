@@ -57,6 +57,7 @@ type ssJoinStrategy struct {
 type ssMetric struct {
 	Name        string        `yaml:"name"`
 	ModelID     string        `yaml:"model_id"`
+	Description string        `yaml:"description,omitempty"`
 	Aggregation ssAggregation `yaml:"aggregation"`
 }
 type ssAggregation struct {
@@ -135,7 +136,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 				nm = mt.Name
 			}
 			file.Metrics[mt.Name] = ssMetric{
-				Name: nm, ModelID: strings.ToUpper(mt.Table),
+				Name: nm, ModelID: strings.ToUpper(mt.Table), Description: mt.Description,
 				Aggregation: ssAggregation{Type: mapAgg(mt.Agg), Key: strings.ToUpper(mt.Column)},
 			}
 		}
@@ -207,7 +208,9 @@ func ssType(dbtType, name string, isTime bool) string {
 
 func ssMapType(t string) string {
 	switch strings.ToLower(strings.TrimSpace(t)) {
-	case "number", "int", "integer", "bigint", "smallint":
+	case "int", "integer", "bigint", "smallint":
+		return "Integer"
+	case "number":
 		return "Number"
 	case "float", "double", "double precision", "real", "numeric", "decimal":
 		return "Float"
@@ -224,12 +227,13 @@ func ssMapType(t string) string {
 	}
 }
 
-// mapAgg maps a dbt aggregation to supersimple's aggregation type.
+// mapAgg maps a dbt aggregation to supersimple's aggregation type. dbt and
+// supersimple share the same names (sum, count, count_distinct, avg, min, max);
+// dbt's "average" is the only alias to normalize.
 func mapAgg(agg string) string {
-	switch strings.ToLower(agg) {
-	case "count_distinct":
-		return "countDistinct"
-	default:
-		return strings.ToLower(agg) // sum, count, avg, min, max
+	a := strings.ToLower(agg)
+	if a == "average" {
+		return "avg"
 	}
+	return a
 }

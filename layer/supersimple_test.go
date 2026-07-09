@@ -24,7 +24,8 @@ func TestSupersimpleEmit(t *testing.T) {
 					{Field: ir.Field{Name: "order_net_booked_amount", Expr: "order_net_booked", DataType: "float"}, Agg: "sum"},
 				},
 				Metrics: []ir.Metric{
-					{Name: "net_revenue", Label: "Net revenue", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "order_net_booked"},
+					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "order_net_booked"},
+					{Name: "orders", Label: "Orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
 					{Name: "refund_rate", Kind: "ratio", Table: "fct_orders", Numerator: "x", Denominator: "y"},
 				},
 			},
@@ -54,8 +55,11 @@ func TestSupersimpleEmit(t *testing.T) {
 		"type: Float",   // order_net_booked
 		"type: Number",  // order_id
 		"name: Net revenue",
+		"description: Net booked revenue.", // metric description passes through
 		"type: sum",
 		"key: ORDER_NET_BOOKED",
+		"type: count_distinct", // schema uses snake_case, not countDistinct
+		"key: ORDER_ID",
 	} {
 		if !strings.Contains(orders, want) {
 			t.Fatalf("FCT_ORDERS.yaml missing %q:\n%s", want, orders)
@@ -74,6 +78,9 @@ func TestSupersimpleEmit(t *testing.T) {
 	joined := strings.Join(m.Notes, "\n")
 	if !strings.Contains(joined, "refund_rate") || !strings.Contains(joined, "not representable in supersimple") {
 		t.Fatalf("expected a skip note for refund_rate, got: %v", m.Notes)
+	}
+	if strings.Contains(orders, "countDistinct") {
+		t.Fatalf("aggregation type must be snake_case count_distinct, not camelCase:\n%s", orders)
 	}
 	if strings.Contains(orders, "refund_rate") {
 		t.Fatalf("ratio metric should not be emitted:\n%s", orders)

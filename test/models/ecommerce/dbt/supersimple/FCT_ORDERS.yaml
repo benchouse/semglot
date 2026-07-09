@@ -42,12 +42,14 @@ metrics:
   gross_revenue:
     name: Gross revenue
     model_id: FCT_ORDERS
+    description: Gross order revenue.
     aggregation:
       type: sum
       key: ORDER_GROSS
   net_revenue:
     name: Net revenue
     model_id: FCT_ORDERS
+    description: Net booked revenue.
     aggregation:
       type: sum
       key: ORDER_NET_BOOKED
@@ -55,5 +57,5 @@ metrics:
     name: Orders
     model_id: FCT_ORDERS
     aggregation:
-      type: countDistinct
+      type: count_distinct
       key: ORDER_ID
