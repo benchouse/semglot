@@ -3,6 +3,8 @@
 **Date:** 2026-07-09
 **Status:** Approved design, pending implementation plan
 **Repo:** standalone, `github.com/benchouse/semglot` (MIT)
+**Scope:** **v1 = transpiler** (`build`). **v2 = context fairness index** (`score`) —
+designed here for continuity, but explicitly deferred.
 
 ## Problem
 
@@ -12,76 +14,70 @@ in mutually incompatible formats. Two gaps:
 
 1. **No transpiler.** A semantic layer authored once (e.g. as a dbt project) has to
    be re-authored by hand for every other tool. We want to **transpile** one source
-   dialect into the others.
+   dialect into the others. *(v1.)*
 2. **No fairness measure.** When two systems are handed *different* dialect files
    for the same warehouse, there is no way to say whether they received *equivalent*
-   information. A layer that silently drops a metric, or adds bonus synonyms, is not
-   an equal-footing comparison. We want a **context fairness index**: how much more
-   or less information a target layer carries versus a reference.
+   information. We want a **context fairness index**: how much more or less
+   information a target layer carries versus a reference. *(v2.)*
 
-`semglot` is a Go CLI (in the `sqlglot` lineage — "-glot" = speaks many dialects)
-that does both: **transpile** a source dialect → a target dialect, and **score** a
-target dialect against a reference.
+`semglot` is a Go CLI (in the `sqlglot` lineage — "-glot" = speaks many dialects).
+v1 **transpiles** a source dialect → a target dialect; v2 adds **scoring** of a
+target against a reference.
 
 **Motivating use case (external):** an LLM-agent eval harness that grades agents
 each given a different tool's context, and needs both to generate those contexts
-from one source of truth and to prove they carry equivalent information. semglot
-itself stays ignorant of that harness — see "Standalone" below.
+from one source of truth and (later) to prove they carry equivalent information.
+semglot itself stays ignorant of that harness — see "Standalone" below.
 
 ## Settled decisions
 
 - **Standalone & open-sourceable.** Its own repo/module (`github.com/benchouse/
   semglot`), MIT-licensed. **Zero knowledge of any consumer.** All inputs are
   `--flag` paths; fixtures are synthetic and public; no consumer-specific paths,
-  formats, or dependencies. A consumer (e.g. an eval harness) integrates by
-  **invoking the `semglot` binary**, not by semglot reaching into it.
-- **Direction (v1):** one source dialect (dbt) → many target dialects. First real
-  target: **Snowflake Cortex** semantic model.
-- **Fairness index method:** **structural element coverage** — enumerate typed,
-  normalized information elements on both sides and set-diff them. Deterministic,
-  auditable, tells you exactly what is missing or extra. (Rejected: bit-counting —
-  can't say *which* facts differ; LLM-judged equivalence — non-deterministic, hard
-  to defend as "fairness".)
-- **Internal representation (IR) is load-bearing, not optional.** Scoring must parse
-  *both* reference and target into one shared model to diff them, so every dialect
-  is **bidirectional**: `Parse` dialect→IR *and* `Emit` IR→dialect.
-- **Every dialect is a `Layer`, including the source.** dbt is not special-cased; it
-  is a `Layer` in the registry that implements `Parse` now (`Emit` deferred). This
-  makes future **many→many** transpilation fall out for free (hub-and-spoke:
-  `M + N` layers, never `M × N` converters) with no core rewrite — v1 just defaults
-  `--from` to `dbt`.
-- **The IR is a rich superset and it defines "information".** The IR is the union of
-  dialect concepts, not a least-common-denominator. Anything outside the IR is, by
-  definition, not counted by the fairness index — so the transpiler and the scorer
-  share one source of truth for what a unit of information is.
-- **Importable, not `internal/`.** Core logic lives in exported packages (`ir`,
-  `layer`, `score`) so downstream Go code can embed semglot as a library in addition
-  to shelling out to the binary.
+  formats, or dependencies. A consumer integrates by **invoking the `semglot`
+  binary**, not by semglot reaching into it.
+- **Direction (v1):** one source dialect (dbt) → many target dialects. First (and
+  only v1) target: **Snowflake Cortex** semantic model.
+- **A neutral IR is the pivot.** Transpilation routes `source → IR → target`, not
+  via direct per-pair converters. Justified even for a single v1 pair because it is
+  the seam for **many→many** later (hub-and-spoke: `M + N` layers, never `M × N`
+  converters) and because v2 scoring will diff two dialects on this shared model.
+  The IR is a **rich superset** (union of dialect concepts), not a
+  least-common-denominator — and in v2 it doubles as the definition of "what
+  information means".
+- **Every dialect is a `Layer`, and declares its capabilities.** Rather than one
+  fat interface with unimplemented stubs, a `Layer` has a `Name()` plus optional
+  **capability interfaces**: `Parser` (dialect→IR) and `Emitter` (IR→dialect). v1:
+  **dbt implements `Parser`**, **cortex implements `Emitter`**. v2 adds a cortex
+  `Parser` (for scoring) and, when wanted, a dbt `Emitter`. dbt is a registered
+  Layer like any other, so `--from dbt` is not special-cased.
+- **Fairness index method (v2):** structural element coverage — deterministic,
+  auditable set-diff of typed information elements. (Rejected: bit-counting;
+  LLM-judged equivalence.) Full v2 design retained below under "Deferred".
+- **Importable, not `internal/`.** Core logic lives in exported packages so
+  downstream Go code can embed semglot as a library in addition to shelling out.
 - **House style:** subcommands via `flag.NewFlagSet`, no cobra; thin `cmd`, logic in
-  the exported packages; no non-stdlib deps beyond a YAML parser
-  (`gopkg.in/yaml.v3`).
+  exported packages; no non-stdlib deps beyond `gopkg.in/yaml.v3`.
 
-## Architecture
+## Architecture (v1)
 
 ```
-                 ┌──────────────┐   Emit    ┌──────────────────┐
-  dbt reference  │              │──────────▶│  ./cortex/*.yaml  │   (build)
-  (Layer.Parse)  │  neutral IR   │           └──────────────────┘
-        ─────────▶│  (pkg ir)    │
-                 │              │◀──────────  cortex target (Layer.Parse)
-                 └──────┬───────┘   Parse
-                        │
-                        ▼
-                 element set-diff  ──▶  fairness index + missing/excess   (score)
+  dbt reference dir            ┌──────────────┐   Emit    ┌──────────────────┐
+  (dbt.Parse: Parser) ───────▶│  neutral IR   │──────────▶│  ./cortex/*.yaml  │
+                              │  (package ir) │  cortex   └──────────────────┘
+                              └──────────────┘  (Emitter)
+                    build = registry[from].Parse → registry[layer].Emit
 ```
 
-### Packages
+### Packages (v1)
 
-- `cmd/semglot/main.go` — subcommand dispatch (`build`, `score`), flag wiring only.
-- `ir/` — the neutral model types + element enumeration (`package ir`).
-- `layer/` — `Layer` interface + `registry` (`layer.go`), `dbt.go`, `cortex.go`.
-- `score/` — element diff + fairness index (`package score`).
-- `testdata/` — synthetic dbt + Cortex fixtures and goldens.
+- `cmd/semglot/main.go` — subcommand dispatch (`build`; `score` is a v2 stub that
+  prints "not implemented yet"), flag wiring only.
+- `ir/` — neutral model types (`package ir`).
+- `layer/` — `Layer`/`Parser`/`Emitter` interfaces + `registry` (`layer.go`),
+  `dbt.go` (Parser), `cortex.go` (Emitter).
+- `testdata/` — synthetic dbt fixtures + golden Cortex output.
+- `score/` — **v2, not created in v1.**
 
 ### The neutral IR (`ir`)
 
@@ -99,7 +95,7 @@ type Table struct {
 }
 type Field struct {
     Name, Description, DataType string
-    Expr     string    // underlying column/expression, for cross-dialect identity
+    Expr     string    // underlying column/expression (identity + emit)
     Synonyms []string
 }
 type Measure struct {
@@ -116,32 +112,76 @@ type Relationship struct {
 }
 ```
 
-The IR is deliberately a **superset**: it carries descriptions, data types,
-synonyms, and underlying `Expr` even when a given dialect omits them, because those
-are exactly the information elements the fairness index measures.
+The IR carries descriptions, data types, synonyms, and underlying `Expr` even when a
+dialect omits them — v1 uses them to emit the richest possible Cortex output; v2
+uses the same fields as the units the fairness index measures.
 
-### The Layer interface (`layer`)
+### Interfaces (`layer`)
 
 ```go
-type Layer interface {
-    Name() string
-    Parse(dir string) (*ir.Model, error)  // dialect files → IR   (needed for score)
-    Emit(m *ir.Model, dir string) error   // IR → dialect files    (needed for build)
-}
+type Layer interface { Name() string }
+
+type Parser  interface { Layer; Parse(dir string) (*ir.Model, error) }  // dialect → IR
+type Emitter interface { Layer; Emit(m *ir.Model, dir string) error }   // IR → dialect
 ```
 
-- `dbt` Layer: `Parse` reads a directory of dbt semantic YAML — `semantic_models`
-  blocks (`*.yml`) plus a `metrics` file. `Emit` returns `ErrNotImplemented` in v1.
-- `cortex` Layer: `Parse` reads a Cortex `semantic_model.yaml`; `Emit` writes it.
-- A `registry` maps a dialect name string to a `Layer`. dbt is registered too, so
-  `--from dbt` resolves through the same path as any other dialect.
+- `dbt` (`Parser`): reads a directory of dbt semantic YAML — `semantic_models`
+  blocks (`*.yml`) plus a `metrics` file — into the IR.
+- `cortex` (`Emitter`): writes a Cortex `semantic_model.yaml` from the IR.
+- `registry` maps a dialect name → `Layer`. `build` looks up `--from` and asserts it
+  is a `Parser`, looks up `--layer` and asserts it is an `Emitter`; a clear error if
+  a requested capability is absent (e.g. "cortex cannot be a --from source in v1").
 
-`build` = `registry[from].Parse(reference) → registry[layer].Emit(out)`.
-`score` = diff( `registry[from].Parse(reference)`, `registry[layer].Parse(target)` ).
+`build` = `registry[from].(Parser).Parse(reference) → registry[layer].(Emitter).Emit(out)`.
 
-## The context fairness index (`score`)
+## CLI (v1)
 
-Both IR models are flattened into a **set of typed, normalized element keys**:
+```
+semglot build --from dbt --reference <dir> --layer cortex --out <dir>
+    Transpile the source dialect at --reference into --layer, writing to --out.
+    --from defaults to dbt.
+
+semglot score ...    # v2 — prints "score is not implemented yet (v2)" and exits non-zero
+```
+
+`--reference` and `--out` are plain paths the caller supplies; semglot resolves
+nothing implicitly and reads no consumer-specific config. Missing/invalid input
+fails fast with a clear message.
+
+## Testing (v1, TDD)
+
+- **Unit — dbt.Parse:** a synthetic dbt semantic YAML fixture parses into an
+  expected IR (`ir.Model` golden), covering tables, dimensions, time dimensions,
+  measures (incl. agg), metrics (simple + ratio), and relationships.
+- **Unit — cortex.Emit:** a hand-built IR emits byte-for-byte expected Cortex YAML
+  (golden file), covering descriptions, data types, synonyms, facts, metrics,
+  relationships.
+- **End-to-end — build:** `dbt fixture dir → build → cortex YAML` equals the golden
+  Cortex output; run via the `layer` packages (and once through `cmd` arg parsing).
+- `go test ./...` and `go build ./...` green from the first code commit.
+
+## Scope
+
+**In (v1):** repo scaffolding (done: go.mod, LICENSE, README, .gitignore); the `ir`
+and `layer` packages; dbt `Parser`; cortex `Emitter`; the `build` command; a `score`
+stub that exits with a "v2" message; the tests above.
+
+**Out (v2 and beyond):** the `score` package and everything under "Deferred" below
+(cortex `Parser`, the fairness index, `--json`, weights, round-trip tests); nao /
+supersimple / semviews / prose-rules Layers; dbt `Emitter`; full many→many; CI /
+publishing. Consumer integration (an eval harness invoking the binary) lives in that
+consumer, not here.
+
+---
+
+## Deferred — v2: the context fairness index (`score`)
+
+Retained so v1's IR/interface choices stay coherent with where this is going. **Not
+built in v1.**
+
+To score, cortex gains a `Parser` (Cortex YAML → IR), so both reference and target
+resolve to the IR and can be diffed. Both IR models flatten into a **set of typed,
+normalized element keys**:
 
 ```
 table:fct_orders
@@ -156,77 +196,27 @@ datatype:fct_orders.order_id:NUMBER
 relationship:fct_order_lines->fct_orders
 ```
 
-Let **R** = reference element set, **T** = target element set.
+Let **R** = reference set, **T** = target set.
 
-- **coverage (recall)** = |R ∩ T| / |R| — how much reference information the layer keeps.
-- **excess** = |T \ R| — information the target adds beyond the reference.
-- **fairness index** = |R ∩ T| / |R ∪ T| — **Jaccard**, the headline in `[0,1]`.
-  `1.0` = exact information parity (nothing missing, nothing extra). It penalizes
-  **both** loss and addition — precisely "fair", i.e. every layer conveys equivalent
-  information. The **direction** ("more or less") is reported by the explicit
-  **missing** (`R \ T`) and **excess** (`T \ R`) lists.
+- **coverage (recall)** = |R ∩ T| / |R|.
+- **excess** = |T \ R|.
+- **fairness index** = |R ∩ T| / |R ∪ T| — Jaccard headline in `[0,1]`; `1.0` = exact
+  information parity. Penalizes both loss and addition. Direction ("more or less")
+  comes from the printed **missing** (`R \ T`) and **excess** (`T \ R`) lists.
 
-**Weighting:** element categories are **equal-weight by default**; a per-category
-weights map is configurable (so descriptions can be down-weighted relative to
-metrics). The weighted index sums weights instead of counting set members.
+**Weighting:** per-category weights, equal (1.0) by default. **Cross-dialect element
+identity** is the main risk: normalize keys (lowercase, snake/camel-fold, strip agg
+suffixes like `_amount`/`_count`), match on underlying `Expr`/column first, then
+name; `score --json` emits the raw matched/missing/excess sets so every
+classification is auditable.
 
-### Cross-dialect element identity — the main risk
-
-Reference `order_net_booked_amount` (a measure) must be recognized as the same
-element as Cortex `order_net_booked` (a fact) / `net_revenue` (a metric on it).
-Normalization of an element's identity key:
-
-1. lowercase; snake/camel-fold.
-2. strip aggregation suffixes (`_amount`, `_count`, `_total`) on measures.
-3. when both sides record an underlying `Expr`/column, match on that first; fall
-   back to normalized name.
-
-Imperfect matches are the known limitation. Mitigation: `score --json` emits the raw
-**matched / missing / excess** sets so every classification is auditable, and the
-normalization rules live in one testable function.
-
-## CLI
-
+**v2 CLI:**
 ```
-semglot build --from dbt --reference <dir> --layer cortex --out <dir>
-    Transpile the source dialect at --reference into --layer, writing to --out.
-    --from defaults to dbt.
-
 semglot score --from dbt --reference <dir> --layer cortex --target <dir> \
               [--json] [--weights <file>]
-    Diff the target dialect against the reference and print the fairness index.
-    --json emits { index, coverage, excess, missing[], extra[], byCategory{} }.
 ```
-
-`--reference` and `--target` are plain directories the caller supplies; semglot
-resolves nothing implicitly and reads no consumer-specific config. Missing/invalid
-input fails fast with a clear message.
-
-## Testing (TDD)
-
-- **Unit — normalization:** the element-key normalizer against a table of
-  reference/cortex name pairs that must and must not match.
-- **Unit — IR round-trip:** `cortex.Emit` then `cortex.Parse` reproduces the IR
-  (idempotence of the Cortex dialect through the hub).
-- **Golden — synthetic fixtures:** a hand-built dbt + Cortex pair under `testdata/`
-  (a small e-commerce-style model), with a golden IR and an expected fairness index;
-  include a deliberately **lossy** target to assert coverage < 1 and a non-empty
-  missing list, and an **excess** target to assert extra > 0.
-- `go test ./...` and `go build ./...` green from the first commit.
-
-## Scope
-
-**In (v1):** repo scaffolding (go.mod, LICENSE, README, .gitignore); the `ir`,
-`layer`, `score` packages; dbt reference `Parse`; Cortex `Parse`+`Emit`; the scorer
-(Jaccard index + coverage + missing/excess + `--json` + weights); `build` and
-`score` commands; the tests above.
-
-**Out (deferred, unlocked by the same seams):** nao / supersimple / semviews /
-prose-rules Layers; dbt `Emit`; full many→many via additional registered layers;
-GitHub Actions CI; publishing/tagging. Consumer integration (an eval harness
-invoking the binary) lives entirely in that consumer, not here.
 
 ## Open questions
 
-None blocking. Weight defaults (all 1.0) and the exact suffix list for measure
-normalization may be tuned once the golden tests run against realistic fixtures.
+None blocking v1. (v2: weight defaults and the measure-suffix list, tuned against
+realistic fixtures.)
