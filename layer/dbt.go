@@ -244,7 +244,13 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			}
 		}
 		for _, m := range sm.Measures {
-			t.Measures = append(t.Measures, ir.Measure{Field: field(m.Name, m.Expr), Agg: m.Agg})
+			f := field(m.Name, m.Expr)
+			// A count aggregates cardinality, not the column's value, so the
+			// underlying column's description would mislabel the fact — drop it.
+			if a := strings.ToLower(m.Agg); a == "count" || a == "count_distinct" {
+				f.Description = ""
+			}
+			t.Measures = append(t.Measures, ir.Measure{Field: f, Agg: m.Agg})
 			measureTable[m.Name] = name
 			measureAggExpr[m.Name] = aggExpr(m.Agg, qualifyExpr(name, cols, m.Expr))
 		}

@@ -39,7 +39,6 @@ tables:
       - name: orders_count
         expr: ORDER_ID
         data_type: NUMBER
-        description: Order surrogate key.
       - name: refunded_orders_count
         expr: CASE WHEN IS_REFUNDED THEN 1 ELSE 0 END
         data_type: NUMBER

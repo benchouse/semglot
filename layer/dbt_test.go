@@ -97,6 +97,25 @@ func TestDBTParseModelsOnly(t *testing.T) {
 	}
 }
 
+// A value measure (sum) inherits its column's description; a count measure does
+// not, because the column description describes the value, not the cardinality.
+func TestDBTParseCountMeasureDropsColumnDescription(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_count_desc")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	desc := map[string]string{}
+	for _, m := range got.Tables[0].Measures {
+		desc[m.Name] = m.Description
+	}
+	if desc["order_gross_amount"] != "Gross revenue." {
+		t.Fatalf("order_gross_amount description = %q, want %q", desc["order_gross_amount"], "Gross revenue.")
+	}
+	if desc["orders_count"] != "" {
+		t.Fatalf("orders_count description = %q, want empty (count must not inherit the id column's description)", desc["orders_count"])
+	}
+}
+
 // A metric referencing an unknown measure, or an unsupported metric type, is
 // NOT silently attached to a table — it becomes a passthrough note.
 func TestDBTParseUnresolvedMetrics(t *testing.T) {

@@ -1,0 +1,14 @@
+models:
+  - name: fct_orders
+    columns:
+      - {name: order_id, description: "Order surrogate key.", data_type: number}
+      - {name: order_gross, description: "Gross revenue.", data_type: number}
+
+semantic_models:
+  - name: fct_orders
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    measures:
+      - {name: order_gross_amount, agg: sum, expr: order_gross}
+      - {name: orders_count, agg: count_distinct, expr: order_id}
