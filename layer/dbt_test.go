@@ -96,6 +96,26 @@ func TestDBTParseModelsOnly(t *testing.T) {
 	}
 }
 
+// Compound measure expressions get their column references qualified via the
+// SQL lexer; string literals that happen to equal a column name are left alone.
+func TestDBTParseCaseExpr(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_case_expr")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	metrics := map[string]string{}
+	for _, mt := range got.Tables[0].Metrics {
+		metrics[mt.Name] = mt.Expr
+	}
+	if want := "sum(case when fct_orders.is_refunded then 1 else 0 end)"; metrics["refunded_orders"] != want {
+		t.Fatalf("refunded_orders = %q, want %q", metrics["refunded_orders"], want)
+	}
+	// the bare `status` is qualified; the string literal 'status' is not.
+	if want := "sum(case when fct_orders.status = 'status' then 1 else 0 end)"; metrics["status_match"] != want {
+		t.Fatalf("status_match = %q, want %q", metrics["status_match"], want)
+	}
+}
+
 // When both sources describe the same model, model properties supply the table
 // description, column descriptions and real data types; the semantic layer
 // supplies roles (dimension vs measure) and aggregations.

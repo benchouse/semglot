@@ -40,6 +40,9 @@ tables:
         expr: ORDER_ID
         data_type: NUMBER
         description: Order surrogate key.
+      - name: refunded_orders_count
+        expr: CASE WHEN IS_REFUNDED THEN 1 ELSE 0 END
+        data_type: NUMBER
     metrics:
       - name: gross_revenue
         expr: SUM(FCT_ORDERS.ORDER_GROSS)
@@ -49,9 +52,15 @@ tables:
         description: Net booked revenue.
       - name: orders
         expr: COUNT(DISTINCT FCT_ORDERS.ORDER_ID)
+      - name: refunded_orders
+        expr: SUM(CASE WHEN FCT_ORDERS.IS_REFUNDED THEN 1 ELSE 0 END)
+        description: Count of refunded orders.
       - name: aov
         expr: SUM(FCT_ORDERS.ORDER_NET_BOOKED) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)
         description: Average order value (net revenue / orders).
+      - name: refund_rate
+        expr: SUM(CASE WHEN FCT_ORDERS.IS_REFUNDED THEN 1 ELSE 0 END) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)
+        description: Refunded orders / all orders.
   - name: fct_order_lines
     description: Order-line grain. One row per line item.
     base_table:

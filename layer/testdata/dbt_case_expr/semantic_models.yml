@@ -1,0 +1,18 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    dimensions:
+      - {name: is_refunded, type: categorical}
+      - {name: status, type: categorical}
+    measures:
+      # compound expr: the column reference must be qualified
+      - {name: refunded_orders_count, agg: sum, expr: "case when is_refunded then 1 else 0 end"}
+      # string literal equal to a column name must NOT be qualified
+      - {name: status_match_count, agg: sum, expr: "case when status = 'status' then 1 else 0 end"}
+
+metrics:
+  - {name: refunded_orders, type: simple, type_params: {measure: refunded_orders_count}}
+  - {name: status_match, type: simple, type_params: {measure: status_match_count}}

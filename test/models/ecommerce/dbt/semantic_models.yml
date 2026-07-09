@@ -12,6 +12,7 @@ semantic_models:
       - {name: order_gross_amount, agg: sum, expr: order_gross}
       - {name: order_net_booked_amount, agg: sum, expr: order_net_booked}
       - {name: orders_count, agg: count_distinct, expr: order_id}
+      - {name: refunded_orders_count, agg: sum, expr: "case when is_refunded then 1 else 0 end"}
 
   - name: fct_order_lines
     description: Order-line grain. One row per line item.

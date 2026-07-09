@@ -137,6 +137,11 @@ func TestEcommerceCortexStructure(t *testing.T) {
 	assertStr(t, "units_per_order expr", metricExpr(t, m, "fct_order_lines", "units_per_order"),
 		"SUM(FCT_ORDER_LINES.QUANTITY) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)")
 
+	// Compound measure expr: the column inside the CASE is qualified (via the
+	// SQL lexer), the SQL keywords and literal are not.
+	assertStr(t, "refund_rate expr", metricExpr(t, m, "fct_orders", "refund_rate"),
+		"SUM(CASE WHEN FCT_ORDERS.IS_REFUNDED THEN 1 ELSE 0 END) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)")
+
 	// Real data types come from dbt model properties (data_type), not the
 	// name heuristic: accepts_marketing is BOOLEAN even though its name has no
 	// is_/has_ prefix the heuristic would have called TEXT.

@@ -57,7 +57,12 @@ semglot itself stays ignorant of that harness — see "Standalone" below.
 - **Importable, not `internal/`.** Core logic lives in exported packages so
   downstream Go code can embed semglot as a library in addition to shelling out.
 - **House style:** subcommands via `flag.NewFlagSet`, no cobra; thin `cmd`, logic in
-  exported packages; no non-stdlib deps beyond `gopkg.in/yaml.v3`.
+  exported packages. Non-stdlib deps kept minimal: `gopkg.in/yaml.v3` (parsing/
+  emitting) and `github.com/DataDog/go-sqllexer` (a lightweight, dialect-agnostic
+  SQL lexer used to qualify column references inside compound measure
+  expressions — `col` → `table.col` — without misfiring on string literals or
+  keywords; a full SQL parser was rejected as over-weight and dialect-mismatched
+  since no pure-Go Snowflake parser exists).
 
 ## Architecture (v1)
 

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/DataDog/go-sqllexer"
 	"github.com/benchouse/semglot/ir"
 	"gopkg.in/yaml.v3"
 )
@@ -176,9 +177,34 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 
 		colDesc := map[string]string{}
 		colType := map[string]string{}
+		// cols is the set of this table's column names (lowercased), used to
+		// qualify column references inside compound measure expressions.
+		cols := map[string]bool{}
 		for _, c := range md.Columns {
 			colDesc[c.Name] = c.Description
 			colType[c.Name] = c.DataType
+			cols[strings.ToLower(c.Name)] = true
+		}
+		for _, e := range sm.Entities {
+			col := e.Expr
+			if col == "" {
+				col = e.Name
+			}
+			cols[strings.ToLower(col)] = true
+		}
+		for _, d := range sm.Dimensions {
+			col := d.Expr
+			if col == "" {
+				col = d.Name
+			}
+			cols[strings.ToLower(col)] = true
+		}
+		// A measure defined directly over a bare column contributes that column
+		// (it may not otherwise be an entity/dimension/documented column).
+		for _, m := range sm.Measures {
+			if isIdent(m.Expr) {
+				cols[strings.ToLower(m.Expr)] = true
+			}
 		}
 
 		t := ir.Table{Name: name}
@@ -220,7 +246,7 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 		for _, m := range sm.Measures {
 			t.Measures = append(t.Measures, ir.Measure{Field: field(m.Name, m.Expr), Agg: m.Agg})
 			measureTable[m.Name] = name
-			measureAggExpr[m.Name] = aggExpr(m.Agg, name+"."+m.Expr)
+			measureAggExpr[m.Name] = aggExpr(m.Agg, qualifyExpr(name, cols, m.Expr))
 		}
 		// Columns documented in models: but not surfaced by the semantic layer
 		// become plain dimensions (this is the whole model for models:-only projects).
@@ -315,6 +341,48 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	}
 
 	return out, nil
+}
+
+// isIdent reports whether s is a single bare SQL identifier.
+func isIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// qualifyExpr prefixes column references in a measure expression with the
+// table name (col -> table.col), so the emitted metric SQL is unambiguous.
+// It lexes the expression and rewrites only IDENT tokens that name a real
+// column of this (single) table — string literals, numbers, SQL keywords and
+// function names are left untouched. A bare column becomes table.column; a
+// compound expression like "case when is_refunded then 1 else 0 end" becomes
+// "case when table.is_refunded then 1 else 0 end".
+func qualifyExpr(table string, cols map[string]bool, expr string) string {
+	lx := sqllexer.New(expr)
+	var b strings.Builder
+	for {
+		tok := lx.Scan()
+		if tok.Type == sqllexer.EOF || tok.Type == sqllexer.ERROR {
+			break
+		}
+		if tok.Type == sqllexer.IDENT && cols[strings.ToLower(tok.Value)] {
+			b.WriteString(table)
+			b.WriteByte('.')
+			b.WriteString(tok.Value)
+		} else {
+			b.WriteString(tok.Value)
+		}
+	}
+	return b.String()
 }
 
 // aggExpr renders a neutral, lowercase aggregate expression over a qualified col.
