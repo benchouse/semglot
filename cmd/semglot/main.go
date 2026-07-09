@@ -72,6 +72,12 @@ func buildCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "build: parse:", err)
 		return 1
 	}
+	if len(model.Notes) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %d metric(s) not transpiled — passed through as custom_instructions:\n", len(model.Notes))
+		for _, n := range model.Notes {
+			fmt.Fprintln(os.Stderr, "  - "+n)
+		}
+	}
 	if err := emitter.Emit(model, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "build: emit:", err)
 		return 1

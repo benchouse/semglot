@@ -316,7 +316,9 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	}
 	out.Relationships = dedupeRels(out.Relationships)
 
-	// Metrics: simple first (so ratios can reference their exprs), then ratios.
+	// Metrics: attach as structured Cortex metrics when we can resolve them to a
+	// table; otherwise pass the metric through as a free-text note rather than
+	// guessing a table. Simple metrics first so ratios can reference their exprs.
 	metricExpr := map[string]string{}
 	metricTable := map[string]string{}
 	attach := func(mname, desc, expr, table string) {
@@ -326,21 +328,61 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 		out.Tables[i].Metrics = append(out.Tables[i].Metrics, ir.Metric{Name: mname, Description: desc, Expr: expr})
 	}
 	for _, m := range metrics {
-		if m.Type == "ratio" {
+		if m.Type != "simple" {
 			continue
 		}
-		attach(m.Name, m.Description, measureAggExpr[m.TypeParams.Measure], measureTable[m.TypeParams.Measure])
+		expr, table := measureAggExpr[m.TypeParams.Measure], measureTable[m.TypeParams.Measure]
+		if expr == "" || table == "" {
+			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("measure %q not found in the parsed semantic models", m.TypeParams.Measure)))
+			continue
+		}
+		attach(m.Name, m.Description, expr, table)
 	}
 	for _, m := range metrics {
 		if m.Type != "ratio" {
 			continue
 		}
-		num := metricExpr[m.TypeParams.Numerator]
-		den := metricExpr[m.TypeParams.Denominator]
-		attach(m.Name, m.Description, num+" / "+den, metricTable[m.TypeParams.Numerator])
+		num, okN := metricExpr[m.TypeParams.Numerator]
+		den, okD := metricExpr[m.TypeParams.Denominator]
+		table, okT := metricTable[m.TypeParams.Numerator]
+		if !okN || !okD || !okT {
+			out.Notes = append(out.Notes, metricNote(m, "one or more ratio operands could not be resolved to a metric"))
+			continue
+		}
+		attach(m.Name, m.Description, num+" / "+den, table)
+	}
+	for _, m := range metrics {
+		switch m.Type {
+		case "simple", "ratio":
+			// handled above
+		default:
+			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("unsupported metric type %q", m.Type)))
+		}
 	}
 
 	return out, nil
+}
+
+// metricNote renders a human/LLM-readable description of a dbt metric that could
+// not be transpiled to a structured target metric, for passthrough into the
+// target's free-text guidance.
+func metricNote(m dbtMetric, reason string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "metric %q", m.Name)
+	if m.Type != "" {
+		fmt.Fprintf(&sb, " (%s)", m.Type)
+	}
+	if m.Description != "" {
+		fmt.Fprintf(&sb, ": %s", m.Description)
+	}
+	switch m.Type {
+	case "simple":
+		fmt.Fprintf(&sb, " [measure: %s]", m.TypeParams.Measure)
+	case "ratio":
+		fmt.Fprintf(&sb, " [numerator: %s, denominator: %s]", m.TypeParams.Numerator, m.TypeParams.Denominator)
+	}
+	fmt.Fprintf(&sb, " — not transpiled: %s", reason)
+	return sb.String()
 }
 
 // isIdent reports whether s is a single bare SQL identifier.

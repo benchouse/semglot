@@ -1,0 +1,8 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    measures:
+      - {name: orders_count, agg: count_distinct, expr: order_id}

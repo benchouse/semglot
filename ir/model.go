@@ -7,6 +7,11 @@ package ir
 type Model struct {
 	Tables        []Table
 	Relationships []Relationship
+	// Notes are free-text passthrough annotations for source constructs that
+	// could not be represented structurally (e.g. a metric referencing an
+	// unknown measure, or an unsupported metric type). Emitters may surface
+	// them as target-native guidance (e.g. Cortex custom_instructions).
+	Notes []string
 }
 
 // Table is one grain/entity in the layer.

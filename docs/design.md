@@ -145,6 +145,15 @@ type Emitter interface { Layer; Emit(m *ir.Model, dir string) error }   // IR �
   model/column name — model properties supply descriptions and **real data
   types** (so type inference is only a fallback), the semantic layer supplies
   roles (dimension vs measure) and aggregations.
+
+  A metric resolves to a table via its measure's owning semantic model
+  (`metric → measure → semantic_model → table`) and may combine measures across
+  joinable tables (cross-table ratios). When a metric **can't** be resolved
+  (references a measure no parsed semantic model defines) or uses a type we don't
+  model (`derived`, `cumulative`, …), it is **not** guessed onto a table — it is
+  flagged on stderr and passed through into the target's free-text guidance
+  (Cortex `custom_instructions`) via `ir.Model.Notes`, so the information still
+  reaches the downstream engine even when we can't structure it.
 - `cortex` (`Emitter`): writes a Cortex `semantic_model.yaml` from the IR.
 - `registry` maps a dialect name → `Layer`. `build` looks up `--from` and asserts it
   is a `Parser`, looks up `--layer` and asserts it is an `Emitter`; a clear error if

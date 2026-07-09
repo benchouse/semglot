@@ -32,10 +32,11 @@ func (cortex) WithOptions(database, schema, name, description string) Emitter {
 // ---- Cortex YAML shapes ----
 
 type cortexModel struct {
-	Name          string        `yaml:"name"`
-	Description   string        `yaml:"description,omitempty"`
-	Tables        []cortexTable `yaml:"tables"`
-	Relationships []cortexRel   `yaml:"relationships,omitempty"`
+	Name               string        `yaml:"name"`
+	Description        string        `yaml:"description,omitempty"`
+	Tables             []cortexTable `yaml:"tables"`
+	Relationships      []cortexRel   `yaml:"relationships,omitempty"`
+	CustomInstructions string        `yaml:"custom_instructions,omitempty"`
 }
 
 type cortexTable struct {
@@ -140,6 +141,16 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		cm.Relationships = append(cm.Relationships, cortexRel{
 			Name: r.Left + "_to_" + r.Right, LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
 		})
+	}
+
+	if len(m.Notes) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Some dbt metrics could not be transpiled to Cortex metrics; treat the following as guidance:")
+		for _, n := range m.Notes {
+			sb.WriteString("\n- ")
+			sb.WriteString(n)
+		}
+		cm.CustomInstructions = sb.String()
 	}
 
 	var buf bytes.Buffer

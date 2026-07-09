@@ -2,6 +2,7 @@ package layer
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/benchouse/semglot/ir"
@@ -93,6 +94,34 @@ func TestDBTParseModelsOnly(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("IR mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// A metric referencing an unknown measure, or an unsupported metric type, is
+// NOT silently attached to a table — it becomes a passthrough note.
+func TestDBTParseUnresolvedMetrics(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_unresolved")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got.Tables) != 1 {
+		t.Fatalf("tables = %d, want 1", len(got.Tables))
+	}
+	var attached []string
+	for _, mt := range got.Tables[0].Metrics {
+		attached = append(attached, mt.Name)
+	}
+	if len(attached) != 1 || attached[0] != "orders" {
+		t.Fatalf("attached metrics = %v, want [orders] (nothing mis-attached to Tables[0])", attached)
+	}
+	if len(got.Notes) != 2 {
+		t.Fatalf("notes = %d %v, want 2", len(got.Notes), got.Notes)
+	}
+	joined := strings.Join(got.Notes, "\n")
+	for _, want := range []string{"mystery", "not_a_measure", "growth", "derived"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("notes missing %q:\n%s", want, joined)
+		}
 	}
 }
 

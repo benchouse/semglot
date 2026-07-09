@@ -75,6 +75,32 @@ func TestCortexEmitPrefersRealDataType(t *testing.T) {
 	}
 }
 
+// IR notes are surfaced as Cortex custom_instructions (free-text guidance).
+func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{{
+			Name: "t", PrimaryKey: []string{"id"},
+			Dimensions: []ir.Field{{Name: "id", Expr: "id"}},
+		}},
+		Notes: []string{`metric "growth" (derived): Orders, boosted. — not transpiled: unsupported metric type "derived"`},
+	}
+	dir := t.TempDir()
+	if err := (cortex{}).Emit(m, dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "custom_instructions:") {
+		t.Fatalf("expected custom_instructions in output:\n%s", out)
+	}
+	if !strings.Contains(out, `unsupported metric type`) {
+		t.Fatalf("expected the note text to pass through:\n%s", out)
+	}
+}
+
 func TestCortexEmit(t *testing.T) {
 	dir := t.TempDir()
 	e := cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "eval_marts"}
