@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json
+models:
+  FCT_ORDER_LINES:
+    name: Order lines
+    table: MAIN.FCT_ORDER_LINES
+    primary_key:
+      - ORDER_LINE_ID
+    description: Order-line grain. One row per line item.
+    properties:
+      NET_LINE_REVENUE:
+        name: NET_LINE_REVENUE
+        type: Number
+        description: Net revenue for the line.
+      ORDER_DATE:
+        name: ORDER_DATE
+        type: Date
+        description: Date the parent order was placed.
+      ORDER_ID:
+        name: ORDER_ID
+        type: Number
+        description: Order the line belongs to.
+      ORDER_LINE_ID:
+        name: ORDER_LINE_ID
+        type: Number
+        description: Line-item surrogate key.
+      PRODUCT_ID:
+        name: PRODUCT_ID
+        type: Number
+        description: Product sold on the line.
+      QUANTITY:
+        name: QUANTITY
+        type: Number
+        description: Units sold on the line.
+metrics:
+  units_sold:
+    name: Units sold
+    model_id: FCT_ORDER_LINES
+    aggregation:
+      type: sum
+      key: QUANTITY

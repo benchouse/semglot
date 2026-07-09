@@ -261,3 +261,53 @@ func assertStr(t *testing.T, label, got, want string) {
 		t.Fatalf("%s = %q, want %q", label, got, want)
 	}
 }
+
+func TestEcommerceSupersimpleGolden(t *testing.T) {
+	e, err := layer.AsEmitter("supersimple")
+	if err != nil {
+		t.Fatalf("AsEmitter: %v", err)
+	}
+	if c, ok := e.(layer.Configurable); ok {
+		e = c.WithOptions("", "MAIN", "", "")
+	}
+	p, err := layer.AsParser("dbt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := p.Parse(projectDir)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out := t.TempDir()
+	if err := e.Emit(model, out); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	goldenDir := "models/ecommerce/dbt/supersimple"
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		_ = os.MkdirAll(goldenDir, 0o755)
+	}
+	for _, ent := range entries {
+		got, err := os.ReadFile(filepath.Join(out, ent.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gpath := filepath.Join(goldenDir, ent.Name())
+		if os.Getenv("UPDATE_GOLDEN") == "1" {
+			if err := os.WriteFile(gpath, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(gpath)
+		if err != nil {
+			t.Fatalf("read golden %s (UPDATE_GOLDEN=1 to create): %v", gpath, err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("%s != golden:\n--- got ---\n%s", ent.Name(), got)
+		}
+	}
+}

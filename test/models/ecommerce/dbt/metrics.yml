@@ -1,9 +1,9 @@
 metrics:
-  - {name: gross_revenue, type: simple, description: "Gross order revenue.", type_params: {measure: order_gross_amount}}
-  - {name: net_revenue, type: simple, description: "Net booked revenue.", type_params: {measure: order_net_booked_amount}}
-  - {name: orders, type: simple, type_params: {measure: orders_count}}
-  - {name: refunded_orders, type: simple, description: "Count of refunded orders.", type_params: {measure: refunded_orders_count}}
-  - {name: units_sold, type: simple, description: "Units sold.", type_params: {measure: quantity}}
-  - {name: aov, type: ratio, description: "Average order value (net revenue / orders).", type_params: {numerator: net_revenue, denominator: orders}}
-  - {name: units_per_order, type: ratio, description: "Units per order (cross-table).", type_params: {numerator: units_sold, denominator: orders}}
-  - {name: refund_rate, type: ratio, description: "Refunded orders / all orders.", type_params: {numerator: refunded_orders, denominator: orders}}
+  - {name: gross_revenue, label: Gross revenue, type: simple, description: "Gross order revenue.", type_params: {measure: order_gross_amount}}
+  - {name: net_revenue, label: Net revenue, type: simple, description: "Net booked revenue.", type_params: {measure: order_net_booked_amount}}
+  - {name: orders, label: Orders, type: simple, type_params: {measure: orders_count}}
+  - {name: refunded_orders, label: Refunded orders, type: simple, description: "Count of refunded orders.", type_params: {measure: refunded_orders_count}}
+  - {name: units_sold, label: Units sold, type: simple, description: "Units sold.", type_params: {measure: quantity}}
+  - {name: aov, label: Average order value, type: ratio, description: "Average order value (net revenue / orders).", type_params: {numerator: net_revenue, denominator: orders}}
+  - {name: units_per_order, label: Units per order, type: ratio, description: "Units per order (cross-table).", type_params: {numerator: units_sold, denominator: orders}}
+  - {name: refund_rate, label: Refund rate, type: ratio, description: "Refunded orders / all orders.", type_params: {numerator: refunded_orders, denominator: orders}}

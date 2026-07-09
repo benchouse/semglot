@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json
+models:
+  DIM_CUSTOMER:
+    name: Customer
+    table: MAIN.DIM_CUSTOMER
+    primary_key:
+      - CUSTOMER_SK
+    description: Customer dimension.
+    properties:
+      ACCEPTS_MARKETING:
+        name: ACCEPTS_MARKETING
+        type: Boolean
+        description: Whether the customer opted in to marketing.
+      CUSTOMER_SEGMENT:
+        name: CUSTOMER_SEGMENT
+        type: String
+        description: Marketing segment.
+      CUSTOMER_SK:
+        name: CUSTOMER_SK
+        type: Number
+        description: Customer surrogate key.
+    relations:
+      orders:
+        name: Orders
+        type: hasMany
+        model_id: FCT_ORDERS
+        join_strategy:
+          join_key: CUSTOMER_SK

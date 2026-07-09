@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json
+models:
+  FCT_ORDERS:
+    name: Orders
+    table: MAIN.FCT_ORDERS
+    primary_key:
+      - ORDER_ID
+    description: Order-grain finance fact. One row per order.
+    properties:
+      CUSTOMER_SK:
+        name: CUSTOMER_SK
+        type: Number
+        description: Customer the order belongs to.
+      IS_REFUNDED:
+        name: IS_REFUNDED
+        type: Boolean
+        description: Whether the order was refunded.
+      ORDER_DATE:
+        name: ORDER_DATE
+        type: Date
+        description: Date the order was placed.
+      ORDER_GROSS:
+        name: ORDER_GROSS
+        type: Number
+        description: Gross order revenue before tax and refunds.
+      ORDER_ID:
+        name: ORDER_ID
+        type: Number
+        description: Order surrogate key.
+      ORDER_NET_BOOKED:
+        name: ORDER_NET_BOOKED
+        type: Number
+        description: Net booked revenue (gross minus tax and refunds).
+    relations:
+      order_lines:
+        name: Order lines
+        type: hasMany
+        model_id: FCT_ORDER_LINES
+        join_strategy:
+          join_key: ORDER_ID
+metrics:
+  gross_revenue:
+    name: Gross revenue
+    model_id: FCT_ORDERS
+    aggregation:
+      type: sum
+      key: ORDER_GROSS
+  net_revenue:
+    name: Net revenue
+    model_id: FCT_ORDERS
+    aggregation:
+      type: sum
+      key: ORDER_NET_BOOKED
+  orders:
+    name: Orders
+    model_id: FCT_ORDERS
+    aggregation:
+      type: countDistinct
+      key: ORDER_ID

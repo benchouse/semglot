@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json
+models:
+  DIM_PRODUCT:
+    name: Product
+    table: MAIN.DIM_PRODUCT
+    primary_key:
+      - PRODUCT_ID
+    description: Product dimension.
+    properties:
+      CATEGORY:
+        name: CATEGORY
+        type: String
+        description: Product category.
+      PRODUCT_ID:
+        name: PRODUCT_ID
+        type: Number
+        description: Product surrogate key.
+      TITLE:
+        name: TITLE
+        type: String
+        description: Product title.
+    relations:
+      order_lines:
+        name: Order lines
+        type: hasMany
+        model_id: FCT_ORDER_LINES
+        join_strategy:
+          join_key: PRODUCT_ID
