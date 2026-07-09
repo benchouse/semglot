@@ -1,0 +1,4 @@
+metrics:
+  - {name: net_revenue, label: Net revenue, type: simple, description: "Net booked revenue.", type_params: {measure: order_net_booked_amount}}
+  - {name: orders, label: Orders, type: simple, type_params: {measure: orders_count}}
+  - {name: aov, label: Average order value, type: ratio, description: "Net revenue / orders.", type_params: {numerator: net_revenue, denominator: orders}}

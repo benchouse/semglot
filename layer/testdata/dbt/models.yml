@@ -1,0 +1,21 @@
+semantic_models:
+  - name: fct_orders
+    description: Order-grain finance fact. One row per order.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+      - {name: customer, type: foreign, expr: customer_sk}
+    dimensions:
+      - {name: order_date, type: time, type_params: {time_granularity: day}}
+      - {name: is_refunded, type: categorical}
+    measures:
+      - {name: order_net_booked_amount, agg: sum, expr: order_net_booked}
+      - {name: orders_count, agg: count_distinct, expr: order_id}
+
+  - name: dim_customer
+    description: Customer dimension.
+    model: ref('dim_customer')
+    entities:
+      - {name: customer, type: primary, expr: customer_sk}
+    dimensions:
+      - {name: customer_segment, type: categorical}
