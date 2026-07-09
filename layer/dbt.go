@@ -13,7 +13,10 @@ import (
 
 func init() { Register(dbt{}) }
 
-// dbt parses a directory of dbt semantic-layer YAML (semantic_models + metrics).
+// dbt parses a directory of dbt YAML. It merges two sources of truth: classic
+// model properties (`models:` — table/column descriptions, data types, key and
+// relationship constraints/tests) and the semantic layer (`semantic_models:` +
+// `metrics:` — measures, aggregations, metrics). Either may be present alone.
 type dbt struct{}
 
 func (dbt) Name() string { return "dbt" }
@@ -21,9 +24,63 @@ func (dbt) Name() string { return "dbt" }
 // ---- raw YAML shapes ----
 
 type dbtFile struct {
+	Models         []dbtModel         `yaml:"models"`
 	SemanticModels []dbtSemanticModel `yaml:"semantic_models"`
 	Metrics        []dbtMetric        `yaml:"metrics"`
 }
+
+// classic model properties
+
+type dbtModel struct {
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description"`
+	Constraints []dbtConstraint `yaml:"constraints"`
+	Columns     []dbtColumn     `yaml:"columns"`
+}
+
+type dbtColumn struct {
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description"`
+	DataType    string          `yaml:"data_type"`
+	Constraints []dbtConstraint `yaml:"constraints"`
+	DataTests   []dbtTest       `yaml:"data_tests"`
+	Tests       []dbtTest       `yaml:"tests"`
+}
+
+type dbtConstraint struct {
+	Type      string   `yaml:"type"`       // primary_key, foreign_key, not_null, unique, ...
+	Columns   []string `yaml:"columns"`    // model-level primary_key
+	To        string   `yaml:"to"`         // foreign_key: ref('dim_x')
+	ToColumns []string `yaml:"to_columns"` // foreign_key target columns
+}
+
+// dbtTest captures a column data test. Entries are either a bare string
+// ("unique", "not_null") or a mapping ({relationships: {to, field}}); only the
+// relationships form carries data we use.
+type dbtTest struct {
+	Relationships *dbtRelTest
+}
+
+type dbtRelTest struct {
+	To    string `yaml:"to"`
+	Field string `yaml:"field"`
+}
+
+func (t *dbtTest) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode { // "unique", "not_null" — ignored
+		return nil
+	}
+	var m struct {
+		Relationships *dbtRelTest `yaml:"relationships"`
+	}
+	if err := value.Decode(&m); err != nil {
+		return err
+	}
+	t.Relationships = m.Relationships
+	return nil
+}
+
+// semantic layer
 
 type dbtSemanticModel struct {
 	Name        string         `yaml:"name"`
@@ -70,7 +127,8 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	}
 	sort.Strings(files)
 
-	var models []dbtSemanticModel
+	var models []dbtModel
+	var semantic []dbtSemanticModel
 	var metrics []dbtMetric
 	for _, f := range files {
 		b, err := os.ReadFile(f)
@@ -81,27 +139,70 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 		if err := yaml.Unmarshal(b, &df); err != nil {
 			return nil, fmt.Errorf("%s: %w", f, err)
 		}
-		models = append(models, df.SemanticModels...)
+		models = append(models, df.Models...)
+		semantic = append(semantic, df.SemanticModels...)
 		metrics = append(metrics, df.Metrics...)
 	}
 
+	// Ordered union of table names across both sources.
+	var order []string
+	seen := map[string]bool{}
+	addName := func(n string) {
+		if !seen[n] {
+			seen[n] = true
+			order = append(order, n)
+		}
+	}
+	modelByName := map[string]dbtModel{}
+	for _, m := range models {
+		modelByName[m.Name] = m
+		addName(m.Name)
+	}
+	semByName := map[string]dbtSemanticModel{}
+	for _, s := range semantic {
+		semByName[s.Name] = s
+		addName(s.Name)
+	}
+
 	out := &ir.Model{}
-	tableIdx := map[string]int{}          // table name -> index in out.Tables
-	measureTable := map[string]string{}   // measure name -> owning table
-	measureAggExpr := map[string]string{} // measure name -> "sum(table.col)" neutral expr
+	tableIdx := map[string]int{}
+	measureTable := map[string]string{}
+	measureAggExpr := map[string]string{}
 	primaryByEntity := map[string]struct{ table, col string }{}
 
-	for _, sm := range models {
-		t := ir.Table{Name: sm.Name, Description: sm.Description}
+	for _, name := range order {
+		md := modelByName[name]
+		sm := semByName[name]
+
+		colDesc := map[string]string{}
+		colType := map[string]string{}
+		for _, c := range md.Columns {
+			colDesc[c.Name] = c.Description
+			colType[c.Name] = c.DataType
+		}
+
+		t := ir.Table{Name: name}
+		if md.Description != "" {
+			t.Description = md.Description
+		} else {
+			t.Description = sm.Description
+		}
+
+		used := map[string]bool{}
+		field := func(fname, col string) ir.Field {
+			used[col] = true
+			return ir.Field{Name: fname, Expr: col, Description: colDesc[col], DataType: colType[col]}
+		}
+
 		for _, e := range sm.Entities {
 			col := e.Expr
 			if col == "" {
 				col = e.Name
 			}
-			t.Dimensions = append(t.Dimensions, ir.Field{Name: col, Expr: col})
+			t.Dimensions = append(t.Dimensions, field(col, col))
 			if e.Type == "primary" {
 				t.PrimaryKey = append(t.PrimaryKey, col)
-				primaryByEntity[e.Name] = struct{ table, col string }{sm.Name, col}
+				primaryByEntity[e.Name] = struct{ table, col string }{name, col}
 			}
 		}
 		for _, d := range sm.Dimensions {
@@ -109,7 +210,7 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			if col == "" {
 				col = d.Name
 			}
-			f := ir.Field{Name: d.Name, Expr: col}
+			f := field(d.Name, col)
 			if d.Type == "time" {
 				t.TimeDimensions = append(t.TimeDimensions, f)
 			} else {
@@ -117,16 +218,32 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			}
 		}
 		for _, m := range sm.Measures {
-			t.Measures = append(t.Measures, ir.Measure{Field: ir.Field{Name: m.Name, Expr: m.Expr}, Agg: m.Agg})
-			measureTable[m.Name] = sm.Name
-			measureAggExpr[m.Name] = aggExpr(m.Agg, sm.Name+"."+m.Expr)
+			t.Measures = append(t.Measures, ir.Measure{Field: field(m.Name, m.Expr), Agg: m.Agg})
+			measureTable[m.Name] = name
+			measureAggExpr[m.Name] = aggExpr(m.Agg, name+"."+m.Expr)
 		}
-		tableIdx[sm.Name] = len(out.Tables)
+		// Columns documented in models: but not surfaced by the semantic layer
+		// become plain dimensions (this is the whole model for models:-only projects).
+		for _, c := range md.Columns {
+			if used[c.Name] {
+				continue
+			}
+			t.Dimensions = append(t.Dimensions, ir.Field{Name: c.Name, Expr: c.Name, Description: c.Description, DataType: c.DataType})
+			used[c.Name] = true
+		}
+
+		for _, col := range pkFromModel(md) {
+			if !contains(t.PrimaryKey, col) {
+				t.PrimaryKey = append(t.PrimaryKey, col)
+			}
+		}
+
+		tableIdx[name] = len(out.Tables)
 		out.Tables = append(out.Tables, t)
 	}
 
-	// Relationships: each foreign entity joins to the primary entity of the same name.
-	for _, sm := range models {
+	// Relationships from semantic foreign entities...
+	for _, sm := range semantic {
 		for _, e := range sm.Entities {
 			if e.Type != "foreign" {
 				continue
@@ -140,28 +257,53 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 				col = e.Name
 			}
 			out.Relationships = append(out.Relationships, ir.Relationship{
-				Left:    sm.Name,
-				Right:   p.table,
-				Columns: []ir.ColumnPair{{Left: col, Right: p.col}},
+				Left: sm.Name, Right: p.table, Columns: []ir.ColumnPair{{Left: col, Right: p.col}},
 			})
 		}
 	}
+	// ...and from models: relationships tests / foreign-key constraints.
+	for _, md := range models {
+		for _, c := range md.Columns {
+			for _, test := range append(append([]dbtTest{}, c.DataTests...), c.Tests...) {
+				if test.Relationships == nil {
+					continue
+				}
+				out.Relationships = append(out.Relationships, ir.Relationship{
+					Left: md.Name, Right: parseRef(test.Relationships.To),
+					Columns: []ir.ColumnPair{{Left: c.Name, Right: test.Relationships.Field}},
+				})
+			}
+			for _, con := range c.Constraints {
+				if con.Type != "foreign_key" || con.To == "" {
+					continue
+				}
+				rightCol := c.Name
+				if len(con.ToColumns) > 0 {
+					rightCol = con.ToColumns[0]
+				}
+				out.Relationships = append(out.Relationships, ir.Relationship{
+					Left: md.Name, Right: parseRef(con.To),
+					Columns: []ir.ColumnPair{{Left: c.Name, Right: rightCol}},
+				})
+			}
+		}
+	}
+	out.Relationships = dedupeRels(out.Relationships)
 
 	// Metrics: simple first (so ratios can reference their exprs), then ratios.
 	metricExpr := map[string]string{}
 	metricTable := map[string]string{}
-	attach := func(name, desc, expr, table string) {
-		metricExpr[name] = expr
-		metricTable[name] = table
+	attach := func(mname, desc, expr, table string) {
+		metricExpr[mname] = expr
+		metricTable[mname] = table
 		i := tableIdx[table]
-		out.Tables[i].Metrics = append(out.Tables[i].Metrics, ir.Metric{Name: name, Description: desc, Expr: expr})
+		out.Tables[i].Metrics = append(out.Tables[i].Metrics, ir.Metric{Name: mname, Description: desc, Expr: expr})
 	}
 	for _, m := range metrics {
 		if m.Type == "ratio" {
 			continue
 		}
-		table := measureTable[m.TypeParams.Measure]
-		attach(m.Name, m.Description, measureAggExpr[m.TypeParams.Measure], table)
+		attach(m.Name, m.Description, measureAggExpr[m.TypeParams.Measure], measureTable[m.TypeParams.Measure])
 	}
 	for _, m := range metrics {
 		if m.Type != "ratio" {
@@ -193,4 +335,60 @@ func aggExpr(agg, col string) string {
 	default:
 		return strings.ToLower(agg) + "(" + col + ")"
 	}
+}
+
+// pkFromModel collects primary-key columns from model-level and column-level
+// contract constraints.
+func pkFromModel(md dbtModel) []string {
+	var pk []string
+	for _, con := range md.Constraints {
+		if con.Type == "primary_key" {
+			pk = append(pk, con.Columns...)
+		}
+	}
+	for _, c := range md.Columns {
+		for _, con := range c.Constraints {
+			if con.Type == "primary_key" {
+				pk = append(pk, c.Name)
+			}
+		}
+	}
+	return pk
+}
+
+// parseRef extracts the model name from a dbt ref, e.g. ref('dim_customer') ->
+// dim_customer. A plain name is returned unchanged.
+func parseRef(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "("); i >= 0 {
+		s = s[i+1:]
+		s = strings.TrimSuffix(strings.TrimSpace(s), ")")
+	}
+	return strings.Trim(strings.TrimSpace(s), "'\"")
+}
+
+func dedupeRels(rels []ir.Relationship) []ir.Relationship {
+	seen := map[string]bool{}
+	var out []ir.Relationship
+	for _, r := range rels {
+		key := r.Left + ">" + r.Right
+		for _, c := range r.Columns {
+			key += ":" + c.Left + "=" + c.Right
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

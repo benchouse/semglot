@@ -1,0 +1,15 @@
+models:
+  - name: fct_orders
+    description: Orders (from model properties).
+    columns:
+      - name: order_id
+        description: Order surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: is_refunded
+        description: Whether refunded.
+        data_type: boolean
+      - name: order_gross
+        description: Gross revenue.
+        data_type: number

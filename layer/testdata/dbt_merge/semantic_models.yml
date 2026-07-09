@@ -1,0 +1,10 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders (from semantic layer).
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    dimensions:
+      - {name: is_refunded, type: categorical}
+    measures:
+      - {name: order_gross_amount, agg: sum, expr: order_gross}

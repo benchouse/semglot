@@ -125,8 +125,21 @@ type Parser  interface { Layer; Parse(dir string) (*ir.Model, error) }  // diale
 type Emitter interface { Layer; Emit(m *ir.Model, dir string) error }   // IR → dialect
 ```
 
-- `dbt` (`Parser`): reads a directory of dbt semantic YAML — `semantic_models`
-  blocks (`*.yml`) plus a `metrics` file — into the IR.
+- `dbt` (`Parser`): reads a directory of dbt YAML and **merges two sources of
+  truth** into the IR:
+  - **model properties** (`models:` with `columns:`) — table/column
+    descriptions, real `data_type`, primary keys (`constraints`), and
+    relationships (`relationships` data tests / foreign-key constraints);
+  - **the semantic layer** (`semantic_models:` + `metrics:`) — measures,
+    aggregations, entities, and metrics.
+
+  Either may appear alone: a `models:`-only project (the common case — many orgs
+  never adopt the semantic layer) yields tables, dimensions, keys and
+  relationships (no facts/metrics); a `semantic_models:`-only project yields
+  measures/metrics with inferred types. When both describe a model they merge by
+  model/column name — model properties supply descriptions and **real data
+  types** (so type inference is only a fallback), the semantic layer supplies
+  roles (dimension vs measure) and aggregations.
 - `cortex` (`Emitter`): writes a Cortex `semantic_model.yaml` from the IR.
 - `registry` maps a dialect name → `Layer`. `build` looks up `--from` and asserts it
   is a `Parser`, looks up `--layer` and asserts it is an `Emitter`; a clear error if

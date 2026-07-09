@@ -13,26 +13,33 @@ tables:
       - name: order_id
         expr: ORDER_ID
         data_type: NUMBER
+        description: Order surrogate key.
       - name: customer_sk
         expr: CUSTOMER_SK
         data_type: NUMBER
+        description: Customer the order belongs to.
       - name: is_refunded
         expr: IS_REFUNDED
         data_type: BOOLEAN
+        description: Whether the order was refunded.
     time_dimensions:
       - name: order_date
         expr: ORDER_DATE
         data_type: DATE
+        description: Date the order was placed.
     facts:
       - name: order_gross_amount
         expr: ORDER_GROSS
         data_type: NUMBER
+        description: Gross order revenue before tax and refunds.
       - name: order_net_booked_amount
         expr: ORDER_NET_BOOKED
         data_type: NUMBER
+        description: Net booked revenue (gross minus tax and refunds).
       - name: orders_count
         expr: ORDER_ID
         data_type: NUMBER
+        description: Order surrogate key.
     metrics:
       - name: gross_revenue
         expr: SUM(FCT_ORDERS.ORDER_GROSS)
@@ -58,23 +65,29 @@ tables:
       - name: order_line_id
         expr: ORDER_LINE_ID
         data_type: NUMBER
+        description: Line-item surrogate key.
       - name: order_id
         expr: ORDER_ID
         data_type: NUMBER
+        description: Order the line belongs to.
       - name: product_id
         expr: PRODUCT_ID
         data_type: NUMBER
+        description: Product sold on the line.
     time_dimensions:
       - name: order_date
         expr: ORDER_DATE
         data_type: DATE
+        description: Date the parent order was placed.
     facts:
       - name: quantity
         expr: QUANTITY
         data_type: NUMBER
+        description: Units sold on the line.
       - name: net_line_revenue
         expr: NET_LINE_REVENUE
         data_type: NUMBER
+        description: Net revenue for the line.
     metrics:
       - name: units_sold
         expr: SUM(FCT_ORDER_LINES.QUANTITY)
@@ -95,12 +108,15 @@ tables:
       - name: customer_sk
         expr: CUSTOMER_SK
         data_type: NUMBER
+        description: Customer surrogate key.
       - name: customer_segment
         expr: CUSTOMER_SEGMENT
         data_type: TEXT
+        description: Marketing segment.
       - name: accepts_marketing
         expr: ACCEPTS_MARKETING
-        data_type: TEXT
+        data_type: BOOLEAN
+        description: Whether the customer opted in to marketing.
   - name: dim_product
     description: Product dimension.
     base_table:
@@ -114,12 +130,15 @@ tables:
       - name: product_id
         expr: PRODUCT_ID
         data_type: NUMBER
+        description: Product surrogate key.
       - name: category
         expr: CATEGORY
         data_type: TEXT
+        description: Product category.
       - name: title
         expr: TITLE
         data_type: TEXT
+        description: Product title.
 relationships:
   - name: fct_orders_to_dim_customer
     left_table: fct_orders

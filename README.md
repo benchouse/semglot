@@ -37,8 +37,9 @@ per-target subdir holds the expected output:
 
 ```
 test/models/ecommerce/dbt/          # dbt source-dialect input
-  models.yml
-  metrics.yml
+  schema.yml                        # model properties (descriptions, data types, keys, relationships)
+  semantic_models.yml               # semantic layer (entities, dimensions, measures)
+  metrics.yml                       # metrics
   cortex/ecommerce.yaml             # expected cortex target output
 ```
 

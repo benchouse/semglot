@@ -3,6 +3,7 @@ package layer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/benchouse/semglot/ir"
@@ -43,6 +44,34 @@ func sampleIR() *ir.Model {
 		Relationships: []ir.Relationship{
 			{Left: "fct_orders", Right: "dim_customer", Columns: []ir.ColumnPair{{Left: "customer_sk", Right: "customer_sk"}}},
 		},
+	}
+}
+
+// When the IR carries a real data type, the emitter uses it instead of the
+// name heuristic — here a column the heuristic would call TEXT is BOOLEAN.
+func TestCortexEmitPrefersRealDataType(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "dim_customer",
+		PrimaryKey: []string{"customer_sk"},
+		Dimensions: []ir.Field{
+			{Name: "customer_sk", Expr: "customer_sk", DataType: "number"},
+			{Name: "accepts_marketing", Expr: "accepts_marketing", DataType: "boolean", Description: "Opted in."},
+		},
+	}}}
+	dir := t.TempDir()
+	if err := (cortex{Database: "DB", Schema: "MAIN", ModelName: "m"}).Emit(m, dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "data_type: BOOLEAN") {
+		t.Fatalf("expected accepts_marketing -> BOOLEAN from real type, got:\n%s", out)
+	}
+	if !strings.Contains(out, "description: Opted in.") {
+		t.Fatalf("expected column description to pass through, got:\n%s", out)
 	}
 }
 

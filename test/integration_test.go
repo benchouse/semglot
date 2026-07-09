@@ -83,9 +83,10 @@ type cTable struct {
 }
 
 type cCol struct {
-	Name     string `yaml:"name"`
-	Expr     string `yaml:"expr"`
-	DataType string `yaml:"data_type"`
+	Name        string `yaml:"name"`
+	Expr        string `yaml:"expr"`
+	DataType    string `yaml:"data_type"`
+	Description string `yaml:"description"`
 }
 
 type cMetric struct {
@@ -136,11 +137,18 @@ func TestEcommerceCortexStructure(t *testing.T) {
 	assertStr(t, "units_per_order expr", metricExpr(t, m, "fct_order_lines", "units_per_order"),
 		"SUM(FCT_ORDER_LINES.QUANTITY) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)")
 
-	// Data-type inference heuristics.
+	// Real data types come from dbt model properties (data_type), not the
+	// name heuristic: accepts_marketing is BOOLEAN even though its name has no
+	// is_/has_ prefix the heuristic would have called TEXT.
+	assertStr(t, "accepts_marketing data_type", dimType(t, m, "dim_customer", "accepts_marketing"), "BOOLEAN")
 	assertStr(t, "is_refunded data_type", dimType(t, m, "fct_orders", "is_refunded"), "BOOLEAN")
 	assertStr(t, "order_id data_type", dimType(t, m, "fct_orders", "order_id"), "NUMBER")
-	assertStr(t, "customer_sk data_type", dimType(t, m, "fct_orders", "customer_sk"), "NUMBER")
 	assertStr(t, "customer_segment data_type", dimType(t, m, "dim_customer", "customer_segment"), "TEXT")
+
+	// Column descriptions from model properties flow through to the target.
+	assertStr(t, "order_id description", dimDesc(t, m, "fct_orders", "order_id"), "Order surrogate key.")
+	assertStr(t, "accepts_marketing description", dimDesc(t, m, "dim_customer", "accepts_marketing"),
+		"Whether the customer opted in to marketing.")
 }
 
 // TestCLIBinaryEndToEnd exercises the actual compiled command, not just the API.
@@ -205,6 +213,23 @@ func dimType(t *testing.T, m cModel, table, dim string) string {
 		for _, d := range tb.Dimensions {
 			if d.Name == dim {
 				return d.DataType
+			}
+		}
+		t.Fatalf("dimension %q not found on table %q", dim, table)
+	}
+	t.Fatalf("table %q not found", table)
+	return ""
+}
+
+func dimDesc(t *testing.T, m cModel, table, dim string) string {
+	t.Helper()
+	for _, tb := range m.Tables {
+		if tb.Name != table {
+			continue
+		}
+		for _, d := range tb.Dimensions {
+			if d.Name == dim {
+				return d.Description
 			}
 		}
 		t.Fatalf("dimension %q not found on table %q", dim, table)

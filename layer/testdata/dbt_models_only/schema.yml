@@ -1,0 +1,32 @@
+models:
+  - name: dim_customer
+    description: Customer dimension.
+    columns:
+      - name: customer_sk
+        description: Surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: customer_segment
+        description: Marketing segment.
+        data_type: varchar
+      - name: accepts_marketing
+        description: Opted in to marketing.
+        data_type: boolean
+
+  - name: fct_orders
+    description: Orders fact.
+    columns:
+      - name: order_id
+        description: Order id.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: customer_sk
+        description: Customer FK.
+        data_type: number
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_sk

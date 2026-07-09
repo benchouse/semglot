@@ -1,0 +1,90 @@
+models:
+  - name: fct_orders
+    description: Order-grain finance fact. One row per order.
+    columns:
+      - name: order_id
+        description: Order surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: customer_sk
+        description: Customer the order belongs to.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_sk
+      - name: is_refunded
+        description: Whether the order was refunded.
+        data_type: boolean
+      - name: order_date
+        description: Date the order was placed.
+        data_type: date
+      - name: order_gross
+        description: Gross order revenue before tax and refunds.
+        data_type: number
+      - name: order_net_booked
+        description: Net booked revenue (gross minus tax and refunds).
+        data_type: number
+
+  - name: fct_order_lines
+    description: Order-line grain. One row per line item.
+    columns:
+      - name: order_line_id
+        description: Line-item surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: order_id
+        description: Order the line belongs to.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('fct_orders')
+              field: order_id
+      - name: product_id
+        description: Product sold on the line.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_product')
+              field: product_id
+      - name: order_date
+        description: Date the parent order was placed.
+        data_type: date
+      - name: quantity
+        description: Units sold on the line.
+        data_type: number
+      - name: net_line_revenue
+        description: Net revenue for the line.
+        data_type: number
+
+  - name: dim_customer
+    description: Customer dimension.
+    columns:
+      - name: customer_sk
+        description: Customer surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: customer_segment
+        description: Marketing segment.
+        data_type: varchar
+      - name: accepts_marketing
+        description: Whether the customer opted in to marketing.
+        data_type: boolean
+
+  - name: dim_product
+    description: Product dimension.
+    columns:
+      - name: product_id
+        description: Product surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: category
+        description: Product category.
+        data_type: varchar
+      - name: title
+        description: Product title.
+        data_type: varchar

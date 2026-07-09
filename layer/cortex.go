@@ -108,19 +108,19 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		}
 		for _, d := range t.Dimensions {
 			ct.Dimensions = append(ct.Dimensions, cortexCol{
-				Name: d.Name, Expr: strings.ToUpper(d.Expr), DataType: inferDataType(d.Name),
+				Name: d.Name, Expr: strings.ToUpper(d.Expr), DataType: pickType(d.DataType, inferDataType(d.Name)),
 				Description: d.Description, Synonyms: d.Synonyms,
 			})
 		}
 		for _, d := range t.TimeDimensions {
 			ct.TimeDimensions = append(ct.TimeDimensions, cortexCol{
-				Name: d.Name, Expr: strings.ToUpper(d.Expr), DataType: "DATE",
+				Name: d.Name, Expr: strings.ToUpper(d.Expr), DataType: pickType(d.DataType, "DATE"),
 				Description: d.Description, Synonyms: d.Synonyms,
 			})
 		}
 		for _, mm := range t.Measures {
 			ct.Facts = append(ct.Facts, cortexCol{
-				Name: mm.Name, Expr: strings.ToUpper(mm.Expr), DataType: "NUMBER",
+				Name: mm.Name, Expr: strings.ToUpper(mm.Expr), DataType: pickType(mm.DataType, "NUMBER"),
 				Description: mm.Description, Synonyms: mm.Synonyms,
 			})
 		}
@@ -165,8 +165,39 @@ func upperAll(ss []string) []string {
 	return out
 }
 
+// pickType returns the mapped real data type when the IR carries one (from dbt
+// model properties), otherwise the caller's fallback (an inference or a role
+// default like DATE/NUMBER).
+func pickType(dbtType, fallback string) string {
+	if strings.TrimSpace(dbtType) == "" {
+		return fallback
+	}
+	return mapDbtType(dbtType)
+}
+
+// mapDbtType normalizes a dbt/warehouse column data_type to a Cortex data_type.
+// Unknown types are passed through uppercased.
+func mapDbtType(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "number", "numeric", "decimal", "int", "integer", "bigint", "smallint":
+		return "NUMBER"
+	case "float", "double", "double precision", "real":
+		return "FLOAT"
+	case "varchar", "text", "string", "char", "character varying":
+		return "TEXT"
+	case "boolean", "bool":
+		return "BOOLEAN"
+	case "date":
+		return "DATE"
+	case "timestamp", "datetime", "timestamp_ntz", "timestamp_tz", "timestamp_ltz":
+		return "TIMESTAMP"
+	default:
+		return strings.ToUpper(strings.TrimSpace(t))
+	}
+}
+
 // inferDataType guesses a Cortex data_type for a dimension whose source dialect
-// did not record one. Known v1 limitation: heuristic, not exact.
+// did not record one. Heuristic fallback used only when no real type is known.
 func inferDataType(name string) string {
 	n := strings.ToLower(name)
 	switch {
