@@ -1,0 +1,64 @@
+name: eval_marts
+tables:
+  - name: fct_orders
+    description: Order-grain finance fact. One row per order.
+    base_table:
+      database: ANALYTICS
+      schema: MAIN
+      table: FCT_ORDERS
+    primary_key:
+      columns:
+        - ORDER_ID
+    dimensions:
+      - name: order_id
+        expr: ORDER_ID
+        data_type: NUMBER
+      - name: customer_sk
+        expr: CUSTOMER_SK
+        data_type: NUMBER
+      - name: is_refunded
+        expr: IS_REFUNDED
+        data_type: BOOLEAN
+    time_dimensions:
+      - name: order_date
+        expr: ORDER_DATE
+        data_type: DATE
+    facts:
+      - name: order_net_booked_amount
+        expr: ORDER_NET_BOOKED
+        data_type: NUMBER
+      - name: orders_count
+        expr: ORDER_ID
+        data_type: NUMBER
+    metrics:
+      - name: net_revenue
+        expr: SUM(FCT_ORDERS.ORDER_NET_BOOKED)
+        description: Net booked revenue.
+      - name: orders
+        expr: COUNT(DISTINCT FCT_ORDERS.ORDER_ID)
+      - name: aov
+        expr: SUM(FCT_ORDERS.ORDER_NET_BOOKED) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)
+        description: Net revenue / orders.
+  - name: dim_customer
+    description: Customer dimension.
+    base_table:
+      database: ANALYTICS
+      schema: MAIN
+      table: DIM_CUSTOMER
+    primary_key:
+      columns:
+        - CUSTOMER_SK
+    dimensions:
+      - name: customer_sk
+        expr: CUSTOMER_SK
+        data_type: NUMBER
+      - name: customer_segment
+        expr: CUSTOMER_SEGMENT
+        data_type: TEXT
+relationships:
+  - name: fct_orders_to_dim_customer
+    left_table: fct_orders
+    right_table: dim_customer
+    relationship_columns:
+      - left_column: CUSTOMER_SK
+        right_column: CUSTOMER_SK
