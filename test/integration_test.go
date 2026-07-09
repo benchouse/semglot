@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	projectDir = "testdata/ecommerce"
-	goldenPath = "testdata/ecommerce.cortex.golden.yaml"
+	// projectDir is the dbt (source-dialect) input directory. Its nested
+	// <target>/ subdirs hold the expected output for each target dialect.
+	projectDir = "models/ecommerce/dbt"
+	goldenPath = "models/ecommerce/dbt/cortex/ecommerce.yaml"
 )
 
 // emit runs the real dbt -> cortex pipeline through the public layer API and
@@ -50,6 +52,9 @@ func emit(t *testing.T) []byte {
 func TestEcommerceCortexGolden(t *testing.T) {
 	got := emit(t)
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
 			t.Fatal(err)
 		}

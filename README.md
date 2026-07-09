@@ -30,10 +30,19 @@ go test -short ./...    # skips the process-exec integration test
 ```
 
 Unit tests live beside each package (`layer/…_test.go`). End-to-end tests in
-`test/` run a realistic dbt project (`test/testdata/ecommerce/`) through the
-transpiler and pin the emitted Cortex output with golden files plus targeted
-assertions. Regenerate goldens after an intentional change with
-`UPDATE_GOLDEN=1 go test ./...`.
+`test/` run a realistic dbt project through the transpiler and pin the emitted
+output with golden files plus targeted assertions. Fixtures follow an
+input/output layout — the source-dialect dir holds the inputs, and a nested
+per-target subdir holds the expected output:
+
+```
+test/models/ecommerce/dbt/          # dbt source-dialect input
+  models.yml
+  metrics.yml
+  cortex/ecommerce.yaml             # expected cortex target output
+```
+
+Regenerate goldens after an intentional change with `UPDATE_GOLDEN=1 go test ./...`.
 
 ## License
 
