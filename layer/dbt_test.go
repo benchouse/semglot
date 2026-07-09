@@ -33,9 +33,9 @@ func TestDBTParse(t *testing.T) {
 					{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
 				},
 				Metrics: []ir.Metric{
-					{Name: "net_revenue", Description: "Net booked revenue.", Expr: "sum(fct_orders.order_net_booked)"},
-					{Name: "orders", Expr: "count(distinct fct_orders.order_id)"},
-					{Name: "aov", Description: "Net revenue / orders.", Expr: "sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)"},
+					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.", Expr: "sum(fct_orders.order_net_booked)", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "order_net_booked"},
+					{Name: "orders", Label: "Orders", Expr: "count(distinct fct_orders.order_id)", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
+					{Name: "aov", Label: "Average order value", Description: "Net revenue / orders.", Expr: "sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)", Kind: "ratio", Table: "fct_orders", Numerator: "net_revenue", Denominator: "orders"},
 				},
 			},
 			{
@@ -190,5 +190,24 @@ func TestDBTParseMerge(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("IR mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// A metric's dbt label surfaces as ir.Metric.Label, and a semantic model's
+// defaults.agg_time_dimension surfaces as ir.Table.Grain.
+func TestDBTParseLabelAndGrain(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_label_grain")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Tables[0].Grain != "order_date" {
+		t.Fatalf("grain = %q, want order_date", got.Tables[0].Grain)
+	}
+	m := got.Tables[0].Metrics[0]
+	if m.Label != "Net revenue" {
+		t.Fatalf("label = %q, want 'Net revenue'", m.Label)
+	}
+	if m.Kind != "simple" || m.Agg != "sum" || m.Table != "fct_orders" || m.Column != "order_net_booked" {
+		t.Fatalf("structured fields wrong: %+v", m)
 	}
 }

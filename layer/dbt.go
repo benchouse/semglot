@@ -84,12 +84,15 @@ func (t *dbtTest) UnmarshalYAML(value *yaml.Node) error {
 // semantic layer
 
 type dbtSemanticModel struct {
-	Name        string         `yaml:"name"`
-	Description string         `yaml:"description"`
-	Model       string         `yaml:"model"`
-	Entities    []dbtEntity    `yaml:"entities"`
-	Dimensions  []dbtDimension `yaml:"dimensions"`
-	Measures    []dbtMeasure   `yaml:"measures"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Model       string `yaml:"model"`
+	Defaults    struct {
+		AggTimeDimension string `yaml:"agg_time_dimension"`
+	} `yaml:"defaults"`
+	Entities   []dbtEntity    `yaml:"entities"`
+	Dimensions []dbtDimension `yaml:"dimensions"`
+	Measures   []dbtMeasure   `yaml:"measures"`
 }
 
 type dbtEntity struct {
@@ -112,6 +115,7 @@ type dbtMeasure struct {
 
 type dbtMetric struct {
 	Name        string `yaml:"name"`
+	Label       string `yaml:"label"`
 	Type        string `yaml:"type"`
 	Description string `yaml:"description"`
 	TypeParams  struct {
@@ -169,6 +173,8 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	tableIdx := map[string]int{}
 	measureTable := map[string]string{}
 	measureAggExpr := map[string]string{}
+	measureAgg := map[string]string{}
+	measureCol := map[string]string{}
 	primaryByEntity := map[string]struct{ table, col string }{}
 
 	for _, name := range order {
@@ -213,6 +219,7 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 		} else {
 			t.Description = sm.Description
 		}
+		t.Grain = sm.Defaults.AggTimeDimension
 
 		used := map[string]bool{}
 		field := func(fname, col string) ir.Field {
@@ -252,6 +259,8 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			}
 			t.Measures = append(t.Measures, ir.Measure{Field: f, Agg: m.Agg})
 			measureTable[m.Name] = name
+			measureAgg[m.Name] = m.Agg
+			measureCol[m.Name] = m.Expr
 			measureAggExpr[m.Name] = aggExpr(m.Agg, qualifyExpr(name, cols, m.Expr))
 		}
 		// Columns documented in models: but not surfaced by the semantic layer
@@ -327,22 +336,26 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	// guessing a table. Simple metrics first so ratios can reference their exprs.
 	metricExpr := map[string]string{}
 	metricTable := map[string]string{}
-	attach := func(mname, desc, expr, table string) {
-		metricExpr[mname] = expr
-		metricTable[mname] = table
+	attach := func(table string, mt ir.Metric) {
+		metricExpr[mt.Name] = mt.Expr
+		metricTable[mt.Name] = table
 		i := tableIdx[table]
-		out.Tables[i].Metrics = append(out.Tables[i].Metrics, ir.Metric{Name: mname, Description: desc, Expr: expr})
+		out.Tables[i].Metrics = append(out.Tables[i].Metrics, mt)
 	}
 	for _, m := range metrics {
 		if m.Type != "simple" {
 			continue
 		}
-		expr, table := measureAggExpr[m.TypeParams.Measure], measureTable[m.TypeParams.Measure]
+		meas := m.TypeParams.Measure
+		expr, table := measureAggExpr[meas], measureTable[meas]
 		if expr == "" || table == "" {
-			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("measure %q not found in the parsed semantic models", m.TypeParams.Measure)))
+			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("measure %q not found in the parsed semantic models", meas)))
 			continue
 		}
-		attach(m.Name, m.Description, expr, table)
+		attach(table, ir.Metric{
+			Name: m.Name, Label: m.Label, Description: m.Description, Expr: expr,
+			Kind: "simple", Agg: measureAgg[meas], Table: table, Column: measureCol[meas],
+		})
 	}
 	for _, m := range metrics {
 		if m.Type != "ratio" {
@@ -355,7 +368,10 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			out.Notes = append(out.Notes, metricNote(m, "one or more ratio operands could not be resolved to a metric"))
 			continue
 		}
-		attach(m.Name, m.Description, num+" / "+den, table)
+		attach(table, ir.Metric{
+			Name: m.Name, Label: m.Label, Description: m.Description, Expr: num + " / " + den,
+			Kind: "ratio", Table: table, Numerator: m.TypeParams.Numerator, Denominator: m.TypeParams.Denominator,
+		})
 	}
 	for _, m := range metrics {
 		switch m.Type {

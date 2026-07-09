@@ -23,6 +23,7 @@ type Table struct {
 	TimeDimensions []Field
 	Measures       []Measure
 	Metrics        []Metric
+	Grain          string // default time-dimension (dbt defaults.agg_time_dimension); "" if none
 }
 
 // Field is a column-backed attribute. DataType is left empty by dialects (like
@@ -42,13 +43,21 @@ type Measure struct {
 	Agg string
 }
 
-// Metric is a named business calculation. Expr is a neutral, lowercase
-// expression string (e.g. "sum(fct_orders.order_net_booked)").
+// Metric is a named business calculation. Expr is the rendered SQL (used by
+// SQL-shaped targets like Cortex); the structured fields let other targets
+// (e.g. supersimple) build their own form without re-parsing SQL.
 type Metric struct {
 	Name        string
+	Label       string // dbt metric label (display name); "" if none
 	Description string
 	Expr        string
 	Synonyms    []string
+	Kind        string // "simple" | "ratio"
+	Agg         string // simple: sum | count | count_distinct | avg | min | max
+	Table       string // owning table (model) name
+	Column      string // simple: aggregated column (bare) or the raw expr if compound
+	Numerator   string // ratio: numerator metric name
+	Denominator string // ratio: denominator metric name
 }
 
 // Relationship is a join between two tables.

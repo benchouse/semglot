@@ -1,0 +1,14 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders.
+    model: ref('fct_orders')
+    defaults: {agg_time_dimension: order_date}
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    dimensions:
+      - {name: order_date, type: time, type_params: {time_granularity: day}}
+    measures:
+      - {name: order_net_booked_amount, agg: sum, expr: order_net_booked}
+
+metrics:
+  - {name: net_revenue, label: Net revenue, type: simple, type_params: {measure: order_net_booked_amount}}
