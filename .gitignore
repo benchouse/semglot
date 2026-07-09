@@ -1,0 +1,14 @@
+# Binaries
+/semglot
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
