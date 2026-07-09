@@ -1,0 +1,45 @@
+semantic_models:
+  - name: fct_orders
+    description: Order-grain finance fact. One row per order.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+      - {name: customer, type: foreign, expr: customer_sk}
+    dimensions:
+      - {name: order_date, type: time, type_params: {time_granularity: day}}
+      - {name: is_refunded, type: categorical}
+    measures:
+      - {name: order_gross_amount, agg: sum, expr: order_gross}
+      - {name: order_net_booked_amount, agg: sum, expr: order_net_booked}
+      - {name: orders_count, agg: count_distinct, expr: order_id}
+
+  - name: fct_order_lines
+    description: Order-line grain. One row per line item.
+    model: ref('fct_order_lines')
+    entities:
+      - {name: order_line, type: primary, expr: order_line_id}
+      - {name: order, type: foreign, expr: order_id}
+      - {name: product, type: foreign, expr: product_id}
+    dimensions:
+      - {name: order_date, type: time, type_params: {time_granularity: day}}
+    measures:
+      - {name: quantity, agg: sum, expr: quantity}
+      - {name: net_line_revenue, agg: sum, expr: net_line_revenue}
+
+  - name: dim_customer
+    description: Customer dimension.
+    model: ref('dim_customer')
+    entities:
+      - {name: customer, type: primary, expr: customer_sk}
+    dimensions:
+      - {name: customer_segment, type: categorical}
+      - {name: accepts_marketing, type: categorical}
+
+  - name: dim_product
+    description: Product dimension.
+    model: ref('dim_product')
+    entities:
+      - {name: product, type: primary, expr: product_id}
+    dimensions:
+      - {name: category, type: categorical}
+      - {name: title, type: categorical}

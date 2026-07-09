@@ -22,6 +22,19 @@ reference. The `Layer` interface (`Parse` dialect→IR, `Emit` IR→dialect) is 
 seam for adding dialects; because every dialect is bidirectional, many→many
 transpilation is a matter of registering more layers, not writing converters.
 
+## Testing
+
+```sh
+go test ./...          # unit + integration (integration runs the compiled CLI)
+go test -short ./...    # skips the process-exec integration test
+```
+
+Unit tests live beside each package (`layer/…_test.go`). End-to-end tests in
+`test/` run a realistic dbt project (`test/testdata/ecommerce/`) through the
+transpiler and pin the emitted Cortex output with golden files plus targeted
+assertions. Regenerate goldens after an intentional change with
+`UPDATE_GOLDEN=1 go test ./...`.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
