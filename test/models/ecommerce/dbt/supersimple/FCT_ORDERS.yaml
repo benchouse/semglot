@@ -31,6 +31,10 @@ models:
         name: ORDER_NET_BOOKED
         type: Number
         description: Net booked revenue (gross minus tax and refunds).
+      REFUNDED_ORDERS:
+        name: REFUNDED_ORDERS
+        type: Number
+        sql: case when {is_refunded} then 1 else 0 end
     relations:
       order_lines:
         name: Order lines
@@ -39,6 +43,38 @@ models:
         join_strategy:
           join_key: ORDER_ID
 metrics:
+  aov:
+    name: Average order value
+    model_id: FCT_ORDERS
+    description: Average order value (net revenue / orders).
+    operations:
+      - operation: groupAggregate
+        parameters:
+          groups: []
+          aggregations:
+            - type: sum
+              key: ORDER_NET_BOOKED
+              property:
+                key: _num
+                name: _num
+            - type: count_distinct
+              key: ORDER_ID
+              property:
+                key: _den
+                name: _den
+      - operation: deriveField
+        parameters:
+          field_name: Average order value
+          key: aov
+          value:
+            expression: prop("_num") / prop("_den")
+            version: "1"
+    aggregation:
+      type: first
+      key: aov
+      property:
+        key: aov
+        name: Average order value
   gross_revenue:
     name: Gross revenue
     model_id: FCT_ORDERS
@@ -59,3 +95,42 @@ metrics:
     aggregation:
       type: count_distinct
       key: ORDER_ID
+  refund_rate:
+    name: Refund rate
+    model_id: FCT_ORDERS
+    description: Refunded orders / all orders.
+    operations:
+      - operation: groupAggregate
+        parameters:
+          groups: []
+          aggregations:
+            - type: sum
+              key: REFUNDED_ORDERS
+              property:
+                key: _num
+                name: _num
+            - type: count_distinct
+              key: ORDER_ID
+              property:
+                key: _den
+                name: _den
+      - operation: deriveField
+        parameters:
+          field_name: Refund rate
+          key: refund_rate
+          value:
+            expression: prop("_num") / prop("_den")
+            version: "1"
+    aggregation:
+      type: first
+      key: refund_rate
+      property:
+        key: refund_rate
+        name: Refund rate
+  refunded_orders:
+    name: Refunded orders
+    model_id: FCT_ORDERS
+    description: Count of refunded orders.
+    aggregation:
+      type: sum
+      key: REFUNDED_ORDERS

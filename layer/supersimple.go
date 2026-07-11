@@ -232,6 +232,16 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			return err
 		}
 	}
+	if len(m.Notes) > 0 {
+		var sb strings.Builder
+		sb.WriteString("# Not transpiled to supersimple\n\n")
+		for _, n := range m.Notes {
+			sb.WriteString("- " + n + "\n")
+		}
+		if err := os.WriteFile(filepath.Join(dir, "NOTES.md"), []byte(sb.String()), 0o644); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
