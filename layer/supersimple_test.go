@@ -26,7 +26,8 @@ func TestSupersimpleEmit(t *testing.T) {
 				Metrics: []ir.Metric{
 					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "order_net_booked"},
 					{Name: "orders", Label: "Orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
-					{Name: "refund_rate", Kind: "ratio", Table: "fct_orders", Numerator: "x", Denominator: "y"},
+					{Name: "refunded_orders", Label: "Refunded orders", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "case when is_refunded then 1 else 0 end"},
+					{Name: "refund_rate", Label: "Refund rate", Kind: "ratio", Table: "fct_orders", Numerator: "refunded_orders", Denominator: "orders"},
 				},
 			},
 			{
@@ -54,16 +55,33 @@ func TestSupersimpleEmit(t *testing.T) {
 		"type: Date",    // order_date
 		"type: Float",   // order_net_booked
 		"type: Number",  // order_id
-		"name: Net revenue",
-		"description: Net booked revenue.", // metric description passes through
-		"type: sum",
-		"key: ORDER_NET_BOOKED",
-		"type: count_distinct", // schema uses snake_case, not countDistinct
-		"key: ORDER_ID",
 	} {
 		if !strings.Contains(orders, want) {
 			t.Fatalf("FCT_ORDERS.yaml missing %q:\n%s", want, orders)
 		}
+	}
+
+	for _, want := range []string{
+		"name: Net revenue",
+		"description: Net booked revenue.",
+		"type: sum",
+		"type: count_distinct",
+		"key: ORDER_ID",
+		// compound measure -> synthesized property.sql + a sum metric over it
+		"sql: case when {is_refunded} then 1 else 0 end",
+		"key: REFUNDED_ORDERS",
+		// same-table ratio -> operations pipeline
+		"operation: groupAggregate",
+		"operation: deriveField",
+		`expression: prop("_num") / prop("_den")`,
+		"type: first",
+	} {
+		if !strings.Contains(orders, want) {
+			t.Fatalf("FCT_ORDERS.yaml missing %q:\n%s", want, orders)
+		}
+	}
+	if strings.Contains(orders, "countDistinct") {
+		t.Fatalf("aggregation type must be snake_case count_distinct:\n%s", orders)
 	}
 
 	// hasMany relation lives on the PARENT (dim_customer).
@@ -72,18 +90,6 @@ func TestSupersimpleEmit(t *testing.T) {
 		if !strings.Contains(cust, want) {
 			t.Fatalf("DIM_CUSTOMER.yaml missing %q:\n%s", want, cust)
 		}
-	}
-
-	// the ratio metric is omitted and reported via Notes.
-	joined := strings.Join(m.Notes, "\n")
-	if !strings.Contains(joined, "refund_rate") || !strings.Contains(joined, "not representable in supersimple") {
-		t.Fatalf("expected a skip note for refund_rate, got: %v", m.Notes)
-	}
-	if strings.Contains(orders, "countDistinct") {
-		t.Fatalf("aggregation type must be snake_case count_distinct, not camelCase:\n%s", orders)
-	}
-	if strings.Contains(orders, "refund_rate") {
-		t.Fatalf("ratio metric should not be emitted:\n%s", orders)
 	}
 }
 

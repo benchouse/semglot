@@ -152,22 +152,69 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			}
 		}
 
-		file := ssFile{Models: map[string]ssModel{id: model}}
+		// cols is this table's column set (lowercased), used to wrap column
+		// references in a compound measure's property.sql.
+		cols := map[string]bool{}
+		for _, d := range t.Dimensions {
+			cols[strings.ToLower(d.Expr)] = true
+		}
+		for _, d := range t.TimeDimensions {
+			cols[strings.ToLower(d.Expr)] = true
+		}
+		for _, meas := range t.Measures {
+			if isIdent(meas.Expr) {
+				cols[strings.ToLower(meas.Expr)] = true
+			}
+		}
+
+		// Resolve every simple metric to its supersimple (type,key), synthesizing
+		// a computed property.sql for compound-measure metrics. Do this before
+		// creating the file so the synthesized properties are on the model, and
+		// before emitting ratios so operands resolve.
+		simpleAgg := map[string]aggRef{}
 		for _, mt := range t.Metrics {
-			if mt.Kind != "simple" || !isIdent(mt.Column) {
-				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not representable in supersimple (only simple aggregations over a column) — omitted", mt.Name))
+			if mt.Kind != "simple" {
 				continue
 			}
+			key := strings.ToUpper(mt.Column)
+			if !isIdent(mt.Column) { // compound measure -> synthesized sql property
+				key = strings.ToUpper(mt.Name)
+				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(mt.Column, cols)}
+			}
+			simpleAgg[mt.Name] = aggRef{typ: mapAgg(mt.Agg), key: key}
+		}
+
+		file := ssFile{Models: map[string]ssModel{id: model}}
+		metricName := func(mt ir.Metric) string {
+			if mt.Label != "" {
+				return mt.Label
+			}
+			return mt.Name
+		}
+		addMetric := func(name string, sm ssMetric) {
 			if file.Metrics == nil {
 				file.Metrics = map[string]ssMetric{}
 			}
-			nm := mt.Label
-			if nm == "" {
-				nm = mt.Name
-			}
-			file.Metrics[mt.Name] = ssMetric{
-				Name: nm, ModelID: strings.ToUpper(mt.Table), Description: mt.Description,
-				Aggregation: ssAggregation{Type: mapAgg(mt.Agg), Key: strings.ToUpper(mt.Column)},
+			file.Metrics[name] = sm
+		}
+		for _, mt := range t.Metrics {
+			switch {
+			case mt.Kind == "simple":
+				ar := simpleAgg[mt.Name]
+				addMetric(mt.Name, ssMetric{
+					Name: metricName(mt), ModelID: id, Description: mt.Description,
+					Aggregation: ssAggregation{Type: ar.typ, Key: ar.key},
+				})
+			case mt.Kind == "ratio":
+				num, okN := simpleAgg[mt.Numerator]
+				den, okD := simpleAgg[mt.Denominator]
+				if !okN || !okD { // operands not both same-table simple metrics
+					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operands span tables or are not simple aggregations — deferred to a later iteration", mt.Name))
+					continue
+				}
+				addMetric(mt.Name, ratioMetric(id, mt.Name, metricName(mt), mt.Description, num, den))
+			default:
+				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: unsupported kind %q", mt.Name, mt.Kind))
 			}
 		}
 
@@ -266,6 +313,32 @@ func mapAgg(agg string) string {
 		return "avg"
 	}
 	return a
+}
+
+// aggRef is a resolved supersimple aggregation for a simple metric.
+type aggRef struct{ typ, key string }
+
+// ratioMetric builds a same-table ratio as a groupAggregate -> deriveField ->
+// first pipeline. NOTE: the whole-set groupAggregate shape and the deriveField
+// expression grammar are provisional pending live-supersimple validation.
+func ratioMetric(modelID, key, name, desc string, num, den aggRef) ssMetric {
+	return ssMetric{
+		Name: name, ModelID: modelID, Description: desc,
+		Operations: []ssOperation{
+			{Operation: "groupAggregate", Parameters: ssGroupAggregateParams{
+				Groups: []any{},
+				Aggregations: []ssAggSpec{
+					{Type: num.typ, Key: num.key, Property: ssPropRef{Key: "_num", Name: "_num"}},
+					{Type: den.typ, Key: den.key, Property: ssPropRef{Key: "_den", Name: "_den"}},
+				},
+			}},
+			{Operation: "deriveField", Parameters: ssDeriveFieldParams{
+				FieldName: name, Key: key,
+				Value: ssExprValue{Expression: `prop("_num") / prop("_den")`, Version: "1"},
+			}},
+		},
+		Aggregation: ssAggregation{Type: "first", Key: key, Property: &ssPropRef{Key: key, Name: name}},
+	}
 }
 
 // toPropertySQL rewrites a compound measure expression into supersimple's
