@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/DataDog/go-sqllexer"
 	"github.com/benchouse/semglot/ir"
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +45,7 @@ type ssProperty struct {
 	Name        string `yaml:"name"`
 	Type        string `yaml:"type"`
 	Description string `yaml:"description,omitempty"`
+	Sql         string `yaml:"sql,omitempty"`
 }
 type ssRelation struct {
 	Name         string         `yaml:"name"`
@@ -58,11 +60,39 @@ type ssMetric struct {
 	Name        string        `yaml:"name"`
 	ModelID     string        `yaml:"model_id"`
 	Description string        `yaml:"description,omitempty"`
+	Operations  []ssOperation `yaml:"operations,omitempty"`
 	Aggregation ssAggregation `yaml:"aggregation"`
 }
 type ssAggregation struct {
-	Type string `yaml:"type"`
+	Type     string     `yaml:"type"`
+	Key      string     `yaml:"key,omitempty"`
+	Property *ssPropRef `yaml:"property,omitempty"`
+}
+type ssPropRef struct {
 	Key  string `yaml:"key"`
+	Name string `yaml:"name"`
+}
+type ssOperation struct {
+	Operation  string `yaml:"operation"`
+	Parameters any    `yaml:"parameters"`
+}
+type ssGroupAggregateParams struct {
+	Groups       []any       `yaml:"groups"`
+	Aggregations []ssAggSpec `yaml:"aggregations"`
+}
+type ssAggSpec struct {
+	Type     string    `yaml:"type"`
+	Key      string    `yaml:"key,omitempty"`
+	Property ssPropRef `yaml:"property"`
+}
+type ssDeriveFieldParams struct {
+	FieldName string      `yaml:"field_name"`
+	Key       string      `yaml:"key"`
+	Value     ssExprValue `yaml:"value"`
+}
+type ssExprValue struct {
+	Expression string `yaml:"expression"`
+	Version    string `yaml:"version"`
 }
 
 func (s supersimple) Emit(m *ir.Model, dir string) error {
@@ -236,4 +266,30 @@ func mapAgg(agg string) string {
 		return "avg"
 	}
 	return a
+}
+
+// toPropertySQL rewrites a compound measure expression into supersimple's
+// property.sql form: each column identifier (a member of cols, lowercased) is
+// wrapped in {braces}; keywords, numbers, string literals and functions are
+// left untouched.
+// e.g. "case when is_refunded then 1 else 0 end" (cols={is_refunded}) ->
+//
+//	"case when {is_refunded} then 1 else 0 end".
+func toPropertySQL(expr string, cols map[string]bool) string {
+	lx := sqllexer.New(expr)
+	var b strings.Builder
+	for {
+		tok := lx.Scan()
+		if tok.Type == sqllexer.EOF || tok.Type == sqllexer.ERROR {
+			break
+		}
+		if tok.Type == sqllexer.IDENT && cols[strings.ToLower(tok.Value)] {
+			b.WriteByte('{')
+			b.WriteString(tok.Value)
+			b.WriteByte('}')
+		} else {
+			b.WriteString(tok.Value)
+		}
+	}
+	return b.String()
 }

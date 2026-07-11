@@ -87,6 +87,19 @@ func TestSupersimpleEmit(t *testing.T) {
 	}
 }
 
+func TestToPropertySQL(t *testing.T) {
+	cols := map[string]bool{"is_refunded": true, "status": true}
+	got := toPropertySQL("case when is_refunded then 1 else 0 end", cols)
+	if want := "case when {is_refunded} then 1 else 0 end"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// bare column wrapped; the string literal 'status' and keywords are not.
+	got = toPropertySQL("case when status = 'status' then 1 else 0 end", cols)
+	if want := "case when {status} = 'status' then 1 else 0 end"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func readFile(t *testing.T, p string) string {
 	t.Helper()
 	b, err := os.ReadFile(p)
