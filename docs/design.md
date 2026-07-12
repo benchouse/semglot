@@ -57,12 +57,17 @@ semglot itself stays ignorant of that harness — see "Standalone" below.
 - **Importable, not `internal/`.** Core logic lives in exported packages so
   downstream Go code can embed semglot as a library in addition to shelling out.
 - **House style:** subcommands via `flag.NewFlagSet`, no cobra; thin `cmd`, logic in
-  exported packages. Non-stdlib deps kept minimal: `gopkg.in/yaml.v3` (parsing/
-  emitting) and `github.com/DataDog/go-sqllexer` (a lightweight, dialect-agnostic
-  SQL lexer used to qualify column references inside compound measure
-  expressions — `col` → `table.col` — without misfiring on string literals or
-  keywords; a full SQL parser was rejected as over-weight and dialect-mismatched
-  since no pure-Go Snowflake parser exists).
+  exported packages. The **only** non-stdlib dependency is `gopkg.in/yaml.v3`.
+  Column references inside compound expressions (`col` → `table.col` /
+  `{col}`) are rewritten with a tiny in-repo SQL-expression lexer
+  (`layer/sqllex.go`) — it splits an expression into identifier / string /
+  number / other tokens and callers rewrite only identifiers that are known
+  columns. It deliberately does **not** classify keywords (that removes the
+  "incomplete keyword table" bug class — a word like `WHEN` is simply an
+  identifier that is not a column). A full SQL parser was rejected as
+  over-weight and dialect-mismatched (no pure-Go Snowflake parser exists), and
+  the earlier third-party lexer was dropped in favor of this ~60-line,
+  zero-dependency tokenizer.
 
 ## Architecture (v1)
 

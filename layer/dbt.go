@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DataDog/go-sqllexer"
 	"github.com/benchouse/semglot/ir"
 	"gopkg.in/yaml.v3"
 )
@@ -431,19 +430,14 @@ func isIdent(s string) bool {
 // compound expression like "case when is_refunded then 1 else 0 end" becomes
 // "case when table.is_refunded then 1 else 0 end".
 func qualifyExpr(table string, cols map[string]bool, expr string) string {
-	lx := sqllexer.New(expr)
 	var b strings.Builder
-	for {
-		tok := lx.Scan()
-		if tok.Type == sqllexer.EOF || tok.Type == sqllexer.ERROR {
-			break
-		}
-		if tok.Type == sqllexer.IDENT && cols[strings.ToLower(tok.Value)] {
+	for _, tok := range sqlTokens(expr) {
+		if tok.typ == sqlIdent && cols[strings.ToLower(tok.val)] {
 			b.WriteString(table)
 			b.WriteByte('.')
-			b.WriteString(tok.Value)
+			b.WriteString(tok.val)
 		} else {
-			b.WriteString(tok.Value)
+			b.WriteString(tok.val)
 		}
 	}
 	return b.String()

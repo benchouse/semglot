@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/DataDog/go-sqllexer"
 	"github.com/benchouse/semglot/ir"
 	"gopkg.in/yaml.v3"
 )
@@ -359,19 +358,14 @@ func ratioMetric(modelID, key, name, desc string, num, den aggRef) ssMetric {
 //
 //	"case when {is_refunded} then 1 else 0 end".
 func toPropertySQL(expr string, cols map[string]bool) string {
-	lx := sqllexer.New(expr)
 	var b strings.Builder
-	for {
-		tok := lx.Scan()
-		if tok.Type == sqllexer.EOF || tok.Type == sqllexer.ERROR {
-			break
-		}
-		if tok.Type == sqllexer.IDENT && cols[strings.ToLower(tok.Value)] {
+	for _, tok := range sqlTokens(expr) {
+		if tok.typ == sqlIdent && cols[strings.ToLower(tok.val)] {
 			b.WriteByte('{')
-			b.WriteString(tok.Value)
+			b.WriteString(tok.val)
 			b.WriteByte('}')
 		} else {
-			b.WriteString(tok.Value)
+			b.WriteString(tok.val)
 		}
 	}
 	return b.String()
