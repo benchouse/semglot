@@ -310,4 +310,23 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 			t.Fatalf("%s != golden:\n--- got ---\n%s", ent.Name(), got)
 		}
 	}
+
+	// Reverse direction: every golden must have been produced, so a regression
+	// that stops emitting a file (e.g. NOTES.md or a whole table) is caught —
+	// the loop above only checks produced->golden.
+	if os.Getenv("UPDATE_GOLDEN") != "1" {
+		goldens, err := os.ReadDir(goldenDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		produced := map[string]bool{}
+		for _, ent := range entries {
+			produced[ent.Name()] = true
+		}
+		for _, g := range goldens {
+			if !produced[g.Name()] {
+				t.Fatalf("golden %q was not produced by Emit (stopped emitting or renamed?)", g.Name())
+			}
+		}
+	}
 }

@@ -65,6 +65,7 @@ func TestSupersimpleEmit(t *testing.T) {
 		"name: Net revenue",
 		"description: Net booked revenue.",
 		"type: sum",
+		"key: ORDER_NET_BOOKED", // net_revenue simple metric aggregates the bare column
 		"type: count_distinct",
 		"key: ORDER_ID",
 		// compound measure -> synthesized property.sql + a sum metric over it
@@ -109,6 +110,33 @@ func TestToPropertySQL(t *testing.T) {
 	got = toPropertySQL("case when name = 'O''Brien' then 1 else 0 end", cols)
 	if want := "case when {name} = 'O''Brien' then 1 else 0 end"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A compound-measure metric whose name collides with a physical column must not
+// clobber that column's property — it gets a distinct suffixed key.
+func TestSupersimpleCompoundKeyNoClobber(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "t", PrimaryKey: []string{"id"},
+		Dimensions: []ir.Field{
+			{Name: "id", Expr: "id", DataType: "number"},
+			{Name: "flag", Expr: "flag", DataType: "boolean"}, // physical -> property FLAG (Boolean)
+		},
+		Metrics: []ir.Metric{
+			// compound metric named "flag" would synthesize key FLAG, colliding.
+			{Name: "flag", Kind: "simple", Agg: "sum", Table: "t", Column: "case when flag then 1 else 0 end"},
+		},
+	}}}
+	dir := t.TempDir()
+	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+		t.Fatal(err)
+	}
+	out := readFile(t, filepath.Join(dir, "T.yaml"))
+	if !strings.Contains(out, "type: Boolean") {
+		t.Fatalf("physical FLAG property was clobbered (no Boolean type left):\n%s", out)
+	}
+	if !strings.Contains(out, "FLAG_EXPR") || !strings.Contains(out, "sql: case when {flag} then 1 else 0 end") {
+		t.Fatalf("expected suffixed synthesized property FLAG_EXPR with rewritten sql:\n%s", out)
 	}
 }
 

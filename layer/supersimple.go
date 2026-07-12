@@ -177,7 +177,15 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			}
 			key := strings.ToUpper(mt.Column)
 			if !isIdent(mt.Column) { // compound measure -> synthesized sql property
+				// Derive a key that does not clobber a physical column (or an
+				// earlier synthesized one) whose name collides with the metric's.
 				key = strings.ToUpper(mt.Name)
+				for {
+					if _, taken := model.Properties[key]; !taken {
+						break
+					}
+					key += "_EXPR"
+				}
 				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(mt.Column, cols)}
 			}
 			simpleAgg[mt.Name] = aggRef{typ: mapAgg(mt.Agg), key: key}

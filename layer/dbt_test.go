@@ -164,6 +164,25 @@ func TestDBTParseCaseExpr(t *testing.T) {
 	}
 }
 
+// qualifyExpr prefixes only known-column identifiers with the table; keywords,
+// non-column identifiers, and string literals (even ones equal to a column name)
+// are left alone.
+func TestQualifyExpr(t *testing.T) {
+	cols := map[string]bool{"is_refunded": true, "order_id": true, "status": true}
+	if got := qualifyExpr("fct_orders", cols, "order_id"); got != "fct_orders.order_id" {
+		t.Fatalf("bare column: got %q", got)
+	}
+	if got := qualifyExpr("fct_orders", cols, "case when is_refunded then 1 else 0 end"); got != "case when fct_orders.is_refunded then 1 else 0 end" {
+		t.Fatalf("case expr: got %q", got)
+	}
+	// 'status' literal untouched; column status qualified; non-column x and the
+	// function name coalesce left alone.
+	got := qualifyExpr("fct_orders", cols, "case when status = 'status' then coalesce(x, 0) else 0 end")
+	if want := "case when fct_orders.status = 'status' then coalesce(x, 0) else 0 end"; got != want {
+		t.Fatalf("mixed: got %q, want %q", got, want)
+	}
+}
+
 // When both sources describe the same model, model properties supply the table
 // description, column descriptions and real data types; the semantic layer
 // supplies roles (dimension vs measure) and aggregations.
