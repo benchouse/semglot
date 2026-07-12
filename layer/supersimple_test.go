@@ -94,7 +94,7 @@ func TestSupersimpleEmit(t *testing.T) {
 }
 
 func TestToPropertySQL(t *testing.T) {
-	cols := map[string]bool{"is_refunded": true, "status": true}
+	cols := map[string]bool{"is_refunded": true, "status": true, "name": true}
 	got := toPropertySQL("case when is_refunded then 1 else 0 end", cols)
 	if want := "case when {is_refunded} then 1 else 0 end"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -102,6 +102,12 @@ func TestToPropertySQL(t *testing.T) {
 	// bare column wrapped; the string literal 'status' and keywords are not.
 	got = toPropertySQL("case when status = 'status' then 1 else 0 end", cols)
 	if want := "case when {status} = 'status' then 1 else 0 end"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// a doubled-quote escape inside a string must stay intact; only the real
+	// column beside it is wrapped (exercises the lexer's escape handling end-to-end).
+	got = toPropertySQL("case when name = 'O''Brien' then 1 else 0 end", cols)
+	if want := "case when {name} = 'O''Brien' then 1 else 0 end"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
