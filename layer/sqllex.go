@@ -12,11 +12,11 @@ package layer
 type sqlTokenType int
 
 const (
-	sqlEOF sqlTokenType = iota
-	sqlIdent            // bare identifier: [A-Za-z_][A-Za-z0-9_]*
-	sqlString           // 'single' or "double" quoted span (literal / quoted ident)
-	sqlNumber           // numeric literal
-	sqlOther            // whitespace, operators, punctuation — anything else
+	sqlEOF    sqlTokenType = iota
+	sqlIdent               // bare identifier: [A-Za-z_][A-Za-z0-9_]*
+	sqlString              // 'single' or "double" quoted span (literal / quoted ident)
+	sqlNumber              // numeric literal
+	sqlOther               // whitespace, operators, punctuation — anything else
 )
 
 type sqlToken struct {
