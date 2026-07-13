@@ -1,0 +1,13 @@
+models:
+  - name: fct_a
+    columns:
+      - {name: a_id, data_type: number}
+      - name: b_id
+        data_tests:
+          - relationships: {arguments: {to: "ref('dim_b')", field: b_id}}
+      - name: gone_id
+        data_tests:
+          - relationships: {arguments: {to: "ref('dim_gone')", field: gone_id}}
+  - name: dim_b
+    columns:
+      - {name: b_id, data_type: number}

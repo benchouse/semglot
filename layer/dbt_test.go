@@ -8,6 +8,30 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
+func TestDBTParseRelationshipArguments(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_relargs")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	rights := map[string]bool{}
+	for _, r := range got.Relationships {
+		if r.Right == "" {
+			t.Fatalf("emitted a relationship with an empty right_table (left=%q)", r.Left)
+		}
+		if r.Left == "fct_a" {
+			rights[r.Right] = true
+		}
+	}
+	// dbt 1.8+ `relationships: {arguments: {to, field}}` must resolve.
+	if !rights["dim_b"] {
+		t.Error("arguments-nested relationship fct_a -> dim_b not parsed")
+	}
+	// a relationship whose target isn't a table in the model must be dropped.
+	if rights["dim_gone"] {
+		t.Error("relationship to an absent table (dim_gone) was not dropped")
+	}
+}
+
 func TestDBTParseMultiSource(t *testing.T) {
 	// fct_x's semantic model lives in dir a; its classic models: schema (and a
 	// classic-only fct_y) live in dir b. Parse must merge across both dirs.

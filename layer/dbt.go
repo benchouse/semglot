@@ -71,6 +71,27 @@ type dbtTest struct {
 type dbtRelTest struct {
 	To    string `yaml:"to"`
 	Field string `yaml:"field"`
+	// dbt 1.8+ nests a generic test's args under `arguments:`; older projects put
+	// to/field directly. Accept both.
+	Arguments *struct {
+		To    string `yaml:"to"`
+		Field string `yaml:"field"`
+	} `yaml:"arguments"`
+}
+
+// relTo/relField resolve the target, preferring the nested `arguments:` form.
+func (r *dbtRelTest) relTo() string {
+	if r.Arguments != nil && r.Arguments.To != "" {
+		return r.Arguments.To
+	}
+	return r.To
+}
+
+func (r *dbtRelTest) relField() string {
+	if r.Arguments != nil && r.Arguments.Field != "" {
+		return r.Arguments.Field
+	}
+	return r.Field
 }
 
 func (t *dbtTest) UnmarshalYAML(value *yaml.Node) error {
@@ -388,8 +409,8 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 					continue
 				}
 				out.Relationships = append(out.Relationships, ir.Relationship{
-					Left: md.Name, Right: parseRef(test.Relationships.To),
-					Columns: []ir.ColumnPair{{Left: c.Name, Right: test.Relationships.Field}},
+					Left: md.Name, Right: parseRef(test.Relationships.relTo()),
+					Columns: []ir.ColumnPair{{Left: c.Name, Right: test.Relationships.relField()}},
 				})
 			}
 			for _, con := range c.Constraints {
@@ -408,6 +429,20 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 		}
 	}
 	out.Relationships = dedupeRels(out.Relationships)
+	// Drop relationships whose endpoints aren't both tables in the model. An
+	// empty right_table (e.g. an unparsed relationship test) or a target outside
+	// the emitted set makes the whole semantic model invalid downstream — e.g.
+	// Snowflake Cortex rejects the model with "Required field 'right_table'…".
+	{
+		known := func(n string) bool { _, ok := tableIdx[n]; return ok }
+		kept := out.Relationships[:0]
+		for _, r := range out.Relationships {
+			if known(r.Left) && known(r.Right) {
+				kept = append(kept, r)
+			}
+		}
+		out.Relationships = kept
+	}
 
 	// Metrics: attach as structured Cortex metrics when we can resolve them to a
 	// table; otherwise pass the metric through as a free-text note rather than
