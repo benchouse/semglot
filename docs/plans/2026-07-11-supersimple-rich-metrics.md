@@ -104,12 +104,17 @@ type ssExprValue struct {
 
 - [ ] **Step 3: Add `toPropertySQL` (`layer/supersimple.go`, near the other helpers)**
 
+Wrap only identifiers that are real columns (`cols`), the same membership
+approach `qualifyExpr` uses — the lexer's keyword table is unreliable (it does
+not classify `when`/`then`), so IDENT-vs-KEYWORD alone would wrongly wrap `when`.
 ```go
 // toPropertySQL rewrites a compound measure expression into supersimple's
-// property.sql form: every column identifier is wrapped in {braces}; SQL
-// keywords, numbers, string literals and functions are left untouched.
-// e.g. "case when is_refunded then 1 else 0 end" -> "case when {is_refunded} then 1 else 0 end".
-func toPropertySQL(expr string) string {
+// property.sql form: each column identifier (a member of cols, lowercased) is
+// wrapped in {braces}; keywords, numbers, string literals and functions are
+// left untouched.
+// e.g. "case when is_refunded then 1 else 0 end" (cols={is_refunded}) ->
+//      "case when {is_refunded} then 1 else 0 end".
+func toPropertySQL(expr string, cols map[string]bool) string {
 	lx := sqllexer.New(expr)
 	var b strings.Builder
 	for {
@@ -117,7 +122,7 @@ func toPropertySQL(expr string) string {
 		if tok.Type == sqllexer.EOF || tok.Type == sqllexer.ERROR {
 			break
 		}
-		if tok.Type == sqllexer.IDENT {
+		if tok.Type == sqllexer.IDENT && cols[strings.ToLower(tok.Value)] {
 			b.WriteByte('{')
 			b.WriteString(tok.Value)
 			b.WriteByte('}')
@@ -133,12 +138,13 @@ func toPropertySQL(expr string) string {
 
 ```go
 func TestToPropertySQL(t *testing.T) {
-	got := toPropertySQL("case when is_refunded then 1 else 0 end")
+	cols := map[string]bool{"is_refunded": true, "status": true}
+	got := toPropertySQL("case when is_refunded then 1 else 0 end", cols)
 	if want := "case when {is_refunded} then 1 else 0 end"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	// string literal equal to a column name must NOT be wrapped.
-	got = toPropertySQL("case when status = 'status' then 1 else 0 end")
+	// bare column wrapped; the string literal 'status' and keywords are not.
+	got = toPropertySQL("case when status = 'status' then 1 else 0 end", cols)
 	if want := "case when {status} = 'status' then 1 else 0 end"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -203,6 +209,21 @@ func ratioMetric(modelID, key, name, desc string, num, den aggRef) ssMetric {
 
 Replace the whole block from `file := ssFile{Models: map[string]ssModel{id: model}}` through the end of the `for _, mt := range t.Metrics { ... }` loop (the simple-only emit) with:
 ```go
+		// cols is this table's column set (lowercased), used to wrap column
+		// references in a compound measure's property.sql.
+		cols := map[string]bool{}
+		for _, d := range t.Dimensions {
+			cols[strings.ToLower(d.Expr)] = true
+		}
+		for _, d := range t.TimeDimensions {
+			cols[strings.ToLower(d.Expr)] = true
+		}
+		for _, meas := range t.Measures {
+			if isIdent(meas.Expr) {
+				cols[strings.ToLower(meas.Expr)] = true
+			}
+		}
+
 		// Resolve every simple metric to its supersimple (type,key), synthesizing
 		// a computed property.sql for compound-measure metrics. Do this before
 		// creating the file so the synthesized properties are on the model, and
@@ -215,7 +236,7 @@ Replace the whole block from `file := ssFile{Models: map[string]ssModel{id: mode
 			key := strings.ToUpper(mt.Column)
 			if !isIdent(mt.Column) { // compound measure -> synthesized sql property
 				key = strings.ToUpper(mt.Name)
-				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(mt.Column)}
+				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(mt.Column, cols)}
 			}
 			simpleAgg[mt.Name] = aggRef{typ: mapAgg(mt.Agg), key: key}
 		}
