@@ -65,6 +65,7 @@ type dbtConstraint struct {
 // ("unique", "not_null") or a mapping ({relationships: {to, field}}); only the
 // relationships form carries data we use.
 type dbtTest struct {
+	Name          string // scalar test name: "unique", "not_null", …
 	Relationships *dbtRelTest
 }
 
@@ -95,7 +96,8 @@ func (r *dbtRelTest) relField() string {
 }
 
 func (t *dbtTest) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind == yaml.ScalarNode { // "unique", "not_null" — ignored
+	if value.Kind == yaml.ScalarNode { // "unique", "not_null", …
+		t.Name = value.Value
 		return nil
 	}
 	var m struct {
@@ -434,10 +436,14 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 	// the emitted set makes the whole semantic model invalid downstream — e.g.
 	// Snowflake Cortex rejects the model with "Required field 'right_table'…".
 	{
-		known := func(n string) bool { _, ok := tableIdx[n]; return ok }
 		kept := out.Relationships[:0]
 		for _, r := range out.Relationships {
-			if known(r.Left) && known(r.Right) {
+			_, lok := tableIdx[r.Left]
+			ri, rok := tableIdx[r.Right]
+			// Both endpoints must be tables in the model, and the referenced
+			// (right) table must have a primary key — Snowflake Cortex rejects a
+			// join to a PK-less table ("… has no primary key").
+			if lok && rok && len(out.Tables[ri].PrimaryKey) > 0 {
 				kept = append(kept, r)
 			}
 		}
@@ -807,6 +813,19 @@ func pkFromModel(md dbtModel) []string {
 			if con.Type == "primary_key" {
 				pk = append(pk, c.Name)
 			}
+		}
+		// dbt idiom: a column tested both unique AND not_null is the primary key.
+		var uniq, notNull bool
+		for _, t := range append(append([]dbtTest{}, c.DataTests...), c.Tests...) {
+			switch t.Name {
+			case "unique":
+				uniq = true
+			case "not_null":
+				notNull = true
+			}
+		}
+		if uniq && notNull && !contains(pk, c.Name) {
+			pk = append(pk, c.Name)
 		}
 	}
 	return pk

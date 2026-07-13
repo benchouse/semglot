@@ -10,4 +10,6 @@ models:
           - relationships: {arguments: {to: "ref('dim_gone')", field: gone_id}}
   - name: dim_b
     columns:
-      - {name: b_id, data_type: number}
+      - name: b_id
+        data_type: number
+        data_tests: [unique, not_null]   # PK via the dbt idiom
