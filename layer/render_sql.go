@@ -6,6 +6,18 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
+// metricResolver returns a name->Def lookup over all metrics in the model,
+// used to inline metric Refs during renderSQL lowering.
+func metricResolver(m *ir.Model) func(string) (ir.Expr, bool) {
+	defs := map[string]ir.Expr{}
+	for _, t := range m.Tables {
+		for _, mt := range t.Metrics {
+			defs[mt.Name] = mt.Def
+		}
+	}
+	return func(n string) (ir.Expr, bool) { e, ok := defs[n]; return e, ok }
+}
+
 // renderSQL lowers a metric-definition AST to a neutral, lowercase SQL string
 // (Cortex uppercases it). resolve returns the Def of a referenced metric.
 func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {

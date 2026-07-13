@@ -48,13 +48,7 @@ type naoSource struct {
 }
 
 func (n naoYaml) Emit(m *ir.Model, dir string) error {
-	defs := map[string]ir.Expr{}
-	for _, t := range m.Tables {
-		for _, mt := range t.Metrics {
-			defs[mt.Name] = mt.Def
-		}
-	}
-	resolve := func(s string) (ir.Expr, bool) { e, ok := defs[s]; return e, ok }
+	resolve := metricResolver(m)
 
 	var doc naoDoc
 	seen := map[string]bool{}
@@ -88,7 +82,7 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 			}
 			// compound agg, ratio, derived, filtered → a derived formula
 			nm.Type = "derived"
-			nm.Source = &naoSource{Table: metricTableOf(m, mt.Name)}
+			nm.Source = &naoSource{Table: t.Name}
 			nm.Formula = renderSQL(mt.Def, resolve)
 			doc.Metrics = append(doc.Metrics, nm)
 		}
@@ -103,21 +97,11 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 	if err := enc.Encode(doc); err != nil {
 		return err
 	}
-	_ = enc.Close()
+	if err := enc.Close(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "semantic.yaml"), buf.Bytes(), 0o644)
-}
-
-// metricTableOf returns the table that owns the named metric.
-func metricTableOf(m *ir.Model, name string) string {
-	for _, t := range m.Tables {
-		for _, mt := range t.Metrics {
-			if mt.Name == name {
-				return t.Name
-			}
-		}
-	}
-	return ""
 }

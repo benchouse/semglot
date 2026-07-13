@@ -16,13 +16,7 @@ type naoContextRules struct{}
 func (naoContextRules) Name() string { return "nao-context-rules" }
 
 func (naoContextRules) Emit(m *ir.Model, dir string) error {
-	defs := map[string]ir.Expr{}
-	for _, t := range m.Tables {
-		for _, mt := range t.Metrics {
-			defs[mt.Name] = mt.Def
-		}
-	}
-	resolve := func(s string) (ir.Expr, bool) { e, ok := defs[s]; return e, ok }
+	resolve := metricResolver(m)
 
 	var b bytes.Buffer
 	b.WriteString("# Rules\n\n## Key metrics reference\n\n")

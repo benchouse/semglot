@@ -33,13 +33,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 	if schema == "" {
 		schema = "MAIN"
 	}
-	defs := map[string]ir.Expr{}
-	for _, t := range m.Tables {
-		for _, mt := range t.Metrics {
-			defs[mt.Name] = mt.Def
-		}
-	}
-	resolve := func(n string) (ir.Expr, bool) { e, ok := defs[n]; return e, ok }
+	resolve := metricResolver(m)
 	notes := slices.Clone(m.Notes)
 
 	var tables, rels, dims, metrics []string
@@ -54,7 +48,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 		}
 		tables = append(tables, line)
 		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
-			dims = append(dims, fmt.Sprintf("%s.%s as %s.%s", u, strings.ToUpper(d.Expr), strings.ToLower(t.Name), strings.ToUpper(d.Expr)))
+			dims = append(dims, fmt.Sprintf("%s.%s as %s.%s", u, strings.ToUpper(d.Name), strings.ToLower(t.Name), strings.ToUpper(d.Expr)))
 		}
 		for _, mt := range t.Metrics {
 			if reason, degrade := cortexDegrade(mt.Def); degrade {
@@ -72,10 +66,15 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 		if len(r.Columns) == 0 {
 			continue
 		}
+		var leftCols, rightCols []string
+		for _, cp := range r.Columns {
+			leftCols = append(leftCols, strings.ToUpper(cp.Left))
+			rightCols = append(rightCols, strings.ToUpper(cp.Right))
+		}
 		rels = append(rels, fmt.Sprintf("%s_%s as %s(%s) references %s(%s)",
 			strings.ToUpper(r.Left), strings.ToUpper(r.Right),
-			strings.ToUpper(r.Left), strings.ToUpper(r.Columns[0].Left),
-			strings.ToUpper(r.Right), strings.ToUpper(r.Columns[0].Right)))
+			strings.ToUpper(r.Left), strings.Join(leftCols, ","),
+			strings.ToUpper(r.Right), strings.Join(rightCols, ",")))
 	}
 
 	var b bytes.Buffer
@@ -90,8 +89,13 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 	writeSection(&b, "relationships", rels)
 	writeSection(&b, "dimensions", dims)
 	writeSection(&b, "metrics", metrics)
-	if len(notes) > 0 {
-		fmt.Fprintf(&b, "\tcomment='%s'", sqlQuote(strings.Join(notes, " ")))
+	var commentParts []string
+	if s.Description != "" {
+		commentParts = append(commentParts, s.Description)
+	}
+	commentParts = append(commentParts, notes...)
+	if len(commentParts) > 0 {
+		fmt.Fprintf(&b, "\tcomment='%s'", sqlQuote(strings.Join(commentParts, " ")))
 	}
 	b.WriteString(";\n```\n")
 
