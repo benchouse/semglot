@@ -33,9 +33,12 @@ func TestDBTParse(t *testing.T) {
 					{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
 				},
 				Metrics: []ir.Metric{
-					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.", Expr: "sum(fct_orders.order_net_booked)", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "order_net_booked"},
-					{Name: "orders", Label: "Orders", Expr: "count(distinct fct_orders.order_id)", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
-					{Name: "aov", Label: "Average order value", Description: "Net revenue / orders.", Expr: "sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)", Kind: "ratio", Table: "fct_orders", Numerator: "net_revenue", Denominator: "orders"},
+					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.",
+						Def: ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_net_booked"}}},
+					{Name: "orders", Label: "Orders",
+						Def: ir.Agg{Func: "count_distinct", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_id"}}},
+					{Name: "aov", Label: "Average order value", Description: "Net revenue / orders.",
+						Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "orders"}}},
 				},
 			},
 			{
@@ -151,9 +154,14 @@ func TestDBTParseCaseExpr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
+	defs := map[string]ir.Expr{}
+	for _, mt := range got.Tables[0].Metrics {
+		defs[mt.Name] = mt.Def
+	}
+	resolve := func(n string) (ir.Expr, bool) { e, ok := defs[n]; return e, ok }
 	metrics := map[string]string{}
 	for _, mt := range got.Tables[0].Metrics {
-		metrics[mt.Name] = mt.Expr
+		metrics[mt.Name] = renderSQL(mt.Def, resolve)
 	}
 	if want := "sum(case when fct_orders.is_refunded then 1 else 0 end)"; metrics["refunded_orders"] != want {
 		t.Fatalf("refunded_orders = %q, want %q", metrics["refunded_orders"], want)
@@ -226,7 +234,11 @@ func TestDBTParseLabelAndGrain(t *testing.T) {
 	if m.Label != "Net revenue" {
 		t.Fatalf("label = %q, want 'Net revenue'", m.Label)
 	}
-	if m.Kind != "simple" || m.Agg != "sum" || m.Table != "fct_orders" || m.Column != "order_net_booked" {
-		t.Fatalf("structured fields wrong: %+v", m)
+	if m.Grain != "order_date" {
+		t.Fatalf("metric grain = %q, want order_date", m.Grain)
+	}
+	wantDef := ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_net_booked"}}
+	if !reflect.DeepEqual(m.Def, ir.Expr(wantDef)) {
+		t.Fatalf("Def = %#v, want %#v", m.Def, wantDef)
 	}
 }

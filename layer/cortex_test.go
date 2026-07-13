@@ -27,9 +27,12 @@ func sampleIR() *ir.Model {
 					{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
 				},
 				Metrics: []ir.Metric{
-					{Name: "net_revenue", Description: "Net booked revenue.", Expr: "sum(fct_orders.order_net_booked)"},
-					{Name: "orders", Expr: "count(distinct fct_orders.order_id)"},
-					{Name: "aov", Description: "Net revenue / orders.", Expr: "sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)"},
+					{Name: "net_revenue", Description: "Net booked revenue.",
+						Def: ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_net_booked"}}},
+					{Name: "orders",
+						Def: ir.Agg{Func: "count_distinct", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_id"}}},
+					{Name: "aov", Description: "Net revenue / orders.",
+						Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "orders"}}},
 				},
 			},
 			{

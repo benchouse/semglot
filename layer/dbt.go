@@ -171,9 +171,10 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	out := &ir.Model{}
 	tableIdx := map[string]int{}
 	measureTable := map[string]string{}
-	measureAggExpr := map[string]string{}
 	measureAgg := map[string]string{}
 	measureCol := map[string]string{}
+	grainByTable := map[string]string{}
+	colsListByTable := map[string][]string{}
 	primaryByEntity := map[string]struct{ table, col string }{}
 
 	for _, name := range order {
@@ -260,7 +261,6 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			measureTable[m.Name] = name
 			measureAgg[m.Name] = m.Agg
 			measureCol[m.Name] = m.Expr
-			measureAggExpr[m.Name] = aggExpr(m.Agg, qualifyExpr(name, cols, m.Expr))
 		}
 		// Columns documented in models: but not surfaced by the semantic layer
 		// become plain dimensions (this is the whole model for models:-only projects).
@@ -277,6 +277,14 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 				t.PrimaryKey = append(t.PrimaryKey, col)
 			}
 		}
+
+		grainByTable[name] = t.Grain
+		colList := make([]string, 0, len(cols))
+		for c := range cols {
+			colList = append(colList, c)
+		}
+		sort.Strings(colList) // deterministic Raw.Columns
+		colsListByTable[name] = colList
 
 		tableIdx[name] = len(out.Tables)
 		out.Tables = append(out.Tables, t)
@@ -333,49 +341,60 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	// Metrics: attach as structured Cortex metrics when we can resolve them to a
 	// table; otherwise pass the metric through as a free-text note rather than
 	// guessing a table. Simple metrics first so ratios can reference their exprs.
-	metricExpr := map[string]string{}
+	metricDefs := map[string]ir.Expr{}
 	metricTable := map[string]string{}
 	attach := func(table string, mt ir.Metric) {
-		metricExpr[mt.Name] = mt.Expr
+		metricDefs[mt.Name] = mt.Def
 		metricTable[mt.Name] = table
 		i := tableIdx[table]
 		out.Tables[i].Metrics = append(out.Tables[i].Metrics, mt)
 	}
-	for _, m := range metrics {
+	for _, m := range metrics { // simple first, so ratios can reference them
 		if m.Type != "simple" {
 			continue
 		}
 		meas := m.TypeParams.Measure
-		expr, table := measureAggExpr[meas], measureTable[meas]
-		if expr == "" || table == "" {
+		table := measureTable[meas]
+		if table == "" {
 			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("measure %q not found in the parsed semantic models", meas)))
 			continue
 		}
+		col := measureCol[meas]
+		var arg ir.Expr
+		if isIdent(col) {
+			arg = ir.Col{Table: table, Name: col}
+		} else {
+			// Raw stays UNQUALIFIED; the Agg (carrying Table) qualifies it at render
+			// time, and supersimple wraps it via toPropertySQL. Columns is the table's
+			// column list so both know what to qualify/wrap.
+			arg = ir.Raw{SQL: col, Columns: colsListByTable[table]}
+		}
 		attach(table, ir.Metric{
-			Name: m.Name, Label: m.Label, Description: m.Description, Expr: expr,
-			Kind: "simple", Agg: measureAgg[meas], Table: table, Column: measureCol[meas],
+			Name: m.Name, Label: m.Label, Description: m.Description,
+			Grain: grainByTable[table],
+			Def:   ir.Agg{Func: measureAgg[meas], Table: table, Arg: arg},
 		})
 	}
-	for _, m := range metrics {
+	for _, m := range metrics { // ratio
 		if m.Type != "ratio" {
 			continue
 		}
-		num, okN := metricExpr[m.TypeParams.Numerator]
-		den, okD := metricExpr[m.TypeParams.Denominator]
+		_, okN := metricDefs[m.TypeParams.Numerator]
+		_, okD := metricDefs[m.TypeParams.Denominator]
 		table, okT := metricTable[m.TypeParams.Numerator]
 		if !okN || !okD || !okT {
 			out.Notes = append(out.Notes, metricNote(m, "one or more ratio operands could not be resolved to a metric"))
 			continue
 		}
 		attach(table, ir.Metric{
-			Name: m.Name, Label: m.Label, Description: m.Description, Expr: num + " / " + den,
-			Kind: "ratio", Table: table, Numerator: m.TypeParams.Numerator, Denominator: m.TypeParams.Denominator,
+			Name: m.Name, Label: m.Label, Description: m.Description,
+			Grain: grainByTable[table],
+			Def:   ir.Binary{Op: "/", Left: ir.Ref{Metric: m.TypeParams.Numerator}, Right: ir.Ref{Metric: m.TypeParams.Denominator}},
 		})
 	}
-	for _, m := range metrics {
+	for _, m := range metrics { // unsupported types -> notes (unchanged)
 		switch m.Type {
 		case "simple", "ratio":
-			// handled above
 		default:
 			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("unsupported metric type %q", m.Type)))
 		}

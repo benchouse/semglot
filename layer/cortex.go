@@ -98,6 +98,13 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 	}
 
 	cm := cortexModel{Name: name, Description: c.Description}
+	metricDefs := map[string]ir.Expr{}
+	for _, t := range m.Tables {
+		for _, mt := range t.Metrics {
+			metricDefs[mt.Name] = mt.Def
+		}
+	}
+	resolve := func(n string) (ir.Expr, bool) { e, ok := metricDefs[n]; return e, ok }
 	for _, t := range m.Tables {
 		ct := cortexTable{
 			Name:        t.Name,
@@ -127,7 +134,7 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		}
 		for _, mt := range t.Metrics {
 			ct.Metrics = append(ct.Metrics, cortexMetric{
-				Name: mt.Name, Expr: strings.ToUpper(mt.Expr),
+				Name: mt.Name, Expr: strings.ToUpper(renderSQL(mt.Def, resolve)),
 				Description: mt.Description, Synonyms: mt.Synonyms,
 			})
 		}

@@ -43,21 +43,16 @@ type Measure struct {
 	Agg string
 }
 
-// Metric is a named business calculation. Expr is the rendered SQL (used by
-// SQL-shaped targets like Cortex); the structured fields let other targets
-// (e.g. supersimple) build their own form without re-parsing SQL.
+// Metric is a named business calculation. Def is its definition as an expression
+// AST — the single source of truth; each emitter lowers Def to its target form.
 type Metric struct {
 	Name        string
 	Label       string // dbt metric label (display name); "" if none
 	Description string
-	Expr        string
 	Synonyms    []string
-	Kind        string // "simple" | "ratio"
-	Agg         string // simple: sum | count | count_distinct | avg | min | max
-	Table       string // owning table (model) name
-	Column      string // simple: aggregated column (bare) or the raw expr if compound
-	Numerator   string // ratio: numerator metric name
-	Denominator string // ratio: denominator metric name
+	Grain       string   // per-metric agg-time grain (owning model's agg_time_dimension); "" if none
+	Dimensions  []string // slice-by dimensions; nil if unspecified
+	Def         Expr     // the definition AST
 }
 
 // Relationship is a join between two tables.

@@ -21,6 +21,22 @@ type supersimple struct {
 
 func (supersimple) Name() string { return "supersimple" }
 
+// asSimpleAgg reports whether def is a single unfiltered aggregation, returning
+// the supersimple aggregation type and the aggregated arg (a Col or Raw).
+func asSimpleAgg(def ir.Expr) (typ string, arg ir.Expr, ok bool) {
+	a, ok := def.(ir.Agg)
+	if !ok || a.Filter != nil {
+		return "", nil, false
+	}
+	return mapAgg(a.Func), a.Arg, true
+}
+
+// isRatioDef reports whether def is a division binary (numerator / denominator).
+func isRatioDef(def ir.Expr) bool {
+	bin, ok := def.(ir.Binary)
+	return ok && bin.Op == "/"
+}
+
 // WithOptions lets the CLI pass --schema (database/name/description are unused).
 func (supersimple) WithOptions(database, schema, name, description string) Emitter {
 	return supersimple{Schema: schema}
@@ -176,24 +192,19 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			}
 		}
 
-		cols := map[string]bool{}
-		for _, d := range t.Dimensions {
-			cols[strings.ToLower(d.Expr)] = true
-		}
-		for _, d := range t.TimeDimensions {
-			cols[strings.ToLower(d.Expr)] = true
-		}
-		for _, meas := range t.Measures {
-			if isIdent(meas.Expr) {
-				cols[strings.ToLower(meas.Expr)] = true
-			}
-		}
 		for _, mt := range t.Metrics {
-			if mt.Kind != "simple" {
+			typ, arg, ok := asSimpleAgg(mt.Def)
+			if !ok {
 				continue
 			}
-			key := strings.ToUpper(mt.Column)
-			if !isIdent(mt.Column) {
+			var key string
+			switch a := arg.(type) {
+			case ir.Col:
+				key = strings.ToUpper(a.Name)
+			case ir.Raw:
+				// raw.SQL is unqualified; wrap its columns and synthesize a
+				// property keyed by the metric name, guarding against clobbering
+				// a physical column that already owns that key.
 				key = strings.ToUpper(mt.Name)
 				for {
 					if _, taken := model.Properties[key]; !taken {
@@ -201,9 +212,11 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 					}
 					key += "_EXPR"
 				}
-				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(mt.Column, cols)}
+				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(a.SQL, colSet(a.Columns))}
+			default:
+				continue // arg is neither Col nor Raw (e.g. count(*)); not registerable
 			}
-			global[mt.Name] = simpleInfo{table: t.Name, typ: mapAgg(mt.Agg), key: key}
+			global[mt.Name] = simpleInfo{table: t.Name, typ: typ, key: key}
 		}
 
 		states[t.Name] = &tableState{id: id, model: model, metrics: map[string]ssMetric{}}
@@ -219,17 +232,27 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 	}
 	for _, t := range m.Tables {
 		for _, mt := range t.Metrics {
+			_, registered := global[mt.Name]
 			switch {
-			case mt.Kind == "simple":
+			case registered:
 				si := global[mt.Name]
 				st := states[si.table]
 				st.metrics[mt.Name] = ssMetric{
 					Name: metricName(mt), ModelID: st.id, Description: mt.Description,
 					Aggregation: ssAggregation{Type: si.typ, Key: si.key},
 				}
-			case mt.Kind == "ratio":
-				num, okN := global[mt.Numerator]
-				den, okD := global[mt.Denominator]
+			case isRatioDef(mt.Def):
+				bin := mt.Def.(ir.Binary)
+				numRef, okNR := bin.Left.(ir.Ref)
+				denRef, okDR := bin.Right.(ir.Ref)
+				var num, den simpleInfo
+				var okN, okD bool
+				if okNR {
+					num, okN = global[numRef.Metric]
+				}
+				if okDR {
+					den, okD = global[denRef.Metric]
+				}
 				if !okN || !okD {
 					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operand(s) are not a simple aggregation", mt.Name))
 					continue
@@ -257,7 +280,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 					crossOperand{onBase: num.table == parent, aggType: num.typ, key: num.key},
 					crossOperand{onBase: den.table == parent, aggType: den.typ, key: den.key})
 			default:
-				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: unsupported kind %q", mt.Name, mt.Kind))
+				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: definition is neither a simple aggregation nor a ratio", mt.Name))
 			}
 		}
 	}

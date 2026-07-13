@@ -25,10 +25,14 @@ func TestSupersimpleEmit(t *testing.T) {
 					{Field: ir.Field{Name: "order_net_booked_amount", Expr: "order_net_booked", DataType: "float"}, Agg: "sum"},
 				},
 				Metrics: []ir.Metric{
-					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "order_net_booked"},
-					{Name: "orders", Label: "Orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
-					{Name: "refunded_orders", Label: "Refunded orders", Kind: "simple", Agg: "sum", Table: "fct_orders", Column: "case when is_refunded then 1 else 0 end"},
-					{Name: "refund_rate", Label: "Refund rate", Kind: "ratio", Table: "fct_orders", Numerator: "refunded_orders", Denominator: "orders"},
+					{Name: "net_revenue", Label: "Net revenue", Description: "Net booked revenue.",
+						Def: ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_net_booked"}}},
+					{Name: "orders", Label: "Orders",
+						Def: ir.Agg{Func: "count_distinct", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_id"}}},
+					{Name: "refunded_orders", Label: "Refunded orders",
+						Def: ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Raw{SQL: "case when is_refunded then 1 else 0 end", Columns: []string{"is_refunded", "order_date", "order_id", "order_net_booked"}}}},
+					{Name: "refund_rate", Label: "Refund rate",
+						Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "refunded_orders"}, Right: ir.Ref{Metric: "orders"}}},
 				},
 			},
 			{
@@ -125,7 +129,7 @@ func TestSupersimpleCompoundKeyNoClobber(t *testing.T) {
 		},
 		Metrics: []ir.Metric{
 			// compound metric named "flag" would synthesize key FLAG, colliding.
-			{Name: "flag", Kind: "simple", Agg: "sum", Table: "t", Column: "case when flag then 1 else 0 end"},
+			{Name: "flag", Def: ir.Agg{Func: "sum", Table: "t", Arg: ir.Raw{SQL: "case when flag then 1 else 0 end", Columns: []string{"flag", "id"}}}},
 		},
 	}}}
 	dir := t.TempDir()
@@ -220,14 +224,14 @@ func TestSupersimpleCrossTableNonComposingChildDeferred(t *testing.T) {
 			{
 				Name: "fct_orders", PrimaryKey: []string{"order_id"},
 				Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id", DataType: "number"}},
-				Metrics:    []ir.Metric{{Name: "orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"}},
+				Metrics:    []ir.Metric{{Name: "orders", Def: ir.Agg{Func: "count_distinct", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_id"}}}},
 			},
 			{
 				Name: "fct_order_lines", PrimaryKey: []string{"line_id"},
 				Dimensions: []ir.Field{{Name: "line_id", Expr: "line_id", DataType: "number"}, {Name: "product_id", Expr: "product_id", DataType: "number"}},
 				Metrics: []ir.Metric{
-					{Name: "distinct_products", Kind: "simple", Agg: "count_distinct", Table: "fct_order_lines", Column: "product_id"},
-					{Name: "products_per_order", Kind: "ratio", Table: "fct_order_lines", Numerator: "distinct_products", Denominator: "orders"},
+					{Name: "distinct_products", Def: ir.Agg{Func: "count_distinct", Table: "fct_order_lines", Arg: ir.Col{Table: "fct_order_lines", Name: "product_id"}}},
+					{Name: "products_per_order", Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "distinct_products"}, Right: ir.Ref{Metric: "orders"}}},
 				},
 			},
 		},
@@ -257,7 +261,7 @@ func TestSupersimpleCrossTableRatioEmit(t *testing.T) {
 				Name: "fct_orders", PrimaryKey: []string{"order_id"},
 				Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id", DataType: "number"}},
 				Metrics: []ir.Metric{
-					{Name: "orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
+					{Name: "orders", Def: ir.Agg{Func: "count_distinct", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_id"}}},
 				},
 			},
 			{
@@ -265,8 +269,8 @@ func TestSupersimpleCrossTableRatioEmit(t *testing.T) {
 				Dimensions: []ir.Field{{Name: "line_id", Expr: "line_id", DataType: "number"}},
 				Measures:   []ir.Measure{{Field: ir.Field{Name: "units_sold", Expr: "quantity", DataType: "number"}, Agg: "sum"}},
 				Metrics: []ir.Metric{
-					{Name: "units_sold", Kind: "simple", Agg: "sum", Table: "fct_order_lines", Column: "quantity"},
-					{Name: "units_per_order", Kind: "ratio", Table: "fct_order_lines", Numerator: "units_sold", Denominator: "orders"},
+					{Name: "units_sold", Def: ir.Agg{Func: "sum", Table: "fct_order_lines", Arg: ir.Col{Table: "fct_order_lines", Name: "quantity"}}},
+					{Name: "units_per_order", Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "units_sold"}, Right: ir.Ref{Metric: "orders"}}},
 				},
 			},
 		},
