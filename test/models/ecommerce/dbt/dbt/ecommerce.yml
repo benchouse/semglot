@@ -1,0 +1,197 @@
+models:
+  - name: fct_orders
+    description: Order-grain finance fact. One row per order.
+    columns:
+      - name: order_id
+        description: Order surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: customer_sk
+        description: Customer the order belongs to.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_sk
+      - name: is_refunded
+        description: Whether the order was refunded.
+        data_type: boolean
+      - name: order_date
+        description: Date the order was placed.
+        data_type: date
+      - name: order_gross
+        description: Gross order revenue before tax and refunds.
+        data_type: number
+      - name: order_net_booked
+        description: Net booked revenue (gross minus tax and refunds).
+        data_type: number
+  - name: fct_order_lines
+    description: Order-line grain. One row per line item.
+    columns:
+      - name: order_line_id
+        description: Line-item surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: order_id
+        description: Order the line belongs to.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('fct_orders')
+              field: order_id
+      - name: product_id
+        description: Product sold on the line.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_product')
+              field: product_id
+      - name: order_date
+        description: Date the parent order was placed.
+        data_type: date
+      - name: quantity
+        description: Units sold on the line.
+        data_type: number
+      - name: net_line_revenue
+        description: Net revenue for the line.
+        data_type: number
+  - name: dim_customer
+    description: Customer dimension.
+    columns:
+      - name: customer_sk
+        description: Customer surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: customer_segment
+        description: Marketing segment.
+        data_type: varchar
+      - name: accepts_marketing
+        description: Whether the customer opted in to marketing.
+        data_type: boolean
+  - name: dim_product
+    description: Product dimension.
+    columns:
+      - name: product_id
+        description: Product surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: category
+        description: Product category.
+        data_type: varchar
+      - name: title
+        description: Product title.
+        data_type: varchar
+semantic_models:
+  - name: fct_orders
+    model: ref('fct_orders')
+    entities:
+      - name: order_id
+        type: primary
+    dimensions:
+      - name: is_refunded
+        type: categorical
+      - name: order_date
+        type: time
+    measures:
+      - name: order_gross_amount
+        agg: sum
+        expr: order_gross
+      - name: order_net_booked_amount
+        agg: sum
+        expr: order_net_booked
+      - name: orders_count
+        agg: count_distinct
+        expr: order_id
+      - name: refunded_orders_count
+        agg: sum
+        expr: case when is_refunded then 1 else 0 end
+  - name: fct_order_lines
+    model: ref('fct_order_lines')
+    entities:
+      - name: order_line_id
+        type: primary
+    dimensions:
+      - name: order_date
+        type: time
+    measures:
+      - name: quantity
+        agg: sum
+        expr: quantity
+      - name: net_line_revenue
+        agg: sum
+        expr: net_line_revenue
+  - name: dim_customer
+    model: ref('dim_customer')
+    entities:
+      - name: customer_sk
+        type: primary
+    dimensions:
+      - name: customer_segment
+        type: categorical
+      - name: accepts_marketing
+        type: categorical
+  - name: dim_product
+    model: ref('dim_product')
+    entities:
+      - name: product_id
+        type: primary
+    dimensions:
+      - name: category
+        type: categorical
+      - name: title
+        type: categorical
+metrics:
+  - name: gross_revenue
+    label: Gross revenue
+    type: simple
+    description: Gross order revenue.
+    type_params:
+      measure: order_gross_amount
+  - name: net_revenue
+    label: Net revenue
+    type: simple
+    description: Net booked revenue.
+    type_params:
+      measure: order_net_booked_amount
+  - name: orders
+    label: Orders
+    type: simple
+    type_params:
+      measure: orders_count
+  - name: refunded_orders
+    label: Refunded orders
+    type: simple
+    description: Count of refunded orders.
+    type_params:
+      measure: refunded_orders_count
+  - name: aov
+    label: Average order value
+    type: ratio
+    description: Average order value (net revenue / orders).
+    type_params:
+      numerator: net_revenue
+      denominator: orders
+  - name: refund_rate
+    label: Refund rate
+    type: ratio
+    description: Refunded orders / all orders.
+    type_params:
+      numerator: refunded_orders
+      denominator: orders
+  - name: units_sold
+    label: Units sold
+    type: simple
+    description: Units sold.
+    type_params:
+      measure: quantity
+  - name: units_per_order
+    label: Units per order
+    type: ratio
+    description: Units per order (cross-table).
+    type_params:
+      numerator: units_sold
+      denominator: orders

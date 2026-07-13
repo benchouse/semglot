@@ -4,10 +4,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/benchouse/semglot/ir"
 	"github.com/benchouse/semglot/layer"
 )
 
@@ -16,7 +19,107 @@ const (
 	// <target>/ subdirs hold the expected output for each target dialect.
 	projectDir = "models/ecommerce/dbt"
 	goldenPath = "models/ecommerce/dbt/cortex/ecommerce.yaml"
+	// dbtGoldenPath is the emitted-dbt golden. It lives in a dbt/ SUBDIR so
+	// Parse(projectDir)'s top-level *.yml glob does NOT re-read it (which would
+	// pollute the source project).
+	dbtGoldenPath = "models/ecommerce/dbt/dbt/ecommerce.yml"
 )
+
+// sortFields orders a []ir.Field slice by Name for canonical comparison.
+func sortFields(fs []ir.Field) {
+	sort.Slice(fs, func(i, j int) bool { return fs[i].Name < fs[j].Name })
+}
+
+// canonicalizeModel sorts every order-insensitive slice in the IR so two models
+// that are semantically identical but differently ordered compare equal. The
+// dbt->dbt round-trip is IR-lossless, not byte-identical, so the round-trip test
+// canonicalizes both sides before reflect.DeepEqual.
+func canonicalizeModel(m *ir.Model) {
+	sort.Slice(m.Tables, func(i, j int) bool { return m.Tables[i].Name < m.Tables[j].Name })
+	for ti := range m.Tables {
+		t := &m.Tables[ti]
+		sort.Strings(t.PrimaryKey)
+		sortFields(t.Dimensions)
+		sortFields(t.TimeDimensions)
+		sort.Slice(t.Measures, func(i, j int) bool { return t.Measures[i].Name < t.Measures[j].Name })
+		sort.Slice(t.Metrics, func(i, j int) bool { return t.Metrics[i].Name < t.Metrics[j].Name })
+	}
+	sort.Slice(m.Relationships, func(i, j int) bool {
+		a, b := m.Relationships[i], m.Relationships[j]
+		return a.Left+">"+a.Right < b.Left+">"+b.Right
+	})
+	sort.Strings(m.Notes)
+}
+
+// TestDBTRoundTrip proves the AST/IR captures the dbt source losslessly: parse
+// the fixture -> emit dbt -> re-parse -> the (canonicalized) IR is unchanged.
+func TestDBTRoundTrip(t *testing.T) {
+	p, err := layer.AsParser("dbt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := p.Parse(projectDir)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+	e, err := layer.AsEmitter("dbt")
+	if err != nil {
+		t.Fatalf("dbt is not an Emitter: %v", err)
+	}
+	out := t.TempDir()
+	if err := e.Emit(m1, out); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	m2, err := p.Parse(out)
+	if err != nil {
+		t.Fatalf("re-parse emitted dbt: %v", err)
+	}
+	canonicalizeModel(m1)
+	canonicalizeModel(m2)
+	if !reflect.DeepEqual(m1, m2) {
+		t.Fatalf("round-trip changed the IR:\n--- source ---\n%+v\n--- re-parsed ---\n%+v", m1, m2)
+	}
+}
+
+// TestDBTEmitGolden pins the emitted-dbt document so the generated dbt is
+// reviewable and regression-locked. Run with UPDATE_GOLDEN=1 to (re)create it.
+func TestDBTEmitGolden(t *testing.T) {
+	p, err := layer.AsParser("dbt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := layer.AsEmitter("dbt")
+	if err != nil {
+		t.Fatalf("dbt is not an Emitter: %v", err)
+	}
+	m, err := p.Parse(projectDir)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out := t.TempDir()
+	if err := e.Emit(m, out); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "ecommerce.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(dbtGoldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dbtGoldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(dbtGoldenPath)
+	if err != nil {
+		t.Fatalf("read dbt golden (run with UPDATE_GOLDEN=1 to create it): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("dbt output != golden:\n--- got ---\n%s", got)
+	}
+}
 
 // emit runs the real dbt -> cortex pipeline through the public layer API and
 // returns the emitted Cortex YAML.
