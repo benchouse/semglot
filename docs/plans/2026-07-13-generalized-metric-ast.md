@@ -346,7 +346,13 @@ git commit -m "feat(ir): expression-AST metric model; dbt/cortex/supersimple cut
 
 Make the `dbt` layer bidirectional by adding `Emit`, then prove the AST/IR captures the source losslessly: parse → emit dbt → re-parse → the IR is unchanged (compared canonicalized — see below). Also pins an emitted-dbt golden so the generated docs are reviewable and regression-locked.
 
-**Fidelity boundary (read first):** the IR intentionally discards dbt's *structural* distinctions (an entity vs a dimension vs a plain model column; the measure↔metric name link). So the round-trip guarantees **no content is lost** — every table, field, measure, metric, and relationship survives with identical `Name/Expr/Description/DataType/Def` — NOT that the emitted YAML matches the input's formatting, key order, or section placement. The comparison therefore canonicalizes (sorts) both IRs before `DeepEqual`. Unresolved-metric passthrough `Notes` are out of scope (they carry no structured metric to re-emit); the ecommerce fixture has none.
+**Fidelity boundary (read first):** the round-trip is **IR-lossless, not byte-identical**. Every piece of *semantic content* survives with identical values — table/column/measure/metric names, `Description`, `DataType`, `Agg`, metric `Def`, primary keys, relationships, grain. The comparison canonicalizes (sorts) both IRs before `DeepEqual`, because these are deliberately reshaped and therefore NOT preserved verbatim:
+
+- **Formatting** — comments, key order, blank lines, section placement. The parser reads meaning, not text, so none of this reaches the IR. **Decision: comments do not survive** (chosen 2026-07-13) — a free-floating `#` comment is not IR content; anything that must persist belongs in a `description:` field, which survives here AND flows onward to Cortex/supersimple.
+- **Defaulted-vs-explicit values** — e.g. `type: categorical` (the default). The *value* survives (categorical/time routing is preserved); only whether it was written explicitly is canonicalized. Not information loss.
+- **dbt structural bookkeeping** — entity-vs-dimension-vs-column, entity *names* (an entity `customer` over `customer_sk` comes back column-shaped), and the measure↔metric name link (a metric's `Def` points at the column, re-matched to a backing measure on emit). Join plumbing is reshaped; the resolved model is identical.
+
+Unresolved-metric passthrough `Notes` are out of scope (they carry no structured metric to re-emit); the ecommerce fixture has none.
 
 **Files:** Create `layer/dbt_emit.go`; Modify `test/integration_test.go`; Create golden `test/models/ecommerce/dbt/dbt/ecommerce.yml`.
 
