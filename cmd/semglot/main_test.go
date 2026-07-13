@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +46,38 @@ func TestBuildCmdSourceWithoutParser(t *testing.T) {
 	code := buildCmd([]string{"--source-type", "cortex", "--source", "x", "--target-type", "cortex", "--target", "y"})
 	if code != 1 {
 		t.Fatalf("cortex-as-source should exit 1, got %d", code)
+	}
+}
+
+// TestBuildCmdSnowflakeTargetRequiresDatabase proves a Snowflake-family target
+// (cortex, snowflake-semantic-view) fails clearly instead of silently emitting
+// invalid DDL (a leading-dot table reference) when no database is resolved
+// from --database/--config.
+func TestBuildCmdSnowflakeTargetRequiresDatabase(t *testing.T) {
+	out := t.TempDir()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	code := buildCmd([]string{
+		"--source", "../../layer/testdata/dbt",
+		"--target-type", "snowflake-semantic-view",
+		"--target", out,
+	})
+	w.Close()
+	os.Stderr = origStderr
+	stderr, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code == 0 {
+		t.Fatalf("buildCmd exit code = 0, want non-zero (missing --database)")
+	}
+	if !strings.Contains(strings.ToLower(string(stderr)), "database") {
+		t.Fatalf("stderr = %q, want a message mentioning \"database\"", stderr)
 	}
 }

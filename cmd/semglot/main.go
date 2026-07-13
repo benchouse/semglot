@@ -32,6 +32,11 @@ func main() {
 	}
 }
 
+// snowflakeTargets are the target-type dialects that emit into a physical
+// Snowflake database. They require a resolved database (via --database or
+// --config); without one they'd emit invalid, unqualified DDL.
+var snowflakeTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: semglot build --source <dir> --target <dir> --target-type <dialect> [--config <file>] [--database --schema --name --description]")
 	fmt.Fprintln(os.Stderr, "target-type is one of: "+strings.Join(layer.Names(), ", "))
@@ -73,6 +78,10 @@ func buildCmd(args []string) int {
 			identity{Database: *database, Schema: *schema, Name: *name, Description: *description})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "build:", err)
+			return 1
+		}
+		if snowflakeTargets[*targetType] && id.Database == "" {
+			fmt.Fprintf(os.Stderr, "build: --target-type %s requires a database (via --database or --config)\n", *targetType)
 			return 1
 		}
 		emitter = c.WithOptions(id.Database, id.Schema, id.Name, id.Description)

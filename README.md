@@ -13,8 +13,8 @@ It does two things:
   element-level diff.
 
 ```sh
-semglot build --from dbt --reference ./semantic --layer cortex --out ./cortex/
-semglot score --from dbt --reference ./semantic --layer cortex --target ./cortex/
+semglot build --source ./semantic --target ./cortex/ --target-type cortex --database ANALYTICS
+semglot score --source ./semantic --target ./cortex/ --target-type cortex
 ```
 
 Status: early. v1 transpiles dbt → Cortex and scores any dialect against a
