@@ -193,3 +193,48 @@ func TestCrossRatioMetric(t *testing.T) {
 		}
 	}
 }
+
+func TestSupersimpleCrossTableRatioEmit(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name: "fct_orders", PrimaryKey: []string{"order_id"},
+				Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id", DataType: "number"}},
+				Metrics: []ir.Metric{
+					{Name: "orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"},
+				},
+			},
+			{
+				Name: "fct_order_lines", PrimaryKey: []string{"line_id"},
+				Dimensions: []ir.Field{{Name: "line_id", Expr: "line_id", DataType: "number"}},
+				Measures:   []ir.Measure{{Field: ir.Field{Name: "units_sold", Expr: "quantity", DataType: "number"}, Agg: "sum"}},
+				Metrics: []ir.Metric{
+					{Name: "units_sold", Kind: "simple", Agg: "sum", Table: "fct_order_lines", Column: "quantity"},
+					{Name: "units_per_order", Kind: "ratio", Table: "fct_order_lines", Numerator: "units_sold", Denominator: "orders"},
+				},
+			},
+		},
+		Relationships: []ir.Relationship{
+			{Left: "fct_order_lines", Right: "fct_orders", Columns: []ir.ColumnPair{{Left: "order_id", Right: "order_id"}}},
+		},
+	}
+	dir := t.TempDir()
+	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+		t.Fatal(err)
+	}
+	orders := readFile(t, filepath.Join(dir, "FCT_ORDERS.yaml"))
+	// units_per_order re-homes to the parent (fct_orders) with a relationAggregate pipeline.
+	for _, want := range []string{"units_per_order", "operation: relationAggregate", "key: order_lines", "key: QUANTITY", `prop("_num") / prop("_den")`} {
+		if !strings.Contains(orders, want) {
+			t.Fatalf("FCT_ORDERS.yaml missing %q:\n%s", want, orders)
+		}
+	}
+	lines := readFile(t, filepath.Join(dir, "FCT_ORDER_LINES.yaml"))
+	if strings.Contains(lines, "units_per_order") {
+		t.Fatalf("units_per_order must not be in the child file:\n%s", lines)
+	}
+	// no deferral note was produced -> no NOTES.md
+	if _, err := os.Stat(filepath.Join(dir, "NOTES.md")); err == nil {
+		t.Fatal("NOTES.md should not exist when nothing is deferred")
+	}
+}

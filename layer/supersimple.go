@@ -115,6 +115,21 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 		return err
 	}
 
+	type tableState struct {
+		id      string
+		model   ssModel
+		metrics map[string]ssMetric
+	}
+	states := map[string]*tableState{}
+	var order []string
+
+	// metric name -> its resolved simple aggregation + owning table (global so
+	// ratio operands resolve across tables).
+	type simpleInfo struct{ table, typ, key string }
+	global := map[string]simpleInfo{}
+
+	// Phase 1: build each model (properties incl. synthesized compound property.sql,
+	// and relations) and register its simple metrics.
 	for _, t := range m.Tables {
 		id := strings.ToUpper(t.Name)
 		model := ssModel{
@@ -138,7 +153,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			addProp(d, ssType(d.DataType, d.Name, true))
 		}
 		for _, meas := range t.Measures {
-			if !isIdent(meas.Expr) { // a compound expr is not a column
+			if !isIdent(meas.Expr) {
 				continue
 			}
 			addProp(meas.Field, ssType(meas.DataType, meas.Name, false))
@@ -158,8 +173,6 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			}
 		}
 
-		// cols is this table's column set (lowercased), used to wrap column
-		// references in a compound measure's property.sql.
 		cols := map[string]bool{}
 		for _, d := range t.Dimensions {
 			cols[strings.ToLower(d.Expr)] = true
@@ -172,20 +185,12 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 				cols[strings.ToLower(meas.Expr)] = true
 			}
 		}
-
-		// Resolve every simple metric to its supersimple (type,key), synthesizing
-		// a computed property.sql for compound-measure metrics. Do this before
-		// creating the file so the synthesized properties are on the model, and
-		// before emitting ratios so operands resolve.
-		simpleAgg := map[string]aggRef{}
 		for _, mt := range t.Metrics {
 			if mt.Kind != "simple" {
 				continue
 			}
 			key := strings.ToUpper(mt.Column)
-			if !isIdent(mt.Column) { // compound measure -> synthesized sql property
-				// Derive a key that does not clobber a physical column (or an
-				// earlier synthesized one) whose name collides with the metric's.
+			if !isIdent(mt.Column) {
 				key = strings.ToUpper(mt.Name)
 				for {
 					if _, taken := model.Properties[key]; !taken {
@@ -195,43 +200,72 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 				}
 				model.Properties[key] = ssProperty{Name: key, Type: "Number", Sql: toPropertySQL(mt.Column, cols)}
 			}
-			simpleAgg[mt.Name] = aggRef{typ: mapAgg(mt.Agg), key: key}
+			global[mt.Name] = simpleInfo{table: t.Name, typ: mapAgg(mt.Agg), key: key}
 		}
 
-		file := ssFile{Models: map[string]ssModel{id: model}}
-		metricName := func(mt ir.Metric) string {
-			if mt.Label != "" {
-				return mt.Label
-			}
-			return mt.Name
+		states[t.Name] = &tableState{id: id, model: model, metrics: map[string]ssMetric{}}
+		order = append(order, t.Name)
+	}
+
+	// Phase 2: assign every metric to a file.
+	metricName := func(mt ir.Metric) string {
+		if mt.Label != "" {
+			return mt.Label
 		}
-		addMetric := func(name string, sm ssMetric) {
-			if file.Metrics == nil {
-				file.Metrics = map[string]ssMetric{}
-			}
-			file.Metrics[name] = sm
-		}
+		return mt.Name
+	}
+	for _, t := range m.Tables {
 		for _, mt := range t.Metrics {
 			switch {
 			case mt.Kind == "simple":
-				ar := simpleAgg[mt.Name]
-				addMetric(mt.Name, ssMetric{
-					Name: metricName(mt), ModelID: id, Description: mt.Description,
-					Aggregation: ssAggregation{Type: ar.typ, Key: ar.key},
-				})
+				si := global[mt.Name]
+				st := states[si.table]
+				st.metrics[mt.Name] = ssMetric{
+					Name: metricName(mt), ModelID: st.id, Description: mt.Description,
+					Aggregation: ssAggregation{Type: si.typ, Key: si.key},
+				}
 			case mt.Kind == "ratio":
-				num, okN := simpleAgg[mt.Numerator]
-				den, okD := simpleAgg[mt.Denominator]
-				if !okN || !okD { // operands not both same-table simple metrics
-					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operands span tables or are not simple aggregations — deferred to a later iteration", mt.Name))
+				num, okN := global[mt.Numerator]
+				den, okD := global[mt.Denominator]
+				if !okN || !okD {
+					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operand(s) are not a simple aggregation", mt.Name))
 					continue
 				}
-				addMetric(mt.Name, ratioMetric(id, mt.Name, metricName(mt), mt.Description, num, den))
+				if num.table == den.table {
+					st := states[num.table]
+					st.metrics[mt.Name] = ratioMetric(st.id, mt.Name, metricName(mt), mt.Description,
+						aggRef{typ: num.typ, key: num.key}, aggRef{typ: den.typ, key: den.key})
+					continue
+				}
+				parent, relKey, child, ok := findParentRelation(m, num.table, den.table)
+				if !ok {
+					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operand tables %q and %q are not directly related", mt.Name, num.table, den.table))
+					continue
+				}
+				childInfo := num
+				if den.table == child {
+					childInfo = den
+				}
+				if childInfo.typ != "sum" && childInfo.typ != "count" {
+					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: child operand aggregation %q does not compose across the relation", mt.Name, childInfo.typ))
+					continue
+				}
+				states[parent].metrics[mt.Name] = crossRatioMetric(states[parent].id, mt.Name, relKey, metricName(mt), mt.Description,
+					crossOperand{onBase: num.table == parent, aggType: num.typ, key: num.key},
+					crossOperand{onBase: den.table == parent, aggType: den.typ, key: den.key})
 			default:
 				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: unsupported kind %q", mt.Name, mt.Kind))
 			}
 		}
+	}
 
+	// Phase 3: write per-table files (in table order), then NOTES.md.
+	for _, name := range order {
+		st := states[name]
+		file := ssFile{Models: map[string]ssModel{st.id: st.model}}
+		if len(st.metrics) > 0 {
+			file.Metrics = st.metrics
+		}
 		var buf bytes.Buffer
 		buf.WriteString(ssHeader)
 		enc := yaml.NewEncoder(&buf)
@@ -242,7 +276,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 		if err := enc.Close(); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, id+".yaml"), buf.Bytes(), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, st.id+".yaml"), buf.Bytes(), 0o644); err != nil {
 			return err
 		}
 	}
