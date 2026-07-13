@@ -158,3 +158,43 @@ func TestNaoYamlGolden(t *testing.T) {
 		t.Fatalf("semantic.yaml output != golden:\n--- got ---\n%s", got)
 	}
 }
+
+func TestContextRulesStructure(t *testing.T) {
+	got := emitTarget(t, "nao-context-rules", "RULES.md")
+	for _, want := range []string{
+		"## Key metrics reference",
+		"## Joins & routing",
+		"**Average order value**",
+		"`sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)`",
+		"fct_order_lines.order_id → fct_orders.order_id",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RULES.md missing %q", want)
+		}
+	}
+}
+
+// contextRulesGoldenPath is the pinned nao-context-rules RULES.md, generated
+// with UPDATE_GOLDEN=1 and eyeballed for well-formed prose.
+const contextRulesGoldenPath = "models/ecommerce/dbt/nao-context-rules/RULES.md"
+
+// TestContextRulesGolden pins the full emitted RULES.md, mirroring
+// TestSemanticViewGolden's shape.
+func TestContextRulesGolden(t *testing.T) {
+	got := emitTarget(t, "nao-context-rules", "RULES.md")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(contextRulesGoldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(contextRulesGoldenPath, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(contextRulesGoldenPath)
+	if err != nil {
+		t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create it): %v", err)
+	}
+	if got != string(want) {
+		t.Fatalf("RULES.md output != golden:\n--- got ---\n%s", got)
+	}
+}
