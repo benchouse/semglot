@@ -63,9 +63,11 @@ type ssMetric struct {
 	Aggregation ssAggregation `yaml:"aggregation"`
 }
 type ssAggregation struct {
-	Type     string     `yaml:"type"`
-	Key      string     `yaml:"key,omitempty"`
-	Property *ssPropRef `yaml:"property,omitempty"`
+	Type string `yaml:"type"`
+	Key  string `yaml:"key,omitempty"`
+	// NOTE: the metric-level aggregation does NOT accept a `property` field
+	// (supersimple validate rejects it) — that belongs only on the aggregations
+	// inside groupAggregate/relationAggregate (ssAggSpec).
 }
 type ssPropRef struct {
 	Key  string `yaml:"key"`
@@ -396,7 +398,7 @@ func ratioMetric(modelID, key, name, desc string, num, den aggRef) ssMetric {
 				Value: ssExprValue{Expression: `prop("_num") / prop("_den")`, Version: "1"},
 			}},
 		},
-		Aggregation: ssAggregation{Type: "first", Key: key, Property: &ssPropRef{Key: key, Name: name}},
+		Aggregation: ssAggregation{Type: "sum", Key: key},
 	}
 }
 
@@ -454,7 +456,7 @@ func crossRatioMetric(baseID, key, relKey, name, desc string, num, den crossOper
 	}})
 	return ssMetric{
 		Name: name, ModelID: baseID, Description: desc, Operations: ops,
-		Aggregation: ssAggregation{Type: "first", Key: key, Property: &ssPropRef{Key: key, Name: name}},
+		Aggregation: ssAggregation{Type: "sum", Key: key},
 	}
 }
 

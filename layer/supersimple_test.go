@@ -72,11 +72,11 @@ func TestSupersimpleEmit(t *testing.T) {
 		// compound measure -> synthesized property.sql + a sum metric over it
 		"sql: case when {is_refunded} then 1 else 0 end",
 		"key: REFUNDED_ORDERS",
-		// same-table ratio -> operations pipeline
+		// same-table ratio -> operations pipeline (terminal aggregation is sum over
+		// the single whole-set-grouped row; supersimple validate rejects first+property)
 		"operation: groupAggregate",
 		"operation: deriveField",
 		`expression: prop("_num") / prop("_den")`,
-		"type: first",
 	} {
 		if !strings.Contains(orders, want) {
 			t.Fatalf("FCT_ORDERS.yaml missing %q:\n%s", want, orders)
@@ -186,7 +186,6 @@ func TestCrossRatioMetric(t *testing.T) {
 		"key: ORDER_ID",
 		"operation: deriveField",
 		`prop("_num") / prop("_den")`,
-		"type: first",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("crossRatioMetric missing %q:\n%s", want, out)

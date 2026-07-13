@@ -70,11 +70,8 @@ metrics:
             expression: prop("_num") / prop("_den")
             version: "1"
     aggregation:
-      type: first
+      type: sum
       key: aov
-      property:
-        key: aov
-        name: Average order value
   gross_revenue:
     name: Gross revenue
     model_id: FCT_ORDERS
@@ -122,11 +119,8 @@ metrics:
             expression: prop("_num") / prop("_den")
             version: "1"
     aggregation:
-      type: first
+      type: sum
       key: refund_rate
-      property:
-        key: refund_rate
-        name: Refund rate
   refunded_orders:
     name: Refunded orders
     model_id: FCT_ORDERS
@@ -171,8 +165,5 @@ metrics:
             expression: prop("_num") / prop("_den")
             version: "1"
     aggregation:
-      type: first
+      type: sum
       key: units_per_order
-      property:
-        key: units_per_order
-        name: Units per order
