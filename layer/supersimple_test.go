@@ -194,6 +194,63 @@ func TestCrossRatioMetric(t *testing.T) {
 	}
 }
 
+// The other operand arrangement: numerator on the base (parent), denominator on
+// the child — the denominator is the one pulled via relationAggregate (_den_rel),
+// and the division stays numerator/denominator.
+func TestCrossRatioMetricBaseNumerator(t *testing.T) {
+	sm := crossRatioMetric("FCT_ORDERS", "m", "order_lines", "M", "",
+		crossOperand{onBase: true, aggType: "count_distinct", key: "ORDER_ID"}, // numerator, base
+		crossOperand{onBase: false, aggType: "sum", key: "QUANTITY"})           // denominator, child
+	b, err := yaml.Marshal(sm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, want := range []string{"operation: relationAggregate", "_den_rel", "key: QUANTITY", `prop("_num") / prop("_den")`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("base-numerator arrangement missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A cross-table ratio whose CHILD operand does not compose under an outer sum
+// (count_distinct) is deferred to NOTES.md, not emitted.
+func TestSupersimpleCrossTableNonComposingChildDeferred(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name: "fct_orders", PrimaryKey: []string{"order_id"},
+				Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id", DataType: "number"}},
+				Metrics:    []ir.Metric{{Name: "orders", Kind: "simple", Agg: "count_distinct", Table: "fct_orders", Column: "order_id"}},
+			},
+			{
+				Name: "fct_order_lines", PrimaryKey: []string{"line_id"},
+				Dimensions: []ir.Field{{Name: "line_id", Expr: "line_id", DataType: "number"}, {Name: "product_id", Expr: "product_id", DataType: "number"}},
+				Metrics: []ir.Metric{
+					{Name: "distinct_products", Kind: "simple", Agg: "count_distinct", Table: "fct_order_lines", Column: "product_id"},
+					{Name: "products_per_order", Kind: "ratio", Table: "fct_order_lines", Numerator: "distinct_products", Denominator: "orders"},
+				},
+			},
+		},
+		Relationships: []ir.Relationship{
+			{Left: "fct_order_lines", Right: "fct_orders", Columns: []ir.ColumnPair{{Left: "order_id", Right: "order_id"}}},
+		},
+	}
+	dir := t.TempDir()
+	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+		t.Fatal(err)
+	}
+	notes := readFile(t, filepath.Join(dir, "NOTES.md"))
+	if !strings.Contains(notes, "products_per_order") || !strings.Contains(notes, "does not compose") {
+		t.Fatalf("expected products_per_order deferral note:\n%s", notes)
+	}
+	for _, f := range []string{"FCT_ORDERS.yaml", "FCT_ORDER_LINES.yaml"} {
+		if strings.Contains(readFile(t, filepath.Join(dir, f)), "products_per_order") {
+			t.Fatalf("products_per_order should not be emitted, found in %s", f)
+		}
+	}
+}
+
 func TestSupersimpleCrossTableRatioEmit(t *testing.T) {
 	m := &ir.Model{
 		Tables: []ir.Table{

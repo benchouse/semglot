@@ -124,7 +124,8 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 	var order []string
 
 	// metric name -> its resolved simple aggregation + owning table (global so
-	// ratio operands resolve across tables).
+	// ratio operands resolve across tables). Keyed by metric name, which dbt
+	// enforces to be project-unique, so cross-table lookups are unambiguous.
 	type simpleInfo struct{ table, typ, key string }
 	global := map[string]simpleInfo{}
 
