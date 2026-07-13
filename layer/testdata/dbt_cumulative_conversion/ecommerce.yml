@@ -1,0 +1,28 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    measures:
+      - {name: revenue_amount, agg: sum, expr: revenue}
+      - {name: orders_count, agg: count, expr: order_id}
+
+metrics:
+  - {name: revenue, type: simple, type_params: {measure: revenue_amount}}
+  - {name: orders, type: simple, type_params: {measure: orders_count}}
+  # PROVISIONAL: cumulative (windowed) metric — no validated live target.
+  - name: cumulative_revenue
+    type: cumulative
+    description: "Revenue to date."
+    type_params: {measure: revenue, window: "30 days", grain: month}
+  # PROVISIONAL: conversion (funnel) metric — no validated live target.
+  - name: order_conversion
+    type: conversion
+    description: "Order conversion."
+    type_params:
+      conversion_type_params:
+        base_measure: revenue
+        conversion_measure: orders
+        entity: customer
+        window: "7 days"

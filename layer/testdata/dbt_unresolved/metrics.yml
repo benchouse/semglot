@@ -3,5 +3,6 @@ metrics:
   - {name: orders, type: simple, type_params: {measure: orders_count}}
   # references a measure no semantic model defines → passthrough note
   - {name: mystery, type: simple, description: "Needs a missing measure.", type_params: {measure: not_a_measure}}
-  # a metric type we do not model → passthrough note
-  - {name: growth, type: derived, description: "Orders, boosted.", type_params: {expr: "orders * 1.1", metrics: [{name: orders}]}}
+  # derived is supported now, but this one references a metric no model defines
+  # (missing_base) → still a passthrough note, not a mis-attached metric.
+  - {name: growth, type: derived, description: "Orders, boosted.", type_params: {expr: "orders * missing_base", metrics: [{name: orders}, {name: missing_base}]}}

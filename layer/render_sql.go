@@ -35,11 +35,20 @@ func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 			arg = renderSQL(n.Arg, resolve)
 		}
 		if n.Filter != nil {
-			arg = "case when " + renderSQL(n.Filter, resolve) + " then " + arg + " end"
+			var cond string
+			// A Raw filter carries unqualified column refs; qualify them with the
+			// owning table exactly like a Raw agg arg. Any other Expr (Col/Binary)
+			// already renders qualified.
+			if raw, ok := n.Filter.(ir.Raw); ok {
+				cond = qualifyExpr(n.Table, colSet(raw.Columns), raw.SQL)
+			} else {
+				cond = renderSQL(n.Filter, resolve)
+			}
+			arg = "case when " + cond + " then " + arg + " end"
 		}
 		return aggExpr(n.Func, arg)
 	case ir.Binary:
-		return renderSQL(n.Left, resolve) + " " + n.Op + " " + renderSQL(n.Right, resolve)
+		return renderOperand(n.Left, resolve) + " " + n.Op + " " + renderOperand(n.Right, resolve)
 	case ir.Window:
 		return renderSQL(n.Base, resolve) // best-effort; Cortex window handled in Task 3
 	case ir.Conversion:
@@ -47,6 +56,29 @@ func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 	default:
 		return ""
 	}
+}
+
+// renderOperand renders a Binary operand, parenthesizing it when it is itself a
+// compound (Binary) expression — directly or through a metric Ref — so operator
+// precedence in the emitted SQL matches the AST's grouping.
+func renderOperand(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
+	s := renderSQL(e, resolve)
+	if isCompound(e, resolve) {
+		return "(" + s + ")"
+	}
+	return s
+}
+
+func isCompound(e ir.Expr, resolve func(name string) (ir.Expr, bool)) bool {
+	switch n := e.(type) {
+	case ir.Binary:
+		return true
+	case ir.Ref:
+		if def, ok := resolve(n.Metric); ok {
+			return isCompound(def, resolve)
+		}
+	}
+	return false
 }
 
 // colSet lowercases a column list into a set for qualifyExpr/toPropertySQL.

@@ -1,0 +1,20 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    dimensions:
+      - {name: is_completed, type: categorical}
+    measures:
+      - {name: order_amount, agg: sum, expr: amount}
+
+metrics:
+  # a plain (unfiltered) simple metric, so the filtered one has a peer to contrast
+  - {name: revenue, type: simple, description: "All revenue.", type_params: {measure: order_amount}}
+  # filtered simple metric: only completed orders
+  - name: completed_revenue
+    type: simple
+    description: "Revenue from completed orders."
+    type_params: {measure: order_amount}
+    filter: "is_completed"

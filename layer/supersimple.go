@@ -280,7 +280,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 					crossOperand{onBase: num.table == parent, aggType: num.typ, key: num.key},
 					crossOperand{onBase: den.table == parent, aggType: den.typ, key: den.key})
 			default:
-				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: definition is neither a simple aggregation nor a ratio", mt.Name))
+				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: %s", mt.Name, ssDegradeReason(mt.Def)))
 			}
 		}
 	}
@@ -385,6 +385,27 @@ func ssMapType(t string) string {
 		return "String"
 	default:
 		return "String"
+	}
+}
+
+// ssDegradeReason explains why a metric definition cannot be expressed in
+// supersimple, for a specific NOTES.md line. The cumulative (Window) and
+// conversion (Conversion) kinds are PROVISIONAL degradations (no live target).
+func ssDegradeReason(def ir.Expr) string {
+	switch d := def.(type) {
+	case ir.Agg:
+		if d.Filter != nil {
+			return "filtered aggregation is not expressible in supersimple"
+		}
+		return "aggregation is not expressible in supersimple"
+	case ir.Window:
+		return "cumulative/windowed metric is not expressible in supersimple (provisional)"
+	case ir.Conversion:
+		return "conversion/funnel metric is not expressible in supersimple (provisional)"
+	case ir.Binary:
+		return "derived arithmetic metric is not expressible in supersimple"
+	default:
+		return "definition is neither a simple aggregation nor a ratio"
 	}
 }
 

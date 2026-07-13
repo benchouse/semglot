@@ -86,13 +86,30 @@ type dbtEmitMetric struct {
 	Label       string            `yaml:"label,omitempty"`
 	Type        string            `yaml:"type"`
 	Description string            `yaml:"description,omitempty"`
+	Filter      string            `yaml:"filter,omitempty"`
 	TypeParams  dbtEmitTypeParams `yaml:"type_params"`
 }
 
 type dbtEmitTypeParams struct {
-	Measure     string `yaml:"measure,omitempty"`
-	Numerator   string `yaml:"numerator,omitempty"`
-	Denominator string `yaml:"denominator,omitempty"`
+	Measure              string                   `yaml:"measure,omitempty"`
+	Numerator            string                   `yaml:"numerator,omitempty"`
+	Denominator          string                   `yaml:"denominator,omitempty"`
+	Expr                 string                   `yaml:"expr,omitempty"`
+	Metrics              []dbtEmitMetricRef       `yaml:"metrics,omitempty"`
+	Window               string                   `yaml:"window,omitempty"`
+	Grain                string                   `yaml:"grain,omitempty"`
+	ConversionTypeParams *dbtEmitConversionParams `yaml:"conversion_type_params,omitempty"`
+}
+
+type dbtEmitMetricRef struct {
+	Name string `yaml:"name"`
+}
+
+type dbtEmitConversionParams struct {
+	BaseMeasure       string `yaml:"base_measure"`
+	ConversionMeasure string `yaml:"conversion_measure"`
+	Entity            string `yaml:"entity,omitempty"`
+	Window            string `yaml:"window,omitempty"`
 }
 
 // Emit writes the IR as a single dbt YAML file, <dir>/ecommerce.yml.
@@ -234,8 +251,10 @@ func emitSemantic(t ir.Table, pk, fk map[string]bool) dbtEmitSemantic {
 }
 
 // emitMetrics reverse-maps each Table.Metric to its dbt metric form: a simple
-// metric points at the backing measure (found by matching Agg + expr); a ratio
-// carries its numerator/denominator metric names. Other Def shapes are Task 3.
+// metric points at the backing measure (found by matching Agg + expr), carrying
+// its filter when present; a ratio carries numerator/denominator; a derived
+// metric re-renders its arithmetic tree; cumulative/conversion re-emit their
+// (provisional) params.
 func emitMetrics(t ir.Table) []dbtEmitMetric {
 	var out []dbtEmitMetric
 	for _, mt := range t.Metrics {
@@ -245,23 +264,113 @@ func emitMetrics(t ir.Table) []dbtEmitMetric {
 			if !ok {
 				continue
 			}
-			out = append(out, dbtEmitMetric{
+			em := dbtEmitMetric{
 				Name: mt.Name, Label: mt.Label, Type: "simple", Description: mt.Description,
 				TypeParams: dbtEmitTypeParams{Measure: meas},
-			})
+			}
+			if def.Filter != nil {
+				em.Filter = emitFilterSQL(def.Filter)
+			}
+			out = append(out, em)
 		case ir.Binary:
-			if def.Op != "/" {
+			// A plain ratio (Ref / Ref) round-trips as type: ratio; any other
+			// arithmetic tree is a derived metric.
+			if def.Op == "/" {
+				if l, lok := def.Left.(ir.Ref); lok {
+					if r, rok := def.Right.(ir.Ref); rok {
+						out = append(out, dbtEmitMetric{
+							Name: mt.Name, Label: mt.Label, Type: "ratio", Description: mt.Description,
+							TypeParams: dbtEmitTypeParams{Numerator: l.Metric, Denominator: r.Metric},
+						})
+						continue
+					}
+				}
+			}
+			expr, refs, ok := renderDerived(def)
+			if !ok {
 				continue
 			}
-			l, lok := def.Left.(ir.Ref)
-			r, rok := def.Right.(ir.Ref)
-			if !lok || !rok {
-				continue
+			var metrics []dbtEmitMetricRef
+			for _, r := range refs {
+				metrics = append(metrics, dbtEmitMetricRef{Name: r})
 			}
 			out = append(out, dbtEmitMetric{
-				Name: mt.Name, Label: mt.Label, Type: "ratio", Description: mt.Description,
-				TypeParams: dbtEmitTypeParams{Numerator: l.Metric, Denominator: r.Metric},
+				Name: mt.Name, Label: mt.Label, Type: "derived", Description: mt.Description,
+				TypeParams: dbtEmitTypeParams{Expr: expr, Metrics: metrics},
 			})
+		case ir.Window: // PROVISIONAL
+			base := ""
+			if r, ok := def.Base.(ir.Ref); ok {
+				base = r.Metric
+			}
+			out = append(out, dbtEmitMetric{
+				Name: mt.Name, Label: mt.Label, Type: "cumulative", Description: mt.Description,
+				TypeParams: dbtEmitTypeParams{Measure: base, Window: def.Window, Grain: def.Grain},
+			})
+		case ir.Conversion: // PROVISIONAL
+			base, _ := def.Base.(ir.Ref)
+			conv, _ := def.Conv.(ir.Ref)
+			out = append(out, dbtEmitMetric{
+				Name: mt.Name, Label: mt.Label, Type: "conversion", Description: mt.Description,
+				TypeParams: dbtEmitTypeParams{ConversionTypeParams: &dbtEmitConversionParams{
+					BaseMeasure: base.Metric, ConversionMeasure: conv.Metric, Entity: def.Entity, Window: def.Window,
+				}},
+			})
+		}
+	}
+	return out
+}
+
+// emitFilterSQL renders a metric filter Expr back to the dbt filter: string form
+// (unqualified, exactly as Parse read it).
+func emitFilterSQL(e ir.Expr) string {
+	switch f := e.(type) {
+	case ir.Col:
+		return f.Name
+	case ir.Raw:
+		return f.SQL
+	default:
+		return renderSQL(e, func(string) (ir.Expr, bool) { return nil, false })
+	}
+}
+
+// renderDerived re-renders a derived arithmetic tree to a dbt expr string and the
+// distinct metric names it references. Binary operands are parenthesized so the
+// re-parse reconstructs the same grouping. ok=false if a node is not a
+// Ref/Lit/Binary (nothing else is a valid derived operand).
+func renderDerived(e ir.Expr) (expr string, refs []string, ok bool) {
+	switch n := e.(type) {
+	case ir.Ref:
+		return n.Metric, []string{n.Metric}, true
+	case ir.Lit:
+		return n.Value, nil, true
+	case ir.Binary:
+		ls, lr, lok := renderDerived(n.Left)
+		rs, rr, rok := renderDerived(n.Right)
+		if !lok || !rok {
+			return "", nil, false
+		}
+		return parenIfBinary(n.Left, ls) + " " + n.Op + " " + parenIfBinary(n.Right, rs),
+			dedupeStrs(append(lr, rr...)), true
+	default:
+		return "", nil, false
+	}
+}
+
+func parenIfBinary(e ir.Expr, s string) string {
+	if _, ok := e.(ir.Binary); ok {
+		return "(" + s + ")"
+	}
+	return s
+}
+
+func dedupeStrs(ss []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range ss {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
 		}
 	}
 	return out

@@ -2,6 +2,7 @@ package layer
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,20 @@ import (
 	"github.com/benchouse/semglot/ir"
 	"gopkg.in/yaml.v3"
 )
+
+// cortexDegrade reports whether a metric definition has no validated Cortex
+// primitive and must be degraded to a note. The cumulative (Window) and
+// conversion (Conversion) kinds are PROVISIONAL — deliberately not lowered to
+// Cortex SQL until a live target validates them.
+func cortexDegrade(def ir.Expr) (reason string, degrade bool) {
+	switch def.(type) {
+	case ir.Window:
+		return "cumulative/windowed metric — no validated Cortex primitive (provisional)", true
+	case ir.Conversion:
+		return "conversion/funnel metric — no Cortex primitive (provisional)", true
+	}
+	return "", false
+}
 
 func init() { Register(cortex{}) }
 
@@ -133,6 +148,12 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 			})
 		}
 		for _, mt := range t.Metrics {
+			if reason, degrade := cortexDegrade(mt.Def); degrade {
+				// No validated Cortex primitive for this kind: omit the metric and
+				// surface it as guidance rather than emit SQL we cannot stand behind.
+				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted to Cortex: %s", mt.Name, reason))
+				continue
+			}
 			ct.Metrics = append(ct.Metrics, cortexMetric{
 				Name: mt.Name, Expr: strings.ToUpper(renderSQL(mt.Def, resolve)),
 				Description: mt.Description, Synonyms: mt.Synonyms,

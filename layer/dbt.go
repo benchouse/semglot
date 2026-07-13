@@ -113,15 +113,37 @@ type dbtMeasure struct {
 }
 
 type dbtMetric struct {
-	Name        string `yaml:"name"`
-	Label       string `yaml:"label"`
-	Type        string `yaml:"type"`
-	Description string `yaml:"description"`
-	TypeParams  struct {
-		Measure     string `yaml:"measure"`
-		Numerator   string `yaml:"numerator"`
-		Denominator string `yaml:"denominator"`
-	} `yaml:"type_params"`
+	Name        string        `yaml:"name"`
+	Label       string        `yaml:"label"`
+	Type        string        `yaml:"type"`
+	Description string        `yaml:"description"`
+	Filter      string        `yaml:"filter"`
+	TypeParams  dbtTypeParams `yaml:"type_params"`
+}
+
+type dbtTypeParams struct {
+	Measure     string `yaml:"measure"`
+	Numerator   string `yaml:"numerator"`
+	Denominator string `yaml:"denominator"`
+	// derived
+	Expr    string         `yaml:"expr"`
+	Metrics []dbtMetricRef `yaml:"metrics"`
+	// cumulative
+	Window string `yaml:"window"`
+	Grain  string `yaml:"grain"`
+	// conversion (nested, dbt-native shape)
+	ConversionTypeParams *dbtConversionParams `yaml:"conversion_type_params"`
+}
+
+type dbtMetricRef struct {
+	Name string `yaml:"name"`
+}
+
+type dbtConversionParams struct {
+	BaseMeasure       string `yaml:"base_measure"`
+	ConversionMeasure string `yaml:"conversion_measure"`
+	Entity            string `yaml:"entity"`
+	Window            string `yaml:"window"`
 }
 
 func (dbt) Parse(dir string) (*ir.Model, error) {
@@ -349,6 +371,14 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 		i := tableIdx[table]
 		out.Tables[i].Metrics = append(out.Tables[i].Metrics, mt)
 	}
+	// tableForName resolves a metric or measure name to its owning table.
+	tableForName := func(name string) (string, bool) {
+		if t, ok := metricTable[name]; ok {
+			return t, true
+		}
+		t, ok := measureTable[name]
+		return t, ok
+	}
 	for _, m := range metrics { // simple first, so ratios can reference them
 		if m.Type != "simple" {
 			continue
@@ -369,10 +399,17 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			// column list so both know what to qualify/wrap.
 			arg = ir.Raw{SQL: col, Columns: colsListByTable[table]}
 		}
+		agg := ir.Agg{Func: measureAgg[meas], Table: table, Arg: arg}
+		if m.Filter != "" {
+			// A dbt metric-level filter narrows the aggregation. Store it as the
+			// Agg's Filter (a Col for a bare column, else an unqualified Raw the
+			// renderer/emitter qualifies/wraps with this table's columns).
+			agg.Filter = filterExpr(table, m.Filter, colsListByTable[table])
+		}
 		attach(table, ir.Metric{
 			Name: m.Name, Label: m.Label, Description: m.Description,
 			Grain: grainByTable[table],
-			Def:   ir.Agg{Func: measureAgg[meas], Table: table, Arg: arg},
+			Def:   agg,
 		})
 	}
 	for _, m := range metrics { // ratio
@@ -392,15 +429,205 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			Def:   ir.Binary{Op: "/", Left: ir.Ref{Metric: m.TypeParams.Numerator}, Right: ir.Ref{Metric: m.TypeParams.Denominator}},
 		})
 	}
-	for _, m := range metrics { // unsupported types -> notes (unchanged)
+	for _, m := range metrics { // derived: arithmetic over metric refs + literals
+		if m.Type != "derived" {
+			continue
+		}
+		def, ok := parseDerivedExpr(m.TypeParams.Expr)
+		if !ok {
+			out.Notes = append(out.Notes, metricNote(m, "derived expression could not be parsed as arithmetic over metric refs"))
+			continue
+		}
+		// Every referenced metric must resolve; the metric homes on the first
+		// resolvable ref's table (dbt names are project-unique, so all refs share
+		// a semantic space even if physically on different tables).
+		table := ""
+		resolved := true
+		for _, r := range collectRefs(def) {
+			if _, ok := metricDefs[r]; !ok {
+				resolved = false
+				break
+			}
+			if table == "" {
+				table = metricTable[r]
+			}
+		}
+		if !resolved || table == "" {
+			out.Notes = append(out.Notes, metricNote(m, "one or more derived operands could not be resolved to a metric"))
+			continue
+		}
+		attach(table, ir.Metric{
+			Name: m.Name, Label: m.Label, Description: m.Description,
+			Grain: grainByTable[table], Def: def,
+		})
+	}
+	for _, m := range metrics { // cumulative -> Window (PROVISIONAL: no live target)
+		if m.Type != "cumulative" {
+			continue
+		}
+		base := m.TypeParams.Measure
+		table, ok := tableForName(base)
+		if !ok {
+			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("cumulative base %q could not be resolved", base)))
+			continue
+		}
+		attach(table, ir.Metric{
+			Name: m.Name, Label: m.Label, Description: m.Description, Grain: grainByTable[table],
+			Def: ir.Window{Base: ir.Ref{Metric: base}, Window: m.TypeParams.Window, Grain: m.TypeParams.Grain},
+		})
+	}
+	for _, m := range metrics { // conversion -> Conversion (PROVISIONAL: no live target)
+		if m.Type != "conversion" {
+			continue
+		}
+		cp := m.TypeParams.ConversionTypeParams
+		if cp == nil {
+			out.Notes = append(out.Notes, metricNote(m, "conversion metric missing conversion_type_params"))
+			continue
+		}
+		table, ok := tableForName(cp.BaseMeasure)
+		if !ok {
+			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("conversion base %q could not be resolved", cp.BaseMeasure)))
+			continue
+		}
+		attach(table, ir.Metric{
+			Name: m.Name, Label: m.Label, Description: m.Description, Grain: grainByTable[table],
+			Def: ir.Conversion{Base: ir.Ref{Metric: cp.BaseMeasure}, Conv: ir.Ref{Metric: cp.ConversionMeasure}, Entity: cp.Entity, Window: cp.Window},
+		})
+	}
+	for _, m := range metrics { // genuinely unsupported types -> notes
 		switch m.Type {
-		case "simple", "ratio":
+		case "simple", "ratio", "derived", "cumulative", "conversion":
 		default:
 			out.Notes = append(out.Notes, metricNote(m, fmt.Sprintf("unsupported metric type %q", m.Type)))
 		}
 	}
 
 	return out, nil
+}
+
+// filterExpr builds the Expr for a dbt metric-level filter: a bare column
+// becomes a Col (qualified at render time), anything compound an unqualified Raw
+// carrying the owning table's columns so a renderer can qualify/wrap it.
+func filterExpr(table, filter string, cols []string) ir.Expr {
+	if isIdent(filter) {
+		return ir.Col{Table: table, Name: filter}
+	}
+	return ir.Raw{SQL: filter, Columns: cols}
+}
+
+// parseDerivedExpr parses a dbt derived-metric expression (arithmetic over metric
+// names and numeric literals: + - * / with precedence and parens) into an
+// ir.Binary/Ref/Lit tree. ok=false if the expression is not cleanly parseable as
+// such (the caller then degrades it to a note).
+func parseDerivedExpr(expr string) (ir.Expr, bool) {
+	var toks []sqlToken
+	for _, tk := range sqlTokens(expr) {
+		if tk.typ == sqlOther && strings.TrimSpace(tk.val) == "" {
+			continue // drop whitespace
+		}
+		toks = append(toks, tk)
+	}
+	if len(toks) == 0 {
+		return nil, false
+	}
+	p := &derivedParser{toks: toks}
+	e := p.parseAddSub()
+	if p.err || p.pos != len(p.toks) {
+		return nil, false
+	}
+	return e, true
+}
+
+// derivedParser is a minimal recursive-descent parser over sqlTokens.
+type derivedParser struct {
+	toks []sqlToken
+	pos  int
+	err  bool
+}
+
+func (p *derivedParser) peek() (sqlToken, bool) {
+	if p.pos < len(p.toks) {
+		return p.toks[p.pos], true
+	}
+	return sqlToken{}, false
+}
+
+func (p *derivedParser) isOp(want ...string) (string, bool) {
+	tk, ok := p.peek()
+	if !ok || tk.typ != sqlOther {
+		return "", false
+	}
+	for _, w := range want {
+		if tk.val == w {
+			return w, true
+		}
+	}
+	return "", false
+}
+
+func (p *derivedParser) parseAddSub() ir.Expr {
+	left := p.parseMulDiv()
+	for {
+		op, ok := p.isOp("+", "-")
+		if !ok {
+			return left
+		}
+		p.pos++
+		left = ir.Binary{Op: op, Left: left, Right: p.parseMulDiv()}
+	}
+}
+
+func (p *derivedParser) parseMulDiv() ir.Expr {
+	left := p.parseFactor()
+	for {
+		op, ok := p.isOp("*", "/")
+		if !ok {
+			return left
+		}
+		p.pos++
+		left = ir.Binary{Op: op, Left: left, Right: p.parseFactor()}
+	}
+}
+
+func (p *derivedParser) parseFactor() ir.Expr {
+	tk, ok := p.peek()
+	if !ok {
+		p.err = true
+		return nil
+	}
+	switch {
+	case tk.typ == sqlOther && tk.val == "(":
+		p.pos++
+		e := p.parseAddSub()
+		if _, ok := p.isOp(")"); !ok {
+			p.err = true
+			return nil
+		}
+		p.pos++
+		return e
+	case tk.typ == sqlIdent:
+		p.pos++
+		return ir.Ref{Metric: tk.val}
+	case tk.typ == sqlNumber:
+		p.pos++
+		return ir.Lit{Value: tk.val}
+	default:
+		p.err = true
+		return nil
+	}
+}
+
+// collectRefs returns the metric names referenced by a derived expression tree.
+func collectRefs(e ir.Expr) []string {
+	switch n := e.(type) {
+	case ir.Ref:
+		return []string{n.Metric}
+	case ir.Binary:
+		return append(collectRefs(n.Left), collectRefs(n.Right)...)
+	default:
+		return nil
+	}
 }
 
 // metricNote renders a human/LLM-readable description of a dbt metric that could

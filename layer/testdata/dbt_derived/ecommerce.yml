@@ -1,0 +1,31 @@
+semantic_models:
+  - name: fct_orders
+    description: Orders.
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    measures:
+      - {name: revenue_amount, agg: sum, expr: revenue}
+      - {name: cost_amount, agg: sum, expr: cost}
+
+metrics:
+  - {name: revenue, type: simple, description: "Gross revenue.", type_params: {measure: revenue_amount}}
+  - {name: cost, type: simple, description: "Cost of goods.", type_params: {measure: cost_amount}}
+  # derived: arithmetic over two metric refs
+  - name: gross_profit
+    type: derived
+    description: "Revenue minus cost."
+    type_params:
+      expr: "revenue - cost"
+      metrics:
+        - {name: revenue}
+        - {name: cost}
+  # derived with a numeric literal (exercises Lit + precedence + parens)
+  - name: boosted_profit
+    type: derived
+    description: "Gross profit, boosted."
+    type_params:
+      expr: "(revenue - cost) * 2"
+      metrics:
+        - {name: revenue}
+        - {name: cost}
