@@ -300,6 +300,28 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			}
 		}
 
+		// A column is often declared as BOTH an entity/dimension and the time
+		// dimension — e.g. a foreign date key that is also the agg_time_dimension,
+		// or a date-dimension's primary key that doubles as its time spine. Such a
+		// column lands in t.Dimensions (via the entity/dimension loops) and again in
+		// t.TimeDimensions, which emitters that flatten the two lists (e.g. the
+		// semantic view) render twice. Keep it only as the time dimension; its
+		// PK/FK/join role is preserved separately (PrimaryKey, Relationships).
+		if len(t.TimeDimensions) > 0 {
+			timeExpr := make(map[string]bool, len(t.TimeDimensions))
+			for _, td := range t.TimeDimensions {
+				timeExpr[strings.ToLower(td.Expr)] = true
+			}
+			kept := t.Dimensions[:0]
+			for _, d := range t.Dimensions {
+				if timeExpr[strings.ToLower(d.Expr)] {
+					continue
+				}
+				kept = append(kept, d)
+			}
+			t.Dimensions = kept
+		}
+
 		grainByTable[name] = t.Grain
 		colList := make([]string, 0, len(cols))
 		for c := range cols {

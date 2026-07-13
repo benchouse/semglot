@@ -8,6 +8,36 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
+func TestDBTParseTimeDimEntityDedup(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_timedim_entity")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got.Tables) != 1 {
+		t.Fatalf("want 1 table, got %d", len(got.Tables))
+	}
+	tb := got.Tables[0]
+	// event_date is declared as BOTH a foreign entity and the time dimension; it
+	// must land only in TimeDimensions, never duplicated into Dimensions.
+	var inTime, inDim int
+	for _, d := range tb.TimeDimensions {
+		if d.Expr == "event_date" {
+			inTime++
+		}
+	}
+	for _, d := range tb.Dimensions {
+		if d.Expr == "event_date" {
+			inDim++
+		}
+	}
+	if inTime != 1 {
+		t.Errorf("event_date in TimeDimensions = %d, want 1", inTime)
+	}
+	if inDim != 0 {
+		t.Errorf("event_date leaked into Dimensions %d time(s), want 0", inDim)
+	}
+}
+
 func TestDBTParse(t *testing.T) {
 	got, err := dbt{}.Parse("testdata/dbt")
 	if err != nil {

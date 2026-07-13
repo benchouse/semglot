@@ -1,0 +1,13 @@
+semantic_models:
+  - name: fct_events
+    description: Events fact.
+    model: ref('fct_events')
+    defaults: {agg_time_dimension: event_date}
+    entities:
+      - {name: event, type: primary, expr: event_id}
+      # event_date is a foreign entity (join key) AND the time dimension below —
+      # the case that used to emit a duplicate dimension.
+      - {name: date, type: foreign, expr: event_date}
+    dimensions:
+      - {name: event_date, type: time, type_params: {time_granularity: day}}
+      - {name: kind, type: categorical}
