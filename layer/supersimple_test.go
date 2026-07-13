@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/benchouse/semglot/ir"
+	"gopkg.in/yaml.v3"
 )
 
 func TestSupersimpleEmit(t *testing.T) {
@@ -147,4 +148,48 @@ func readFile(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestFindParentRelation(t *testing.T) {
+	m := &ir.Model{Relationships: []ir.Relationship{
+		{Left: "fct_order_lines", Right: "fct_orders", Columns: []ir.ColumnPair{{Left: "order_id", Right: "order_id"}}},
+	}}
+	// either argument order finds the same parent/child/relKey.
+	for _, pair := range [][2]string{{"fct_order_lines", "fct_orders"}, {"fct_orders", "fct_order_lines"}} {
+		parent, relKey, child, ok := findParentRelation(m, pair[0], pair[1])
+		if !ok || parent != "fct_orders" || child != "fct_order_lines" || relKey != "order_lines" {
+			t.Fatalf("%v: got parent=%q relKey=%q child=%q ok=%v", pair, parent, relKey, child, ok)
+		}
+	}
+	if _, _, _, ok := findParentRelation(m, "fct_orders", "dim_product"); ok {
+		t.Fatal("unrelated tables should return ok=false")
+	}
+}
+
+func TestCrossRatioMetric(t *testing.T) {
+	// units_per_order = units_sold(child sum QUANTITY) / orders(base count_distinct ORDER_ID)
+	sm := crossRatioMetric("FCT_ORDERS", "units_per_order", "order_lines", "Units per order", "u/o",
+		crossOperand{onBase: false, aggType: "sum", key: "QUANTITY"},
+		crossOperand{onBase: true, aggType: "count_distinct", key: "ORDER_ID"})
+	b, err := yaml.Marshal(sm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, want := range []string{
+		"model_id: FCT_ORDERS",
+		"operation: relationAggregate",
+		"key: order_lines", // relation key
+		"key: QUANTITY",    // child operand pulled across the relation
+		"operation: groupAggregate",
+		"type: count_distinct", // parent operand direct
+		"key: ORDER_ID",
+		"operation: deriveField",
+		`prop("_num") / prop("_den")`,
+		"type: first",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("crossRatioMetric missing %q:\n%s", want, out)
+		}
+	}
 }

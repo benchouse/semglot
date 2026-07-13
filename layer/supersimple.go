@@ -93,6 +93,13 @@ type ssExprValue struct {
 	Expression string `yaml:"expression"`
 	Version    string `yaml:"version"`
 }
+type ssRelationAggregateParams struct {
+	Relation     ssRelationRef `yaml:"relation"`
+	Aggregations []ssAggSpec   `yaml:"aggregations"`
+}
+type ssRelationRef struct {
+	Key string `yaml:"key"`
+}
 
 func (s supersimple) Emit(m *ir.Model, dir string) error {
 	schema := s.Schema
@@ -354,6 +361,64 @@ func ratioMetric(modelID, key, name, desc string, num, den aggRef) ssMetric {
 				Value: ssExprValue{Expression: `prop("_num") / prop("_den")`, Version: "1"},
 			}},
 		},
+		Aggregation: ssAggregation{Type: "first", Key: key, Property: &ssPropRef{Key: key, Name: name}},
+	}
+}
+
+// findParentRelation returns the one-hop relationship connecting tables a and b
+// (in either order): the parent (the Right/one side, which owns the hasMany
+// relation), the relation key the emitter puts under the parent's relations
+// (slug(child)), and the child (the Left/many side). ok=false if not directly related.
+func findParentRelation(m *ir.Model, a, b string) (parent, relKey, child string, ok bool) {
+	for _, r := range m.Relationships {
+		if (r.Left == a && r.Right == b) || (r.Left == b && r.Right == a) {
+			return r.Right, slug(r.Left), r.Left, true
+		}
+	}
+	return "", "", "", false
+}
+
+// crossOperand describes one side of a cross-table ratio. onBase is true when the
+// operand aggregates the parent (base) table directly; otherwise it aggregates the
+// child table and must be pulled across the relation.
+type crossOperand struct {
+	onBase  bool
+	aggType string
+	key     string
+}
+
+// crossRatioMetric builds a cross-table ratio on the parent base: each child
+// operand is pulled via relationAggregate (a per-parent value) then summed in the
+// whole-set groupAggregate; each parent operand is aggregated directly there; the
+// two named _num/_den columns are divided. Provisional pending live validation.
+func crossRatioMetric(baseID, key, relKey, name, desc string, num, den crossOperand) ssMetric {
+	var ops []ssOperation
+	ga := ssGroupAggregateParams{Groups: []any{}}
+
+	add := func(op crossOperand, propKey string) {
+		if op.onBase {
+			ga.Aggregations = append(ga.Aggregations, ssAggSpec{
+				Type: op.aggType, Key: op.key, Property: ssPropRef{Key: propKey, Name: propKey},
+			})
+			return
+		}
+		rel := propKey + "_rel"
+		ops = append(ops, ssOperation{Operation: "relationAggregate", Parameters: ssRelationAggregateParams{
+			Relation:     ssRelationRef{Key: relKey},
+			Aggregations: []ssAggSpec{{Type: op.aggType, Key: op.key, Property: ssPropRef{Key: rel, Name: rel}}},
+		}})
+		ga.Aggregations = append(ga.Aggregations, ssAggSpec{
+			Type: "sum", Key: rel, Property: ssPropRef{Key: propKey, Name: propKey},
+		})
+	}
+	add(num, "_num")
+	add(den, "_den")
+	ops = append(ops, ssOperation{Operation: "groupAggregate", Parameters: ga})
+	ops = append(ops, ssOperation{Operation: "deriveField", Parameters: ssDeriveFieldParams{
+		FieldName: name, Key: key, Value: ssExprValue{Expression: `prop("_num") / prop("_den")`, Version: "1"},
+	}})
+	return ssMetric{
+		Name: name, ModelID: baseID, Description: desc, Operations: ops,
 		Aggregation: ssAggregation{Type: "first", Key: key, Property: &ssPropRef{Key: key, Name: name}},
 	}
 }
