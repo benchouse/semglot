@@ -46,9 +46,21 @@ func canonicalizeModel(m *ir.Model) {
 	}
 	sort.Slice(m.Relationships, func(i, j int) bool {
 		a, b := m.Relationships[i], m.Relationships[j]
-		return a.Left+">"+a.Right < b.Left+">"+b.Right
+		return relSortKey(a) < relSortKey(b)
 	})
 	sort.Strings(m.Notes)
+}
+
+// relSortKey builds a deterministic sort key for a Relationship: the
+// Left/Right endpoints followed by a discriminator built from its Columns, so
+// two relationships sharing endpoints (or a multi-pair relationship) sort
+// deterministically instead of comparing equal on Left+Right alone.
+func relSortKey(r ir.Relationship) string {
+	key := r.Left + ">" + r.Right
+	for _, cp := range r.Columns {
+		key += "|" + cp.Left + "=" + cp.Right
+	}
+	return key
 }
 
 // TestDBTRoundTrip proves the AST/IR captures the dbt source losslessly: parse

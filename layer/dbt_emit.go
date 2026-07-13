@@ -262,6 +262,9 @@ func emitMetrics(t ir.Table) []dbtEmitMetric {
 		case ir.Agg:
 			meas, ok := measureFor(t, def)
 			if !ok {
+				// Intentional drop: measureFor is guaranteed to find a backing
+				// measure for dbt-sourced IR; a genuine miss here would be a bug
+				// caught by TestDBTRoundTrip, not an expected case to handle.
 				continue
 			}
 			em := dbtEmitMetric{
@@ -288,6 +291,10 @@ func emitMetrics(t ir.Table) []dbtEmitMetric {
 			}
 			expr, refs, ok := renderDerived(def)
 			if !ok {
+				// Intentional drop: every derived operand originates from a
+				// Ref/Lit/Binary tree built from dbt-sourced IR, so renderDerived
+				// is expected to succeed; a genuine miss is caught by
+				// TestDBTRoundTrip, not an expected case to handle.
 				continue
 			}
 			var metrics []dbtEmitMetricRef
@@ -357,6 +364,14 @@ func renderDerived(e ir.Expr) (expr string, refs []string, ok bool) {
 	}
 }
 
+// parenIfBinary decides whether a derived operand needs parens when re-emitted
+// as a dbt expr string. Deliberately separate from render_sql.go's
+// renderOperand/isCompound: this emitter preserves metric names as bare refs
+// (nothing is inlined, so a Ref is never compound), while Cortex inlines
+// referenced metrics' SQL in place (so a Ref may resolve to a compound
+// expression). Do not merge these — doing so would either start dbt inlining
+// metric names or stop Cortex from inlining them, breaking derived-metric
+// emit for one of the two targets.
 func parenIfBinary(e ir.Expr, s string) string {
 	if _, ok := e.(ir.Binary); ok {
 		return "(" + s + ")"

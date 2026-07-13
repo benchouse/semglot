@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/benchouse/semglot/ir"
@@ -102,6 +103,8 @@ type cortexRelCol struct {
 	RightColumn string `yaml:"right_column"`
 }
 
+// Emit does not mutate m; it reads m.Notes and accumulates its own degrade
+// notes locally before writing the combined text to custom_instructions.
 func (c cortex) Emit(m *ir.Model, dir string) error {
 	name := c.ModelName
 	if name == "" {
@@ -120,6 +123,7 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		}
 	}
 	resolve := func(n string) (ir.Expr, bool) { e, ok := metricDefs[n]; return e, ok }
+	var degradeNotes []string
 	for _, t := range m.Tables {
 		ct := cortexTable{
 			Name:        t.Name,
@@ -151,7 +155,7 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 			if reason, degrade := cortexDegrade(mt.Def); degrade {
 				// No validated Cortex primitive for this kind: omit the metric and
 				// surface it as guidance rather than emit SQL we cannot stand behind.
-				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted to Cortex: %s", mt.Name, reason))
+				degradeNotes = append(degradeNotes, fmt.Sprintf("metric %q not emitted to Cortex: %s", mt.Name, reason))
 				continue
 			}
 			ct.Metrics = append(ct.Metrics, cortexMetric{
@@ -171,10 +175,11 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		})
 	}
 
-	if len(m.Notes) > 0 {
+	allNotes := append(slices.Clone(m.Notes), degradeNotes...)
+	if len(allNotes) > 0 {
 		var sb strings.Builder
 		sb.WriteString("Some dbt metrics could not be transpiled to Cortex metrics; treat the following as guidance:")
-		for _, n := range m.Notes {
+		for _, n := range allNotes {
 			sb.WriteString("\n- ")
 			sb.WriteString(n)
 		}

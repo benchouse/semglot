@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/benchouse/semglot/ir"
@@ -119,6 +120,8 @@ type ssRelationRef struct {
 	Key string `yaml:"key"`
 }
 
+// Emit does not mutate m; it reads m.Notes and accumulates its own degrade
+// notes locally before writing the combined text to NOTES.md.
 func (s supersimple) Emit(m *ir.Model, dir string) error {
 	schema := s.Schema
 	if schema == "" {
@@ -146,6 +149,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 	// enforces to be project-unique, so cross-table lookups are unambiguous.
 	type simpleInfo struct{ table, typ, key string }
 	global := map[string]simpleInfo{}
+	var degradeNotes []string
 
 	// Phase 1: build each model (properties incl. synthesized compound property.sql,
 	// and relations) and register its simple metrics.
@@ -254,7 +258,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 					den, okD = global[denRef.Metric]
 				}
 				if !okN || !okD {
-					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operand(s) are not a simple aggregation", mt.Name))
+					degradeNotes = append(degradeNotes, fmt.Sprintf("metric %q (ratio) not emitted: operand(s) are not a simple aggregation", mt.Name))
 					continue
 				}
 				if num.table == den.table {
@@ -265,7 +269,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 				}
 				parent, relKey, child, ok := findParentRelation(m, num.table, den.table)
 				if !ok {
-					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: operand tables %q and %q are not directly related", mt.Name, num.table, den.table))
+					degradeNotes = append(degradeNotes, fmt.Sprintf("metric %q (ratio) not emitted: operand tables %q and %q are not directly related", mt.Name, num.table, den.table))
 					continue
 				}
 				childInfo := num
@@ -273,14 +277,14 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 					childInfo = den
 				}
 				if childInfo.typ != "sum" && childInfo.typ != "count" {
-					m.Notes = append(m.Notes, fmt.Sprintf("metric %q (ratio) not emitted: child operand aggregation %q does not compose across the relation", mt.Name, childInfo.typ))
+					degradeNotes = append(degradeNotes, fmt.Sprintf("metric %q (ratio) not emitted: child operand aggregation %q does not compose across the relation", mt.Name, childInfo.typ))
 					continue
 				}
 				states[parent].metrics[mt.Name] = crossRatioMetric(states[parent].id, mt.Name, relKey, metricName(mt), mt.Description,
 					crossOperand{onBase: num.table == parent, aggType: num.typ, key: num.key},
 					crossOperand{onBase: den.table == parent, aggType: den.typ, key: den.key})
 			default:
-				m.Notes = append(m.Notes, fmt.Sprintf("metric %q not emitted: %s", mt.Name, ssDegradeReason(mt.Def)))
+				degradeNotes = append(degradeNotes, fmt.Sprintf("metric %q not emitted: %s", mt.Name, ssDegradeReason(mt.Def)))
 			}
 		}
 	}
@@ -306,10 +310,11 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			return err
 		}
 	}
-	if len(m.Notes) > 0 {
+	allNotes := append(slices.Clone(m.Notes), degradeNotes...)
+	if len(allNotes) > 0 {
 		var sb strings.Builder
 		sb.WriteString("# Not transpiled to supersimple\n\n")
-		for _, n := range m.Notes {
+		for _, n := range allNotes {
 			sb.WriteString("- " + n + "\n")
 		}
 		if err := os.WriteFile(filepath.Join(dir, "NOTES.md"), []byte(sb.String()), 0o644); err != nil {

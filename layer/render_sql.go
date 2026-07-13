@@ -50,8 +50,14 @@ func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 	case ir.Binary:
 		return renderOperand(n.Left, resolve) + " " + n.Op + " " + renderOperand(n.Right, resolve)
 	case ir.Window:
-		return renderSQL(n.Base, resolve) // best-effort; Cortex window handled in Task 3
+		// Unreachable for shipped emitters: cortexDegrade/ssDegradeReason omit
+		// Window metrics before renderSQL is ever called on them (no validated
+		// Cortex/supersimple primitive, provisional). Kept only for completeness.
+		return renderSQL(n.Base, resolve) // best-effort
 	case ir.Conversion:
+		// Unreachable for shipped emitters: cortexDegrade/ssDegradeReason omit
+		// Conversion metrics before renderSQL is ever called on them (no Cortex
+		// primitive, provisional). Kept only for completeness.
 		return "" // no SQL rendering; degraded by callers
 	default:
 		return ""
@@ -61,6 +67,16 @@ func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 // renderOperand renders a Binary operand, parenthesizing it when it is itself a
 // compound (Binary) expression — directly or through a metric Ref — so operator
 // precedence in the emitted SQL matches the AST's grouping.
+//
+// This is deliberately a separate implementation from dbt_emit.go's
+// parenIfBinary, which serves the same "does this operand need parens"
+// question for the dbt emitter's re-rendered expr string: Cortex inlines
+// referenced metrics' SQL in place (so a Ref must resolve through isCompound
+// to know if the inlined expression is compound), while the dbt emitter
+// preserves metric names as bare refs (a Ref is never compound there, since
+// nothing gets inlined). Do not "dedupe" these into one helper — doing so
+// would either stop Cortex from inlining or start dbt from inlining, breaking
+// derived-metric emit for one of the two targets.
 func renderOperand(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 	s := renderSQL(e, resolve)
 	if isCompound(e, resolve) {
