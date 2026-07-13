@@ -286,7 +286,7 @@ func TestCLIBinaryEndToEnd(t *testing.T) {
 	}
 	out := t.TempDir()
 	cmd := exec.Command("go", "run", "./cmd/semglot", "build",
-		"--from", "dbt", "--reference", ref, "--layer", "cortex", "--out", out,
+		"--source", ref, "--target-type", "cortex", "--target", out,
 		"--database", "ANALYTICS", "--name", "ecommerce")
 	cmd.Dir = moduleRoot
 	if b, err := cmd.CombinedOutput(); err != nil {

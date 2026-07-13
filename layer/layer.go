@@ -4,6 +4,7 @@ package layer
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/benchouse/semglot/ir"
 )
@@ -67,4 +68,14 @@ func AsEmitter(name string) (Emitter, error) {
 		return nil, fmt.Errorf("dialect %q cannot be a target (no emitter)", name)
 	}
 	return e, nil
+}
+
+// Names returns the registered dialect names, sorted.
+func Names() []string {
+	out := make([]string, 0, len(registry))
+	for n := range registry {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }

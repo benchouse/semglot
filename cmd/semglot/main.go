@@ -1,7 +1,7 @@
 // Command semglot transpiles a source semantic-layer dialect into a target
 // dialect through a neutral IR.
 //
-//	semglot build --from dbt --reference ./semantic --layer cortex --out ./cortex/
+//	semglot build --source ./semantic --target-type cortex --target ./cortex/
 //
 // v1 supports dbt (source) -> cortex (target). Scoring (`semglot score`) is v2.
 package main
@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/benchouse/semglot/layer"
 )
@@ -32,47 +33,57 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: semglot <build|score> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: semglot build --source <dir> --target <dir> --target-type <dialect> [--config <file>] [--database --schema --name --description]")
+	fmt.Fprintln(os.Stderr, "target-type is one of: "+strings.Join(layer.Names(), ", "))
 }
 
 func buildCmd(args []string) int {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
-	from := fs.String("from", "dbt", "source dialect")
-	reference := fs.String("reference", "", "source dialect directory (required)")
-	target := fs.String("layer", "", "target dialect (required)")
-	out := fs.String("out", "", "output directory (required)")
-	database := fs.String("database", "", "Cortex base_table database")
-	schema := fs.String("schema", "MAIN", "Cortex base_table schema")
-	name := fs.String("name", "semantic_model", "Cortex model name")
-	description := fs.String("description", "", "Cortex model description")
+	sourceType := fs.String("source-type", "dbt", "source dialect")
+	source := fs.String("source", "", "source directory (required)")
+	targetType := fs.String("target-type", "", "target dialect (required); one of: "+strings.Join(layer.Names(), ", "))
+	target := fs.String("target", "", "output directory (required)")
+	config := fs.String("config", "", "path to a config file (optional)")
+	database := fs.String("database", "", "warehouse database (Snowflake targets)")
+	schema := fs.String("schema", "", "warehouse schema (Snowflake targets; default MAIN)")
+	name := fs.String("name", "", "model/view name (default: source basename)")
+	description := fs.String("description", "", "model description")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *reference == "" || *target == "" || *out == "" {
-		fmt.Fprintln(os.Stderr, "build: --reference, --layer and --out are required")
+	if *source == "" || *targetType == "" || *target == "" {
+		fmt.Fprintln(os.Stderr, "build: --source, --target and --target-type are required")
 		return 2
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
-	parser, err := layer.AsParser(*from)
+	parser, err := layer.AsParser(*sourceType)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		return 1
 	}
-	emitter, err := layer.AsEmitter(*target)
+	emitter, err := layer.AsEmitter(*targetType)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		return 1
 	}
 	if c, ok := emitter.(layer.Configurable); ok {
-		emitter = c.WithOptions(*database, *schema, *name, *description)
+		id, err := resolveIdentity(*source, *config, set,
+			identity{Database: *database, Schema: *schema, Name: *name, Description: *description})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "build:", err)
+			return 1
+		}
+		emitter = c.WithOptions(id.Database, id.Schema, id.Name, id.Description)
 	}
 
-	model, err := parser.Parse(*reference)
+	model, err := parser.Parse(*source)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build: parse:", err)
 		return 1
 	}
-	if err := emitter.Emit(model, *out); err != nil {
+	if err := emitter.Emit(model, *target); err != nil {
 		fmt.Fprintln(os.Stderr, "build: emit:", err)
 		return 1
 	}
@@ -82,6 +93,6 @@ func buildCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "  - "+n)
 		}
 	}
-	fmt.Printf("wrote to %s (%s -> %s)\n", *out, *from, *target)
+	fmt.Printf("wrote to %s (%s -> %s)\n", *target, *sourceType, *targetType)
 	return 0
 }

@@ -9,10 +9,9 @@ import (
 func TestBuildCmdEndToEnd(t *testing.T) {
 	out := t.TempDir()
 	code := buildCmd([]string{
-		"--from", "dbt",
-		"--reference", "../../layer/testdata/dbt",
-		"--layer", "cortex",
-		"--out", out,
+		"--source", "../../layer/testdata/dbt",
+		"--target-type", "cortex",
+		"--target", out,
 		"--database", "ANALYTICS",
 		"--schema", "MAIN",
 		"--name", "eval_marts",
@@ -35,14 +34,14 @@ func TestBuildCmdEndToEnd(t *testing.T) {
 }
 
 func TestBuildCmdMissingFlags(t *testing.T) {
-	if code := buildCmd([]string{"--layer", "cortex"}); code != 2 {
-		t.Fatalf("missing --reference/--out should exit 2, got %d", code)
+	if code := buildCmd([]string{"--target-type", "cortex"}); code != 2 {
+		t.Fatalf("missing --source/--target should exit 2, got %d", code)
 	}
 }
 
 func TestBuildCmdSourceWithoutParser(t *testing.T) {
-	// cortex is emit-only in v1; using it as --from must fail clearly.
-	code := buildCmd([]string{"--from", "cortex", "--reference", "x", "--layer", "cortex", "--out", "y"})
+	// cortex is emit-only in v1; using it as --source-type must fail clearly.
+	code := buildCmd([]string{"--source-type", "cortex", "--source", "x", "--target-type", "cortex", "--target", "y"})
 	if code != 1 {
 		t.Fatalf("cortex-as-source should exit 1, got %d", code)
 	}
