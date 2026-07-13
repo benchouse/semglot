@@ -36,6 +36,13 @@ type dbtModel struct {
 	Description string          `yaml:"description"`
 	Constraints []dbtConstraint `yaml:"constraints"`
 	Columns     []dbtColumn     `yaml:"columns"`
+	// TimeSpine, when present, marks a dbt MetricFlow date-spine model —
+	// internal plumbing, not a business table. Presence alone is the signal.
+	TimeSpine *dbtTimeSpine `yaml:"time_spine"`
+}
+
+type dbtTimeSpine struct {
+	StandardGranularityColumn string `yaml:"standard_granularity_column"`
 }
 
 type dbtColumn struct {
@@ -170,6 +177,17 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 		metrics = append(metrics, df.Metrics...)
 	}
 
+	// Drop dbt MetricFlow time-spine models — internal plumbing, not tables an
+	// analyst queries — so they don't leak into the emitted context layers.
+	kept := models[:0]
+	for _, m := range models {
+		if m.TimeSpine != nil {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	models = kept
+
 	// Ordered union of table names across both sources.
 	var order []string
 	seen := map[string]bool{}
@@ -197,7 +215,11 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 	measureCol := map[string]string{}
 	grainByTable := map[string]string{}
 	colsListByTable := map[string][]string{}
-	primaryByEntity := map[string]struct{ table, col string }{}
+	// An entity name can be the primary entity of MORE THAN ONE table (e.g. both
+	// dim_customer and fct_customer_ltv declare a primary "customer" on
+	// customer_sk). Keep every owner so a foreign entity joins to all of them,
+	// rather than silently dropping all but the last.
+	primaryByEntity := map[string][]struct{ table, col string }{}
 
 	for _, name := range order {
 		md := modelByName[name]
@@ -257,7 +279,7 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			t.Dimensions = append(t.Dimensions, field(col, col))
 			if e.Type == "primary" {
 				t.PrimaryKey = append(t.PrimaryKey, col)
-				primaryByEntity[e.Name] = struct{ table, col string }{name, col}
+				primaryByEntity[e.Name] = append(primaryByEntity[e.Name], struct{ table, col string }{name, col})
 			}
 		}
 		for _, d := range sm.Dimensions {
@@ -340,17 +362,18 @@ func (dbt) Parse(dir string) (*ir.Model, error) {
 			if e.Type != "foreign" {
 				continue
 			}
-			p, ok := primaryByEntity[e.Name]
-			if !ok || p.table == sm.Name {
-				continue
-			}
 			col := e.Expr
 			if col == "" {
 				col = e.Name
 			}
-			out.Relationships = append(out.Relationships, ir.Relationship{
-				Left: sm.Name, Right: p.table, Columns: []ir.ColumnPair{{Left: col, Right: p.col}},
-			})
+			for _, p := range primaryByEntity[e.Name] {
+				if p.table == sm.Name {
+					continue
+				}
+				out.Relationships = append(out.Relationships, ir.Relationship{
+					Left: sm.Name, Right: p.table, Columns: []ir.ColumnPair{{Left: col, Right: p.col}},
+				})
+			}
 		}
 	}
 	// ...and from models: relationships tests / foreign-key constraints.

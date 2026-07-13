@@ -8,6 +8,38 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
+func TestDBTParseSkipsTimeSpine(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_scout")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, tb := range got.Tables {
+		if strings.EqualFold(tb.Name, "metricflow_time_spine") {
+			t.Fatalf("time-spine model must be skipped, but was emitted as table %q", tb.Name)
+		}
+	}
+}
+
+func TestDBTParseSharedPrimaryEntityJoinsAll(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_scout")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// fct_orders' foreign "customer" entity must join to BOTH tables that declare
+	// a primary "customer" (dim_customer AND fct_customer_ltv) — not just the last.
+	targets := map[string]bool{}
+	for _, r := range got.Relationships {
+		if r.Left == "fct_orders" {
+			targets[r.Right] = true
+		}
+	}
+	for _, want := range []string{"dim_customer", "fct_customer_ltv"} {
+		if !targets[want] {
+			t.Errorf("missing fct_orders -> %s relationship (got %v)", want, targets)
+		}
+	}
+}
+
 func TestDBTParseTimeDimEntityDedup(t *testing.T) {
 	got, err := dbt{}.Parse("testdata/dbt_timedim_entity")
 	if err != nil {

@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: metricflow_time_spine
+    description: Daily time spine used by the dbt Semantic Layer.
+    time_spine:
+      standard_granularity_column: date_day
+    columns:
+      - name: date_day
+
+semantic_models:
+  - name: dim_customer
+    model: ref('dim_customer')
+    entities:
+      - {name: customer, type: primary, expr: customer_sk}
+    dimensions:
+      - {name: segment, type: categorical}
+  # A SECOND table declaring a primary "customer" — the shared-entity case.
+  - name: fct_customer_ltv
+    model: ref('fct_customer_ltv')
+    entities:
+      - {name: customer, type: primary, expr: customer_sk}
+    measures:
+      - {name: ltv, agg: sum, expr: lifetime_value}
+  - name: fct_orders
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+      - {name: customer, type: foreign, expr: customer_sk}
+    measures:
+      - {name: orders, agg: count_distinct, expr: order_id}
