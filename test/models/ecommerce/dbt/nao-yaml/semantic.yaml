@@ -1,0 +1,79 @@
+dimensions:
+  - name: order_id
+    type: categorical
+    description: Order surrogate key.
+  - name: customer_sk
+    type: categorical
+    description: Customer the order belongs to.
+  - name: is_refunded
+    type: categorical
+    description: Whether the order was refunded.
+  - name: order_date
+    type: date
+    description: Date the order was placed.
+  - name: order_line_id
+    type: categorical
+    description: Line-item surrogate key.
+  - name: product_id
+    type: categorical
+    description: Product sold on the line.
+  - name: customer_segment
+    type: categorical
+    description: Marketing segment.
+  - name: accepts_marketing
+    type: categorical
+    description: Whether the customer opted in to marketing.
+  - name: category
+    type: categorical
+    description: Product category.
+  - name: title
+    type: categorical
+    description: Product title.
+metrics:
+  - name: gross_revenue
+    definition: Gross order revenue.
+    source:
+      table: fct_orders
+      column: order_gross
+      aggregation: SUM
+  - name: net_revenue
+    definition: Net booked revenue.
+    source:
+      table: fct_orders
+      column: order_net_booked
+      aggregation: SUM
+  - name: orders
+    source:
+      table: fct_orders
+      column: order_id
+      aggregation: COUNT_DISTINCT
+  - name: refunded_orders
+    definition: Count of refunded orders.
+    type: derived
+    source:
+      table: fct_orders
+    formula: sum(case when fct_orders.is_refunded then 1 else 0 end)
+  - name: aov
+    definition: Average order value (net revenue / orders).
+    type: derived
+    source:
+      table: fct_orders
+    formula: sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)
+  - name: refund_rate
+    definition: Refunded orders / all orders.
+    type: derived
+    source:
+      table: fct_orders
+    formula: sum(case when fct_orders.is_refunded then 1 else 0 end) / count(distinct fct_orders.order_id)
+  - name: units_sold
+    definition: Units sold.
+    source:
+      table: fct_order_lines
+      column: quantity
+      aggregation: SUM
+  - name: units_per_order
+    definition: Units per order (cross-table).
+    type: derived
+    source:
+      table: fct_order_lines
+    formula: sum(fct_order_lines.quantity) / count(distinct fct_orders.order_id)
