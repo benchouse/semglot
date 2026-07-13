@@ -17,7 +17,10 @@ type Layer interface {
 // Parser reads a dialect's files from dir into the neutral IR.
 type Parser interface {
 	Layer
-	Parse(dir string) (*ir.Model, error)
+	// Parse reads *.yml from each source directory (non-recursive) and merges
+	// them into one IR model. Multiple sources let a dbt project's schema files
+	// spread across folders (e.g. models/semantic + models/marts) be combined.
+	Parse(sources ...string) (*ir.Model, error)
 }
 
 // Emitter writes the neutral IR out as a dialect's files under dir.

@@ -8,6 +8,35 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
+func TestDBTParseMultiSource(t *testing.T) {
+	// fct_x's semantic model lives in dir a; its classic models: schema (and a
+	// classic-only fct_y) live in dir b. Parse must merge across both dirs.
+	got, err := dbt{}.Parse("testdata/dbt_multisource/a", "testdata/dbt_multisource/b")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	tables := map[string]ir.Table{}
+	for _, tb := range got.Tables {
+		tables[tb.Name] = tb
+	}
+	if _, ok := tables["fct_x"]; !ok {
+		t.Fatal("fct_x (semantic in a + classic in b) missing")
+	}
+	if _, ok := tables["fct_y"]; !ok {
+		t.Fatal("fct_y (classic-only in b) missing — classic models: from second source not read")
+	}
+	// fct_x picked up the classic-schema column 'region' from dir b.
+	hasRegion := false
+	for _, d := range tables["fct_x"].Dimensions {
+		if d.Name == "region" {
+			hasRegion = true
+		}
+	}
+	if !hasRegion {
+		t.Error("fct_x missing 'region' dimension from the classic schema in dir b")
+	}
+}
+
 func TestDBTParseSkipsTimeSpine(t *testing.T) {
 	got, err := dbt{}.Parse("testdata/dbt_scout")
 	if err != nil {

@@ -38,14 +38,23 @@ func main() {
 var snowflakeTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true}
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: semglot build --source <dir> --target <dir> --target-type <dialect> [--config <file>] [--database --schema --name --description]")
+	fmt.Fprintln(os.Stderr, "usage: semglot build --source <dir> [--source <dir> …] --target <dir> --target-type <dialect> [--config <file>] [--database --schema --name --description]")
+	fmt.Fprintln(os.Stderr, "--source is repeatable (dbt schema files may live in several folders, e.g. models/semantic + models/marts)")
 	fmt.Fprintln(os.Stderr, "target-type is one of: "+strings.Join(layer.Names(), ", "))
 }
+
+// sourceList is a repeatable string flag: each --source appends a directory,
+// so `--source a --source b` collects both.
+type sourceList []string
+
+func (s *sourceList) String() string     { return strings.Join(*s, " ") }
+func (s *sourceList) Set(v string) error { *s = append(*s, v); return nil }
 
 func buildCmd(args []string) int {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	sourceType := fs.String("source-type", "dbt", "source dialect")
-	source := fs.String("source", "", "source directory (required)")
+	var sources sourceList
+	fs.Var(&sources, "source", "source directory (required; repeatable: --source a --source b)")
 	targetType := fs.String("target-type", "", "target dialect (required); one of: "+strings.Join(layer.Names(), ", "))
 	target := fs.String("target", "", "output directory (required)")
 	config := fs.String("config", "", "path to a config file (optional)")
@@ -56,7 +65,7 @@ func buildCmd(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *source == "" || *targetType == "" || *target == "" {
+	if len(sources) == 0 || *targetType == "" || *target == "" {
 		fmt.Fprintln(os.Stderr, "build: --source, --target and --target-type are required")
 		return 2
 	}
@@ -74,7 +83,7 @@ func buildCmd(args []string) int {
 		return 1
 	}
 	if c, ok := emitter.(layer.Configurable); ok {
-		id, err := resolveIdentity(*source, *config, set,
+		id, err := resolveIdentity(sources[0], *config, set,
 			identity{Database: *database, Schema: *schema, Name: *name, Description: *description})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "build:", err)
@@ -87,7 +96,7 @@ func buildCmd(args []string) int {
 		emitter = c.WithOptions(id.Database, id.Schema, id.Name, id.Description)
 	}
 
-	model, err := parser.Parse(*source)
+	model, err := parser.Parse(sources...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build: parse:", err)
 		return 1

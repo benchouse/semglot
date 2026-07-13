@@ -1,0 +1,7 @@
+semantic_models:
+  - name: fct_x
+    model: ref('fct_x')
+    entities:
+      - {name: x, type: primary, expr: x_id}
+    measures:
+      - {name: total_amount, agg: sum, expr: amount}

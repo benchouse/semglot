@@ -153,10 +153,14 @@ type dbtConversionParams struct {
 	Window            string `yaml:"window"`
 }
 
-func (dbt) Parse(dir string) (*ir.Model, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.yml"))
-	if err != nil {
-		return nil, err
+func (dbt) Parse(sources ...string) (*ir.Model, error) {
+	var files []string
+	for _, dir := range sources {
+		matches, err := filepath.Glob(filepath.Join(dir, "*.yml"))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, matches...)
 	}
 	sort.Strings(files)
 

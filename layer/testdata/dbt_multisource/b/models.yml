@@ -1,0 +1,9 @@
+models:
+  - name: fct_x
+    columns:
+      - {name: x_id, data_type: number}
+      - {name: region, description: "Sales region.", data_type: varchar}
+  - name: fct_y
+    columns:
+      - {name: y_id, data_type: number}
+      - {name: label, data_type: varchar}
