@@ -134,3 +134,45 @@ metrics:
     aggregation:
       type: sum
       key: REFUNDED_ORDERS
+  units_per_order:
+    name: Units per order
+    model_id: FCT_ORDERS
+    description: Units per order (cross-table).
+    operations:
+      - operation: relationAggregate
+        parameters:
+          relation:
+            key: order_lines
+          aggregations:
+            - type: sum
+              key: QUANTITY
+              property:
+                key: _num_rel
+                name: _num_rel
+      - operation: groupAggregate
+        parameters:
+          groups: []
+          aggregations:
+            - type: sum
+              key: _num_rel
+              property:
+                key: _num
+                name: _num
+            - type: count_distinct
+              key: ORDER_ID
+              property:
+                key: _den
+                name: _den
+      - operation: deriveField
+        parameters:
+          field_name: Units per order
+          key: units_per_order
+          value:
+            expression: prop("_num") / prop("_den")
+            version: "1"
+    aggregation:
+      type: first
+      key: units_per_order
+      property:
+        key: units_per_order
+        name: Units per order
