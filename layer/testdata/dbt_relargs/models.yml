@@ -8,8 +8,14 @@ models:
       - name: gone_id
         data_tests:
           - relationships: {arguments: {to: "ref('dim_gone')", field: gone_id}}
+      - name: c_id
+        data_tests:
+          - relationships: {arguments: {to: "ref('dim_nopk')", field: c_id}}
   - name: dim_b
     columns:
       - name: b_id
         data_type: number
         data_tests: [unique, not_null]   # PK via the dbt idiom
+  - name: dim_nopk       # in the model, but no PK -> relationship to it must drop
+    columns:
+      - {name: c_id, data_type: number}

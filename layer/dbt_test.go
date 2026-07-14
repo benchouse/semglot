@@ -13,6 +13,16 @@ func TestDBTParseRelationshipArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
+	// PK inferred directly from unique+not_null (the dbt idiom).
+	var dimB ir.Table
+	for _, tb := range got.Tables {
+		if tb.Name == "dim_b" {
+			dimB = tb
+		}
+	}
+	if len(dimB.PrimaryKey) != 1 || dimB.PrimaryKey[0] != "b_id" {
+		t.Errorf("dim_b PrimaryKey = %v, want [b_id] inferred from unique+not_null", dimB.PrimaryKey)
+	}
 	rights := map[string]bool{}
 	for _, r := range got.Relationships {
 		if r.Right == "" {
@@ -29,6 +39,11 @@ func TestDBTParseRelationshipArguments(t *testing.T) {
 	// a relationship whose target isn't a table in the model must be dropped.
 	if rights["dim_gone"] {
 		t.Error("relationship to an absent table (dim_gone) was not dropped")
+	}
+	// a relationship to an in-model table with NO primary key must be dropped
+	// (Snowflake Cortex rejects joins to a PK-less table).
+	if rights["dim_nopk"] {
+		t.Error("relationship to a PK-less table (dim_nopk) was not dropped")
 	}
 }
 
