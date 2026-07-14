@@ -17,6 +17,13 @@ models:
       - name: is_refunded
         description: Whether the order was refunded.
         data_type: boolean
+      - name: channel_id
+        description: Sales channel the order came through.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_channel')
+              field: channel_id
       - name: order_date
         description: Date the order was placed.
         data_type: date
@@ -85,6 +92,17 @@ models:
       - name: title
         description: Product title.
         data_type: varchar
+  - name: dim_channel
+    description: Sales channel dimension.
+    columns:
+      - name: channel_id
+        description: Channel surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: channel_name
+        description: Channel display name.
+        data_type: varchar
 semantic_models:
   - name: fct_orders
     model: ref('fct_orders')
@@ -143,6 +161,14 @@ semantic_models:
       - name: category
         type: categorical
       - name: title
+        type: categorical
+  - name: dim_channel
+    model: ref('dim_channel')
+    entities:
+      - name: channel_id
+        type: primary
+    dimensions:
+      - name: channel_name
         type: categorical
 metrics:
   - name: gross_revenue

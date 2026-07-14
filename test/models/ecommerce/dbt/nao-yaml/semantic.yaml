@@ -8,6 +8,9 @@ dimensions:
   - name: is_refunded
     type: categorical
     description: Whether the order was refunded.
+  - name: channel_id
+    type: categorical
+    description: Sales channel the order came through.
   - name: order_date
     type: date
     description: Date the order was placed.
@@ -29,6 +32,9 @@ dimensions:
   - name: title
     type: categorical
     description: Product title.
+  - name: channel_name
+    type: categorical
+    description: Channel display name.
 metrics:
   - name: gross_revenue
     definition: Gross order revenue.

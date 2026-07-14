@@ -7,6 +7,10 @@ models:
       - ORDER_ID
     description: Order-grain finance fact. One row per order.
     properties:
+      CHANNEL_ID:
+        name: CHANNEL_ID
+        type: Number
+        description: Sales channel the order came through.
       CUSTOMER_SK:
         name: CUSTOMER_SK
         type: Number

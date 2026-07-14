@@ -22,6 +22,10 @@ tables:
         expr: IS_REFUNDED
         data_type: BOOLEAN
         description: Whether the order was refunded.
+      - name: channel_id
+        expr: CHANNEL_ID
+        data_type: NUMBER
+        description: Sales channel the order came through.
     time_dimensions:
       - name: order_date
         expr: ORDER_DATE
@@ -147,6 +151,24 @@ tables:
         expr: TITLE
         data_type: TEXT
         description: Product title.
+  - name: dim_channel
+    description: Sales channel dimension.
+    base_table:
+      database: ANALYTICS
+      schema: MAIN
+      table: DIM_CHANNEL
+    primary_key:
+      columns:
+        - CHANNEL_ID
+    dimensions:
+      - name: channel_id
+        expr: CHANNEL_ID
+        data_type: NUMBER
+        description: Channel surrogate key.
+      - name: channel_name
+        expr: CHANNEL_NAME
+        data_type: TEXT
+        description: Channel display name.
 relationships:
   - name: fct_orders_to_dim_customer
     left_table: fct_orders
@@ -166,3 +188,9 @@ relationships:
     relationship_columns:
       - left_column: PRODUCT_ID
         right_column: PRODUCT_ID
+  - name: fct_orders_to_dim_channel
+    left_table: fct_orders
+    right_table: dim_channel
+    relationship_columns:
+      - left_column: CHANNEL_ID
+        right_column: CHANNEL_ID

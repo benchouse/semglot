@@ -16,6 +16,7 @@
 - `fct_orders.customer_sk → dim_customer.customer_sk`
 - `fct_order_lines.order_id → fct_orders.order_id`
 - `fct_order_lines.product_id → dim_product.product_id`
+- `fct_orders.channel_id → dim_channel.channel_id`
 
 ## Table traps
 
@@ -23,3 +24,4 @@
 - **fct_order_lines**: Order-line grain. One row per line item.
 - **dim_customer**: Customer dimension.
 - **dim_product**: Product dimension.
+- **dim_channel**: Sales channel dimension.

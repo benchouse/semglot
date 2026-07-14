@@ -26,6 +26,15 @@ models:
       - name: order_net_booked
         description: Net booked revenue (gross minus tax and refunds).
         data_type: number
+      - name: channel_id
+        description: Sales channel the order came through.
+        data_type: number
+        data_tests:
+          # dbt 1.8+ nests the test args under `arguments:`.
+          - relationships:
+              arguments:
+                to: ref('dim_channel')
+                field: channel_id
 
   - name: fct_order_lines
     description: Order-line grain. One row per line item.
@@ -87,4 +96,17 @@ models:
         data_type: varchar
       - name: title
         description: Product title.
+        data_type: varchar
+
+  # A classic models:-only mart (no semantic_model): exercises a table whose PK
+  # is declared the dbt-idiomatic way (unique + not_null), not a constraint.
+  - name: dim_channel
+    description: Sales channel dimension.
+    columns:
+      - name: channel_id
+        description: Channel surrogate key.
+        data_type: number
+        data_tests: [unique, not_null]
+      - name: channel_name
+        description: Channel display name.
         data_type: varchar

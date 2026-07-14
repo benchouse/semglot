@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json
+models:
+  DIM_CHANNEL:
+    name: Channel
+    table: MAIN.DIM_CHANNEL
+    primary_key:
+      - CHANNEL_ID
+    description: Sales channel dimension.
+    properties:
+      CHANNEL_ID:
+        name: CHANNEL_ID
+        type: Number
+        description: Channel surrogate key.
+      CHANNEL_NAME:
+        name: CHANNEL_NAME
+        type: String
+        description: Channel display name.
+    relations:
+      orders:
+        name: Orders
+        type: hasMany
+        model_id: FCT_ORDERS
+        join_strategy:
+          join_key: CHANNEL_ID
