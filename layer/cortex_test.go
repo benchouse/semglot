@@ -78,6 +78,49 @@ func TestCortexEmitPrefersRealDataType(t *testing.T) {
 	}
 }
 
+// Columns without a source data_type are reported as gaps (with the type that
+// was inferred), while columns carrying a real type are not — so the CLI can
+// warn about exactly the columns whose Cortex type was guessed.
+func TestCortexTypeGaps(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "fct_vendor_bills",
+		Dimensions: []ir.Field{
+			{Name: "bill_id", Expr: "bill_id"},                 // inferred NUMBER (_id)
+			{Name: "bill_amount", Expr: "bill_amount"},         // inferred TEXT — the dangerous case
+			{Name: "po_id", Expr: "po_id", DataType: "number"}, // real type: not a gap
+		},
+		TimeDimensions: []ir.Field{{Name: "bill_date", Expr: "bill_date"}},                                // inferred DATE
+		Measures:       []ir.Measure{{Field: ir.Field{Name: "total_due", Expr: "total_due"}, Agg: "sum"}}, // inferred NUMBER
+	}}}
+
+	got := CortexTypeGaps(m)
+	want := []string{
+		"fct_vendor_bills.bill_id (inferred NUMBER)",
+		"fct_vendor_bills.bill_amount (inferred TEXT)",
+		"fct_vendor_bills.bill_date (inferred DATE)",
+		"fct_vendor_bills.total_due (inferred NUMBER)",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("gap count = %d, want %d\ngot: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("gap[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// A column with a real data_type produces no gap at all.
+func TestCortexTypeGapsNoneWhenTyped(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "dim_customer",
+		Dimensions: []ir.Field{{Name: "customer_segment", Expr: "customer_segment", DataType: "varchar"}},
+	}}}
+	if gaps := CortexTypeGaps(m); len(gaps) != 0 {
+		t.Fatalf("expected no gaps for fully-typed table, got: %v", gaps)
+	}
+}
+
 // IR notes are surfaced as Cortex custom_instructions (free-text guidance).
 func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
 	m := &ir.Model{

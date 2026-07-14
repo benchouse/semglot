@@ -247,3 +247,31 @@ func inferDataType(name string) string {
 		return "TEXT"
 	}
 }
+
+// CortexTypeGaps returns, in table/column order, the columns whose Cortex
+// data_type had to be inferred because the source model declared no data_type.
+// Cortex requires a data_type per column, so a wrong guess (classically a
+// numeric amount inferred as TEXT, which makes Cortex emit string-concatenating
+// SQL) silently corrupts answers. Each entry names the column and the type that
+// was inferred, so the source dbt model can be backfilled with real types. The
+// CLI prints these for the cortex target.
+func CortexTypeGaps(m *ir.Model) []string {
+	var gaps []string
+	add := func(table, col, inferred string, dt string) {
+		if strings.TrimSpace(dt) == "" {
+			gaps = append(gaps, fmt.Sprintf("%s.%s (inferred %s)", table, col, inferred))
+		}
+	}
+	for _, t := range m.Tables {
+		for _, d := range t.Dimensions {
+			add(t.Name, d.Name, inferDataType(d.Name), d.DataType)
+		}
+		for _, d := range t.TimeDimensions {
+			add(t.Name, d.Name, "DATE", d.DataType)
+		}
+		for _, mm := range t.Measures {
+			add(t.Name, mm.Name, "NUMBER", mm.DataType)
+		}
+	}
+	return gaps
+}

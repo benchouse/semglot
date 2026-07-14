@@ -111,6 +111,14 @@ func buildCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "  - "+n)
 		}
 	}
+	if *targetType == "cortex" {
+		if gaps := layer.CortexTypeGaps(model); len(gaps) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: %d Cortex column(s) had no source data_type; inferred a type (add data_type in dbt to fix):\n", len(gaps))
+			for _, g := range gaps {
+				fmt.Fprintln(os.Stderr, "  - "+g)
+			}
+		}
+	}
 	fmt.Printf("wrote to %s (%s -> %s)\n", *target, *sourceType, *targetType)
 	return 0
 }
