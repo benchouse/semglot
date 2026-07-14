@@ -35,6 +35,16 @@ func enumClause(enum []ir.EnumValue) string {
 	return "Values: " + strings.Join(parts, sep) + "."
 }
 
+// synonymClause renders a field's synonyms as one sentence for targets that
+// have no structured synonyms field (e.g. nao-yaml, which folds them into the
+// dimension description). Returns "" for an empty list.
+func synonymClause(syn []string) string {
+	if len(syn) == 0 {
+		return ""
+	}
+	return "Synonyms: " + strings.Join(syn, ", ") + "."
+}
+
 // appendClause joins a description and a trailing clause with a single space,
 // tolerating either being empty.
 func appendClause(desc, clause string) string {

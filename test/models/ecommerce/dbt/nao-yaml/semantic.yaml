@@ -22,7 +22,7 @@ dimensions:
     description: Product sold on the line.
   - name: customer_segment
     type: categorical
-    description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.'
+    description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered. Synonyms: segment, customer_type.'
   - name: accepts_marketing
     type: categorical
     description: Whether the customer opted in to marketing.

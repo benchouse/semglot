@@ -47,18 +47,49 @@ type naoSource struct {
 	Aggregation string `yaml:"aggregation,omitempty"`
 }
 
+// dimRichness scores how much semantic detail a field carries, so the flat
+// nao-yaml dimension dedup can keep the most informative variant of a
+// name shared across tables. Enums dominate (they change what the agent can
+// filter on), then synonyms, then a description.
+func dimRichness(f ir.Field) int {
+	r := 0
+	if len(f.Enum) > 0 {
+		r += 4
+	}
+	if len(f.Synonyms) > 0 {
+		r += 2
+	}
+	if strings.TrimSpace(f.Description) != "" {
+		r++
+	}
+	return r
+}
+
 func (n naoYaml) Emit(m *ir.Model, dir string) error {
 	resolve := metricResolver(m)
 
 	var doc naoDoc
-	seen := map[string]bool{}
+	// nao-yaml is a model-global, flat dimension list, so a column name shared
+	// across tables collapses to one dimension. Dedup by name, but keep the
+	// RICHEST variant (enum > synonyms > description) rather than first-seen, so
+	// an enum/synonym-bearing column is never displaced by a plainer duplicate.
+	// (A truly ambiguous case — the same name with DIFFERENT enums in different
+	// tables — still keeps only one; that is inherent to the flat format.)
+	type dimSlot struct{ idx, rich int }
+	seen := map[string]dimSlot{}
 	addDim := func(f ir.Field, typ string) {
-		if seen[f.Name] {
+		desc := appendClause(appendClause(f.Description, enumClause(f.Enum)), synonymClause(f.Synonyms))
+		nd := naoDim{Name: f.Name, Type: typ, Description: desc}
+		rich := dimRichness(f)
+		if slot, ok := seen[f.Name]; ok {
+			if rich > slot.rich {
+				doc.Dimensions[slot.idx] = nd
+				seen[f.Name] = dimSlot{idx: slot.idx, rich: rich}
+			}
 			return
 		}
-		seen[f.Name] = true
-		doc.Dimensions = append(doc.Dimensions, naoDim{Name: f.Name, Type: typ,
-			Description: appendClause(f.Description, enumClause(f.Enum))})
+		seen[f.Name] = dimSlot{idx: len(doc.Dimensions), rich: rich}
+		doc.Dimensions = append(doc.Dimensions, nd)
 	}
 	notes := slices.Clone(m.Notes)
 	for _, t := range m.Tables {
