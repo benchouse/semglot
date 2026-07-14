@@ -124,7 +124,15 @@ tables:
       - name: customer_segment
         expr: CUSTOMER_SEGMENT
         data_type: TEXT
-        description: Marketing segment.
+        description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.'
+        synonyms:
+          - segment
+          - customer_type
+        sample_values:
+          - new
+          - returning
+          - vip
+          - prospect
       - name: accepts_marketing
         expr: ACCEPTS_MARKETING
         data_type: BOOLEAN

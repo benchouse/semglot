@@ -20,23 +20,23 @@ create or replace semantic view ECOMMERCE
 		FCT_ORDERS_DIM_CHANNEL as FCT_ORDERS(CHANNEL_ID) references DIM_CHANNEL(CHANNEL_ID)
 	)
 	dimensions (
-		FCT_ORDERS.ORDER_ID as fct_orders.ORDER_ID,
-		FCT_ORDERS.CUSTOMER_SK as fct_orders.CUSTOMER_SK,
-		FCT_ORDERS.IS_REFUNDED as fct_orders.IS_REFUNDED,
-		FCT_ORDERS.CHANNEL_ID as fct_orders.CHANNEL_ID,
-		FCT_ORDERS.ORDER_DATE as fct_orders.ORDER_DATE,
-		FCT_ORDER_LINES.ORDER_LINE_ID as fct_order_lines.ORDER_LINE_ID,
-		FCT_ORDER_LINES.ORDER_ID as fct_order_lines.ORDER_ID,
-		FCT_ORDER_LINES.PRODUCT_ID as fct_order_lines.PRODUCT_ID,
-		FCT_ORDER_LINES.ORDER_DATE as fct_order_lines.ORDER_DATE,
-		DIM_CUSTOMER.CUSTOMER_SK as dim_customer.CUSTOMER_SK,
-		DIM_CUSTOMER.CUSTOMER_SEGMENT as dim_customer.CUSTOMER_SEGMENT,
-		DIM_CUSTOMER.ACCEPTS_MARKETING as dim_customer.ACCEPTS_MARKETING,
-		DIM_PRODUCT.PRODUCT_ID as dim_product.PRODUCT_ID,
-		DIM_PRODUCT.CATEGORY as dim_product.CATEGORY,
-		DIM_PRODUCT.TITLE as dim_product.TITLE,
-		DIM_CHANNEL.CHANNEL_ID as dim_channel.CHANNEL_ID,
-		DIM_CHANNEL.CHANNEL_NAME as dim_channel.CHANNEL_NAME
+		FCT_ORDERS.ORDER_ID as fct_orders.ORDER_ID comment='Order surrogate key.',
+		FCT_ORDERS.CUSTOMER_SK as fct_orders.CUSTOMER_SK comment='Customer the order belongs to.',
+		FCT_ORDERS.IS_REFUNDED as fct_orders.IS_REFUNDED comment='Whether the order was refunded.',
+		FCT_ORDERS.CHANNEL_ID as fct_orders.CHANNEL_ID comment='Sales channel the order came through.',
+		FCT_ORDERS.ORDER_DATE as fct_orders.ORDER_DATE comment='Date the order was placed.',
+		FCT_ORDER_LINES.ORDER_LINE_ID as fct_order_lines.ORDER_LINE_ID comment='Line-item surrogate key.',
+		FCT_ORDER_LINES.ORDER_ID as fct_order_lines.ORDER_ID comment='Order the line belongs to.',
+		FCT_ORDER_LINES.PRODUCT_ID as fct_order_lines.PRODUCT_ID comment='Product sold on the line.',
+		FCT_ORDER_LINES.ORDER_DATE as fct_order_lines.ORDER_DATE comment='Date the parent order was placed.',
+		DIM_CUSTOMER.CUSTOMER_SK as dim_customer.CUSTOMER_SK comment='Customer surrogate key.',
+		DIM_CUSTOMER.CUSTOMER_SEGMENT as dim_customer.CUSTOMER_SEGMENT comment='Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.',
+		DIM_CUSTOMER.ACCEPTS_MARKETING as dim_customer.ACCEPTS_MARKETING comment='Whether the customer opted in to marketing.',
+		DIM_PRODUCT.PRODUCT_ID as dim_product.PRODUCT_ID comment='Product surrogate key.',
+		DIM_PRODUCT.CATEGORY as dim_product.CATEGORY comment='Product category.',
+		DIM_PRODUCT.TITLE as dim_product.TITLE comment='Product title.',
+		DIM_CHANNEL.CHANNEL_ID as dim_channel.CHANNEL_ID comment='Channel surrogate key.',
+		DIM_CHANNEL.CHANNEL_NAME as dim_channel.CHANNEL_NAME comment='Channel display name.'
 	)
 	metrics (
 		FCT_ORDERS.GROSS_REVENUE as SUM(FCT_ORDERS.ORDER_GROSS) comment='Gross order revenue.',

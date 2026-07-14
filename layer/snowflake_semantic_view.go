@@ -48,7 +48,11 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 		}
 		tables = append(tables, line)
 		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
-			dims = append(dims, fmt.Sprintf("%s.%s as %s.%s", u, strings.ToUpper(d.Name), strings.ToLower(t.Name), strings.ToUpper(d.Expr)))
+			dl := fmt.Sprintf("%s.%s as %s.%s", u, strings.ToUpper(d.Name), strings.ToLower(t.Name), strings.ToUpper(d.Expr))
+			if c := appendClause(d.Description, enumClause(d.Enum)); c != "" {
+				dl += fmt.Sprintf(" comment='%s'", sqlQuote(c))
+			}
+			dims = append(dims, dl)
 		}
 		for _, mt := range t.Metrics {
 			if reason, degrade := cortexDegrade(mt.Def); degrade {

@@ -35,6 +35,14 @@ type dbtEmitColumn struct {
 	DataType    string              `yaml:"data_type,omitempty"`
 	Constraints []dbtEmitConstraint `yaml:"constraints,omitempty"`
 	DataTests   []dbtEmitTest       `yaml:"data_tests,omitempty"`
+	Meta        *dbtEmitMeta        `yaml:"meta,omitempty"`
+}
+
+// dbtEmitMeta round-trips a column's synonyms and enum descriptions; the enum
+// value list itself round-trips as an accepted_values test (see dbtEmitTest).
+type dbtEmitMeta struct {
+	Synonyms []string          `yaml:"synonyms,omitempty"`
+	Enum     map[string]string `yaml:"enum,omitempty"`
 }
 
 type dbtEmitConstraint struct {
@@ -42,7 +50,16 @@ type dbtEmitConstraint struct {
 }
 
 type dbtEmitTest struct {
-	Relationships *dbtEmitRelTest `yaml:"relationships,omitempty"`
+	Relationships  *dbtEmitRelTest        `yaml:"relationships,omitempty"`
+	AcceptedValues *dbtEmitAcceptedValues `yaml:"accepted_values,omitempty"`
+}
+
+type dbtEmitAcceptedValues struct {
+	Arguments dbtEmitAVArgs `yaml:"arguments"`
+}
+
+type dbtEmitAVArgs struct {
+	Values []string `yaml:"values,flow"`
 }
 
 type dbtEmitRelTest struct {
@@ -151,7 +168,9 @@ func emitModel(m *ir.Model, t ir.Table, pk, fk map[string]bool) dbtEmitModel {
 	// (whose Field.Description parse forced to "").
 	var order []string
 	info := map[string]*dbtEmitColumn{}
-	add := func(col, desc, dtype string) {
+	colEnum := map[string][]ir.EnumValue{}
+	colSyn := map[string][]string{}
+	add := func(col, desc, dtype string, enum []ir.EnumValue, syn []string) {
 		if col == "" {
 			return
 		}
@@ -167,18 +186,24 @@ func emitModel(m *ir.Model, t ir.Table, pk, fk map[string]bool) dbtEmitModel {
 		if c.DataType == "" {
 			c.DataType = dtype
 		}
+		if len(colEnum[col]) == 0 && len(enum) > 0 {
+			colEnum[col] = enum
+		}
+		if len(colSyn[col]) == 0 && len(syn) > 0 {
+			colSyn[col] = syn
+		}
 	}
 	for _, d := range t.Dimensions {
-		add(d.Expr, d.Description, d.DataType)
+		add(d.Expr, d.Description, d.DataType, d.Enum, d.Synonyms)
 	}
 	for _, d := range t.TimeDimensions {
-		add(d.Expr, d.Description, d.DataType)
+		add(d.Expr, d.Description, d.DataType, d.Enum, d.Synonyms)
 	}
 	for _, ms := range t.Measures {
 		// Only a bare-column measure has a physical backing column; a compound
 		// expression (e.g. a CASE) is not a column and carries no doc to persist.
 		if isIdent(ms.Expr) {
-			add(ms.Expr, ms.Description, ms.DataType)
+			add(ms.Expr, ms.Description, ms.DataType, ms.Enum, ms.Synonyms)
 		}
 	}
 	// Ensure every FK column exists so its relationship test has a home, even if
@@ -188,13 +213,39 @@ func emitModel(m *ir.Model, t ir.Table, pk, fk map[string]bool) dbtEmitModel {
 			continue
 		}
 		for _, cp := range r.Columns {
-			add(cp.Left, "", "")
+			add(cp.Left, "", "", nil, nil)
 		}
 	}
 
 	em := dbtEmitModel{Name: t.Name, Description: t.Description}
 	for _, col := range order {
 		c := *info[col]
+		// Enum round-trips as an accepted_values test (ordered value list) plus
+		// meta.enum (per-value descriptions); synonyms round-trip via meta.
+		if e := colEnum[col]; len(e) > 0 {
+			vals := make([]string, len(e))
+			descs := map[string]string{}
+			for i, ev := range e {
+				vals[i] = ev.Value
+				if ev.Description != "" {
+					descs[ev.Value] = ev.Description
+				}
+			}
+			c.DataTests = append(c.DataTests, dbtEmitTest{
+				AcceptedValues: &dbtEmitAcceptedValues{Arguments: dbtEmitAVArgs{Values: vals}}})
+			if len(descs) > 0 {
+				if c.Meta == nil {
+					c.Meta = &dbtEmitMeta{}
+				}
+				c.Meta.Enum = descs
+			}
+		}
+		if s := colSyn[col]; len(s) > 0 {
+			if c.Meta == nil {
+				c.Meta = &dbtEmitMeta{}
+			}
+			c.Meta.Synonyms = s
+		}
 		if pk[col] {
 			c.Constraints = append(c.Constraints, dbtEmitConstraint{Type: "primary_key"})
 		}

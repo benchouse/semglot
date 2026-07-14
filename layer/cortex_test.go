@@ -121,6 +121,41 @@ func TestCortexTypeGapsNoneWhenTyped(t *testing.T) {
 	}
 }
 
+// An enum dimension emits sample_values, and documented values are folded into
+// the column description (Cortex has no per-value description field).
+func TestCortexEmitEnumSampleValues(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_bill",
+		PrimaryKey: []string{"bill_id"},
+		Dimensions: []ir.Field{
+			{Name: "bill_id", Expr: "bill_id", DataType: "number"},
+			{Name: "status", Expr: "status", DataType: "varchar", Description: "Payment status.",
+				Synonyms: []string{"state"},
+				Enum: []ir.EnumValue{
+					{Value: "open", Description: "Outstanding / unpaid"},
+					{Value: "paidInFull", Description: "Fully settled"},
+				}},
+		},
+	}}}
+	dir := t.TempDir()
+	if err := (cortex{Database: "DB", Schema: "MAIN", ModelName: "m"}).Emit(m, dir); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
+	out := string(b)
+	for _, want := range []string{
+		"sample_values:",
+		"- open",
+		"- paidInFull",
+		"Values: open = Outstanding / unpaid; paidInFull = Fully settled.",
+		"synonyms:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
 // IR notes are surfaced as Cortex custom_instructions (free-text guidance).
 func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
 	m := &ir.Model{

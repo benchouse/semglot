@@ -167,7 +167,8 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			if _, ok := model.Properties[col]; ok {
 				return
 			}
-			model.Properties[col] = ssProperty{Name: col, Type: typ, Description: f.Description}
+			model.Properties[col] = ssProperty{Name: col, Type: typ,
+				Description: appendClause(f.Description, enumClause(f.Enum))}
 		}
 		for _, d := range t.Dimensions {
 			addProp(d, ssType(d.DataType, d.Name, false))
@@ -353,7 +354,8 @@ func stripPrefix(s string) string {
 }
 
 // ssType maps to supersimple's property type vocabulary, preferring a real dbt
-// data_type and falling back to a name/role heuristic. Enum/format not emitted.
+// data_type and falling back to a name/role heuristic. supersimple has no
+// structured enum type, so enum values are folded into the property description.
 func ssType(dbtType, name string, isTime bool) string {
 	if dbtType != "" {
 		return ssMapType(dbtType)

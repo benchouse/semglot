@@ -34,6 +34,18 @@ type Field struct {
 	DataType    string
 	Expr        string // underlying column/expression
 	Synonyms    []string
+	// Enum lists the field's allowed categorical values, optionally documented.
+	// Sourced from a superset of the value list (e.g. dbt accepted_values) and a
+	// value→description map (e.g. dbt meta.enum). Emitters render it structurally
+	// where the target supports per-value enums, else fold it into Description.
+	Enum []EnumValue
+}
+
+// EnumValue is one allowed value of a categorical field, with an optional
+// human description of what the value means.
+type EnumValue struct {
+	Value       string
+	Description string
 }
 
 // Measure is an aggregatable fact. Agg is the source aggregation (sum, count,

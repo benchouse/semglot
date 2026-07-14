@@ -52,6 +52,14 @@ type dbtColumn struct {
 	Constraints []dbtConstraint `yaml:"constraints"`
 	DataTests   []dbtTest       `yaml:"data_tests"`
 	Tests       []dbtTest       `yaml:"tests"`
+	Meta        dbtColumnMeta   `yaml:"meta"`
+}
+
+// dbtColumnMeta is a column's free-form dbt meta block. We read two keys:
+// synonyms (alternate NL names) and enum (value→description for categoricals).
+type dbtColumnMeta struct {
+	Synonyms []string          `yaml:"synonyms"`
+	Enum     map[string]string `yaml:"enum"`
 }
 
 type dbtConstraint struct {
@@ -65,8 +73,26 @@ type dbtConstraint struct {
 // ("unique", "not_null") or a mapping ({relationships: {to, field}}); only the
 // relationships form carries data we use.
 type dbtTest struct {
-	Name          string // scalar test name: "unique", "not_null", …
-	Relationships *dbtRelTest
+	Name           string // scalar test name: "unique", "not_null", …
+	Relationships  *dbtRelTest
+	AcceptedValues *dbtAcceptedValues
+}
+
+// dbtAcceptedValues captures an accepted_values test. dbt 1.8+ nests args under
+// `arguments:`; older projects put `values:` directly. Accept both.
+type dbtAcceptedValues struct {
+	Values    []string `yaml:"values"`
+	Arguments *struct {
+		Values []string `yaml:"values"`
+	} `yaml:"arguments"`
+}
+
+// vals resolves the value list, preferring the nested `arguments:` form.
+func (a *dbtAcceptedValues) vals() []string {
+	if a.Arguments != nil && len(a.Arguments.Values) > 0 {
+		return a.Arguments.Values
+	}
+	return a.Values
 }
 
 type dbtRelTest struct {
@@ -101,13 +127,52 @@ func (t *dbtTest) UnmarshalYAML(value *yaml.Node) error {
 		return nil
 	}
 	var m struct {
-		Relationships *dbtRelTest `yaml:"relationships"`
+		Relationships  *dbtRelTest        `yaml:"relationships"`
+		AcceptedValues *dbtAcceptedValues `yaml:"accepted_values"`
 	}
 	if err := value.Decode(&m); err != nil {
 		return err
 	}
 	t.Relationships = m.Relationships
+	t.AcceptedValues = m.AcceptedValues
 	return nil
+}
+
+// enumFromColumn computes a column's enum as the superset of its accepted_values
+// test values and its meta.enum map, preserving accepted_values order first and
+// appending any meta-only values sorted. Descriptions come from meta.enum.
+// Returns nil when the column declares no categorical values either way.
+func enumFromColumn(c dbtColumn) []ir.EnumValue {
+	seen := map[string]bool{}
+	var order []string
+	for _, t := range append(append([]dbtTest{}, c.DataTests...), c.Tests...) {
+		if t.AcceptedValues == nil {
+			continue
+		}
+		for _, v := range t.AcceptedValues.vals() {
+			if !seen[v] {
+				seen[v] = true
+				order = append(order, v)
+			}
+		}
+	}
+	metaOnly := make([]string, 0, len(c.Meta.Enum))
+	for v := range c.Meta.Enum {
+		if !seen[v] {
+			seen[v] = true
+			metaOnly = append(metaOnly, v)
+		}
+	}
+	sort.Strings(metaOnly)
+	order = append(order, metaOnly...)
+	if len(order) == 0 {
+		return nil
+	}
+	out := make([]ir.EnumValue, len(order))
+	for i, v := range order {
+		out[i] = ir.EnumValue{Value: v, Description: c.Meta.Enum[v]}
+	}
+	return out
 }
 
 // semantic layer
@@ -254,12 +319,16 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 
 		colDesc := map[string]string{}
 		colType := map[string]string{}
+		colEnum := map[string][]ir.EnumValue{}
+		colSyn := map[string][]string{}
 		// cols is the set of this table's column names (lowercased), used to
 		// qualify column references inside compound measure expressions.
 		cols := map[string]bool{}
 		for _, c := range md.Columns {
 			colDesc[c.Name] = c.Description
 			colType[c.Name] = c.DataType
+			colEnum[c.Name] = enumFromColumn(c)
+			colSyn[c.Name] = c.Meta.Synonyms
 			cols[strings.ToLower(c.Name)] = true
 		}
 		for _, e := range sm.Entities {
@@ -295,7 +364,8 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 		used := map[string]bool{}
 		field := func(fname, col string) ir.Field {
 			used[col] = true
-			return ir.Field{Name: fname, Expr: col, Description: colDesc[col], DataType: colType[col]}
+			return ir.Field{Name: fname, Expr: col, Description: colDesc[col], DataType: colType[col],
+				Synonyms: colSyn[col], Enum: colEnum[col]}
 		}
 
 		for _, e := range sm.Entities {
@@ -339,7 +409,8 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 			if used[c.Name] {
 				continue
 			}
-			t.Dimensions = append(t.Dimensions, ir.Field{Name: c.Name, Expr: c.Name, Description: c.Description, DataType: c.DataType})
+			t.Dimensions = append(t.Dimensions, ir.Field{Name: c.Name, Expr: c.Name, Description: c.Description, DataType: c.DataType,
+				Synonyms: c.Meta.Synonyms, Enum: enumFromColumn(c)})
 			used[c.Name] = true
 		}
 

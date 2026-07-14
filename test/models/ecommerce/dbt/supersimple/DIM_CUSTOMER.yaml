@@ -14,7 +14,7 @@ models:
       CUSTOMER_SEGMENT:
         name: CUSTOMER_SEGMENT
         type: String
-        description: Marketing segment.
+        description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.'
       CUSTOMER_SK:
         name: CUSTOMER_SK
         type: Number

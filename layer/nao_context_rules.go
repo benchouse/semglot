@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/benchouse/semglot/ir"
 )
@@ -30,6 +31,22 @@ func (naoContextRules) Emit(m *ir.Model, dir string) error {
 			if mt.Description != "" {
 				fmt.Fprintf(&b, " %s", mt.Description)
 			}
+			b.WriteByte('\n')
+		}
+	}
+	// Allowed values: categorical columns that declare an enum.
+	var enums []string
+	for _, t := range m.Tables {
+		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
+			if c := enumClause(d.Enum); c != "" {
+				enums = append(enums, fmt.Sprintf("- `%s.%s`: %s", t.Name, d.Name, strings.TrimPrefix(c, "Values: ")))
+			}
+		}
+	}
+	if len(enums) > 0 {
+		b.WriteString("\n## Allowed values\n\n")
+		for _, e := range enums {
+			b.WriteString(e)
 			b.WriteByte('\n')
 		}
 	}

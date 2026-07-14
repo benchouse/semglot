@@ -57,7 +57,8 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 			return
 		}
 		seen[f.Name] = true
-		doc.Dimensions = append(doc.Dimensions, naoDim{Name: f.Name, Type: typ, Description: f.Description})
+		doc.Dimensions = append(doc.Dimensions, naoDim{Name: f.Name, Type: typ,
+			Description: appendClause(f.Description, enumClause(f.Enum))})
 	}
 	notes := slices.Clone(m.Notes)
 	for _, t := range m.Tables {

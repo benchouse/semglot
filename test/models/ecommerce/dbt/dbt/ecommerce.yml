@@ -75,6 +75,19 @@ models:
       - name: customer_segment
         description: Marketing segment.
         data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [new, returning, vip, prospect]
+        meta:
+          synonyms:
+            - segment
+            - customer_type
+          enum:
+            new: First-ever order not yet placed or just placed
+            prospect: Signed up, never ordered
+            returning: Has ordered before
+            vip: High-value repeat customer
       - name: accepts_marketing
         description: Whether the customer opted in to marketing.
         data_type: boolean

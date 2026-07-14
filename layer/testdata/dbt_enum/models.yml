@@ -1,0 +1,19 @@
+models:
+  - name: fct_bill
+    columns:
+      - name: bill_id
+        data_type: number
+        data_tests: [unique, not_null]
+      - name: status
+        description: Payment status.
+        data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [open, paidInFull]
+        meta:
+          synonyms: [state, payment_status]
+          enum:
+            open: "Outstanding / unpaid"
+            paidInFull: "Fully settled"
+            void: "Cancelled bill"   # meta-only value: must appear via the superset

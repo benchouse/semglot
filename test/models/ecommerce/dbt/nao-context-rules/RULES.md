@@ -11,6 +11,10 @@
 - **Units sold**: `sum(fct_order_lines.quantity)`. Units sold.
 - **Units per order**: `sum(fct_order_lines.quantity) / count(distinct fct_orders.order_id)`. Units per order (cross-table).
 
+## Allowed values
+
+- `dim_customer.customer_segment`: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.
+
 ## Joins & routing
 
 - `fct_orders.customer_sk → dim_customer.customer_sk`

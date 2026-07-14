@@ -138,6 +138,36 @@ func TestDBTParseTimeDimEntityDedup(t *testing.T) {
 	}
 }
 
+// A column's enum is the superset of its accepted_values list and its meta.enum
+// map: accepted_values order first, meta-only values appended, descriptions from
+// meta.enum. meta.synonyms is carried onto the field too.
+func TestDBTParseColumnEnumAndSynonyms(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_enum")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	var status *ir.Field
+	for i := range got.Tables[0].Dimensions {
+		if got.Tables[0].Dimensions[i].Name == "status" {
+			status = &got.Tables[0].Dimensions[i]
+		}
+	}
+	if status == nil {
+		t.Fatalf("status dimension not found in %+v", got.Tables[0].Dimensions)
+	}
+	wantEnum := []ir.EnumValue{
+		{Value: "open", Description: "Outstanding / unpaid"},
+		{Value: "paidInFull", Description: "Fully settled"},
+		{Value: "void", Description: "Cancelled bill"}, // meta-only, appended via superset
+	}
+	if !reflect.DeepEqual(status.Enum, wantEnum) {
+		t.Errorf("status.Enum = %+v, want %+v", status.Enum, wantEnum)
+	}
+	if !reflect.DeepEqual(status.Synonyms, []string{"state", "payment_status"}) {
+		t.Errorf("status.Synonyms = %v, want [state payment_status]", status.Synonyms)
+	}
+}
+
 func TestDBTParse(t *testing.T) {
 	got, err := dbt{}.Parse("testdata/dbt")
 	if err != nil {
