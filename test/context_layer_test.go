@@ -23,7 +23,7 @@ func emitTarget(t *testing.T, target, file string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := p.Parse(projectDir)
+	m, err := p.Parse(sourceDirs...)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

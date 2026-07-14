@@ -15,15 +15,21 @@ import (
 )
 
 const (
-	// projectDir is the dbt (source-dialect) input directory. Its nested
-	// <target>/ subdirs hold the expected output for each target dialect.
+	// projectDir holds the emitted-golden subdirs (<target>/) for each dialect.
 	projectDir = "models/ecommerce/dbt"
 	goldenPath = "models/ecommerce/dbt/cortex/ecommerce.yaml"
-	// dbtGoldenPath is the emitted-dbt golden. It lives in a dbt/ SUBDIR so
-	// Parse(projectDir)'s top-level *.yml glob does NOT re-read it (which would
-	// pollute the source project).
+	// dbtGoldenPath is the emitted-dbt golden, in a dbt/ SUBDIR that the source
+	// globs below never read (which would pollute the source project).
 	dbtGoldenPath = "models/ecommerce/dbt/dbt/ecommerce.yml"
 )
+
+// sourceDirs is the dbt input, split across folders like a real project
+// (semantic_models + metrics under semantic/, classic models: schema under
+// marts/) — so the tests exercise multi-source (--source a --source b) parsing.
+var sourceDirs = []string{
+	"models/ecommerce/dbt/semantic",
+	"models/ecommerce/dbt/marts",
+}
 
 // sortFields orders a []ir.Field slice by Name for canonical comparison.
 func sortFields(fs []ir.Field) {
@@ -70,7 +76,7 @@ func TestDBTRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m1, err := p.Parse(projectDir)
+	m1, err := p.Parse(sourceDirs...)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
@@ -104,7 +110,7 @@ func TestDBTEmitGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dbt is not an Emitter: %v", err)
 	}
-	m, err := p.Parse(projectDir)
+	m, err := p.Parse(sourceDirs...)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -148,7 +154,7 @@ func emit(t *testing.T) []byte {
 	if c, ok := e.(layer.Configurable); ok {
 		e = c.WithOptions("ANALYTICS", "MAIN", "ecommerce", "")
 	}
-	m, err := p.Parse(projectDir)
+	m, err := p.Parse(sourceDirs...)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -281,13 +287,18 @@ func TestCLIBinaryEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := filepath.Abs(projectDir)
+	semantic, err := filepath.Abs(sourceDirs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	marts, err := filepath.Abs(sourceDirs[1])
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := t.TempDir()
 	cmd := exec.Command("go", "run", "./cmd/semglot", "build",
-		"--source", ref, "--target-type", "cortex", "--target", out,
+		"--source", semantic, "--source", marts, // repeatable --source
+		"--target-type", "cortex", "--target", out,
 		"--database", "ANALYTICS", "--name", "ecommerce")
 	cmd.Dir = moduleRoot
 	if b, err := cmd.CombinedOutput(); err != nil {
@@ -390,7 +401,7 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model, err := p.Parse(projectDir)
+	model, err := p.Parse(sourceDirs...)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

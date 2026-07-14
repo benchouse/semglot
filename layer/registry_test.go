@@ -8,7 +8,7 @@ import (
 
 type fakeParser struct{}
 
-func (fakeParser) Name() string                    { return "fake-parser" }
+func (fakeParser) Name() string                       { return "fake-parser" }
 func (fakeParser) Parse(...string) (*ir.Model, error) { return &ir.Model{}, nil }
 
 type fakeEmitter struct{}
