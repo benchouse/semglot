@@ -59,7 +59,8 @@ func buildCmd(args []string) int {
 	target := fs.String("target", "", "output directory (required)")
 	config := fs.String("config", "", "path to a config file (optional)")
 	database := fs.String("database", "", "warehouse database (Snowflake targets)")
-	schema := fs.String("schema", "", "warehouse schema (Snowflake targets; default MAIN)")
+	schema := fs.String("schema", "", "warehouse schema of the source tables (Snowflake targets; default MAIN)")
+	viewSchema := fs.String("view-schema", "", "schema for the emitted semantic-view object (Snowflake semantic view; defaults to --schema)")
 	name := fs.String("name", "", "model/view name (default: source basename)")
 	description := fs.String("description", "", "model description")
 	if err := fs.Parse(args); err != nil {
@@ -84,7 +85,7 @@ func buildCmd(args []string) int {
 	}
 	if c, ok := emitter.(layer.Configurable); ok {
 		id, err := resolveIdentity(sources[0], *config, set,
-			identity{Database: *database, Schema: *schema, Name: *name, Description: *description})
+			identity{Database: *database, Schema: *schema, ViewSchema: *viewSchema, Name: *name, Description: *description})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "build:", err)
 			return 1
@@ -93,7 +94,13 @@ func buildCmd(args []string) int {
 			fmt.Fprintf(os.Stderr, "build: --target-type %s requires a database (via --database or --config)\n", *targetType)
 			return 1
 		}
-		emitter = c.WithOptions(id.Database, id.Schema, id.Name, id.Description)
+		emitter = c.WithOptions(layer.Options{
+			Database:    id.Database,
+			Schema:      id.Schema,
+			ViewSchema:  id.ViewSchema,
+			Name:        id.Name,
+			Description: id.Description,
+		})
 	}
 
 	model, err := parser.Parse(sources...)

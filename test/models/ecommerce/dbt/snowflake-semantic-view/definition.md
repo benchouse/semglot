@@ -5,7 +5,7 @@ This is a Snowflake **semantic view** — use this to understand the intended wa
 ## Definition
 
 ```sql
-create or replace semantic view ECOMMERCE
+create or replace semantic view ANALYTICS.MAIN.ECOMMERCE
 	tables (
 		FCT_ORDERS as ANALYTICS.MAIN.FCT_ORDERS primary key (ORDER_ID) comment='Order-grain finance fact. One row per order.',
 		FCT_ORDER_LINES as ANALYTICS.MAIN.FCT_ORDER_LINES primary key (ORDER_LINE_ID) comment='Order-line grain. One row per line item.',

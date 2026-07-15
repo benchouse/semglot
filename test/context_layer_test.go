@@ -17,7 +17,7 @@ func emitTarget(t *testing.T, target, file string) string {
 		t.Fatalf("AsEmitter(%s): %v", target, err)
 	}
 	if c, ok := e.(layer.Configurable); ok {
-		e = c.WithOptions("ANALYTICS", "MAIN", "ecommerce", "")
+		e = c.WithOptions(layer.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
 	}
 	p, err := layer.AsParser("dbt")
 	if err != nil {
@@ -41,7 +41,7 @@ func emitTarget(t *testing.T, target, file string) string {
 func TestSemanticViewStructure(t *testing.T) {
 	got := emitTarget(t, "snowflake-semantic-view", "definition.md")
 	for _, want := range []string{
-		"create or replace semantic view ECOMMERCE",
+		"create or replace semantic view ANALYTICS.MAIN.ECOMMERCE",
 		"FCT_ORDERS as ANALYTICS.MAIN.FCT_ORDERS primary key (ORDER_ID)",
 		"FCT_ORDER_LINES_FCT_ORDERS as FCT_ORDER_LINES(ORDER_ID) references FCT_ORDERS(ORDER_ID)",
 		"FCT_ORDERS.AOV as SUM(FCT_ORDERS.ORDER_NET_BOOKED) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)",

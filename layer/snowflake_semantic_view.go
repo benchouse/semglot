@@ -16,12 +16,21 @@ func init() { Register(snowflakeSemanticView{}) }
 // snowflakeSemanticView emits a Snowflake CREATE SEMANTIC VIEW DDL wrapped in a
 // markdown definition.md. Zero value is usable; the build command sets identity
 // from flags. Emit does not mutate m.
-type snowflakeSemanticView struct{ Database, Schema, ModelName, Description string }
+// ViewSchema is the schema the semantic-view OBJECT is created in (e.g. SEM);
+// its underlying TABLES still reference Schema (e.g. MAIN). ViewSchema falls
+// back to Schema when empty.
+type snowflakeSemanticView struct{ Database, Schema, ViewSchema, ModelName, Description string }
 
 func (snowflakeSemanticView) Name() string { return "snowflake-semantic-view" }
 
-func (snowflakeSemanticView) WithOptions(database, schema, name, description string) Emitter {
-	return snowflakeSemanticView{database, schema, name, description}
+func (snowflakeSemanticView) WithOptions(o Options) Emitter {
+	return snowflakeSemanticView{
+		Database:    o.Database,
+		Schema:      o.Schema,
+		ViewSchema:  o.ViewSchema,
+		ModelName:   o.Name,
+		Description: o.Description,
+	}
 }
 
 func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
@@ -32,6 +41,18 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 	schema := s.Schema
 	if schema == "" {
 		schema = "MAIN"
+	}
+	// The view OBJECT is created in ViewSchema (falls back to the table schema);
+	// its TABLES keep referencing `schema`. Qualify the view name only when a
+	// database is set (matches table-ref qualification; keeps zero-value output
+	// valid unqualified DDL).
+	viewSchema := s.ViewSchema
+	if viewSchema == "" {
+		viewSchema = schema
+	}
+	qualifiedView := view
+	if s.Database != "" {
+		qualifiedView = fmt.Sprintf("%s.%s.%s", strings.ToUpper(s.Database), strings.ToUpper(viewSchema), view)
 	}
 	resolve := metricResolver(m)
 	notes := slices.Clone(m.Notes)
@@ -88,7 +109,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 		fmt.Fprintf(&b, "%s\n\n", s.Description)
 	}
 	b.WriteString("## Definition\n\n```sql\n")
-	fmt.Fprintf(&b, "create or replace semantic view %s\n", view)
+	fmt.Fprintf(&b, "create or replace semantic view %s\n", qualifiedView)
 	writeSection(&b, "tables", tables)
 	writeSection(&b, "relationships", rels)
 	writeSection(&b, "dimensions", dims)
