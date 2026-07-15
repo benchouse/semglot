@@ -79,11 +79,9 @@ func TestSVDedupsDimensionMetricNameCollision(t *testing.T) {
 			{Name: "roas", Expr: "roas"}, // raw precomputed column
 		},
 		Metrics: []ir.Metric{
-			{Name: "roas", Def: ir.Binary{
-				Op:    "/",
-				Left:  ir.Agg{Func: "sum", Table: "obt_marketing_daily", Arg: ir.Col{Table: "obt_marketing_daily", Name: "attributed_revenue"}},
-				Right: ir.Agg{Func: "sum", Table: "obt_marketing_daily", Arg: ir.Col{Table: "obt_marketing_daily", Name: "spend"}},
-			}},
+			// a metric named `roas` that IS emitted (simple aggregate) so it
+			// collides with the raw `roas` dimension above
+			{Name: "roas", Def: ir.Agg{Func: "sum", Table: "obt_marketing_daily", Arg: ir.Col{Table: "obt_marketing_daily", Name: "roas"}}},
 		},
 	}}}
 	e := snowflakeSemanticView{}.WithOptions(Options{Database: "EVAL_MARTS", Schema: "MAIN", ViewSchema: "SEM", Name: "SV"})
@@ -98,6 +96,37 @@ func TestSVDedupsDimensionMetricNameCollision(t *testing.T) {
 	// the surviving ROAS must be the computed metric, not the raw column
 	if !strings.Contains(out, "OBT_MARKETING_DAILY.ROAS as SUM") {
 		t.Errorf("surviving ROAS should be the computed metric:\n%s", out)
+	}
+}
+
+// TestRenderSVMetricDef verifies simple aggregates render as-is, derived ratios
+// render as references to their component metrics (never inlined aggregates —
+// Snowflake rejects those), and a ratio that inlines an aggregate degrades.
+func TestRenderSVMetricDef(t *testing.T) {
+	tblOf := map[string]string{"net_revenue": "FCT_ORDERS", "orders": "FCT_ORDERS"}
+
+	// simple aggregate
+	agg := ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Col{Table: "fct_orders", Name: "order_net_booked"}}
+	if got, ok := renderSVMetricDef(agg, tblOf); !ok || got != "SUM(FCT_ORDERS.ORDER_NET_BOOKED)" {
+		t.Errorf("simple agg = %q,%v want SUM(FCT_ORDERS.ORDER_NET_BOOKED),true", got, ok)
+	}
+
+	// derived ratio over metric refs → qualified metric names
+	ratio := ir.Binary{Op: "/", Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "orders"}}
+	if got, ok := renderSVMetricDef(ratio, tblOf); !ok || got != "FCT_ORDERS.NET_REVENUE / FCT_ORDERS.ORDERS" {
+		t.Errorf("ratio = %q,%v want FCT_ORDERS.NET_REVENUE / FCT_ORDERS.ORDERS,true", got, ok)
+	}
+
+	// ratio inlining an aggregate → degrade (Snowflake rejects an aggregate in a derived metric)
+	inlined := ir.Binary{Op: "/", Left: agg, Right: ir.Ref{Metric: "orders"}}
+	if _, ok := renderSVMetricDef(inlined, tblOf); ok {
+		t.Error("ratio with an inlined aggregate should degrade (ok=false)")
+	}
+
+	// ref to an unknown metric → degrade
+	unknown := ir.Binary{Op: "/", Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "mystery"}}
+	if _, ok := renderSVMetricDef(unknown, tblOf); ok {
+		t.Error("ratio referencing an unknown metric should degrade (ok=false)")
 	}
 }
 

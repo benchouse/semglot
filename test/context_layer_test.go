@@ -44,9 +44,11 @@ func TestSemanticViewStructure(t *testing.T) {
 		"create or replace semantic view ANALYTICS.MAIN.ECOMMERCE",
 		"FCT_ORDERS as ANALYTICS.MAIN.FCT_ORDERS primary key (ORDER_ID)",
 		"FCT_ORDER_LINES_FCT_ORDERS as FCT_ORDER_LINES(ORDER_ID) references FCT_ORDERS(ORDER_ID)",
-		"FCT_ORDERS.AOV as SUM(FCT_ORDERS.ORDER_NET_BOOKED) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)",
-		"FCT_ORDER_LINES.UNITS_PER_ORDER as SUM(FCT_ORDER_LINES.QUANTITY) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)",
-		"FCT_ORDERS.REFUND_RATE as SUM(CASE WHEN FCT_ORDERS.IS_REFUNDED THEN 1 ELSE 0 END) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID)",
+		// Derived metrics reference their component metrics by qualified name
+		// (Snowflake rejects inlined aggregates in a derived metric).
+		"FCT_ORDERS.AOV as FCT_ORDERS.NET_REVENUE / FCT_ORDERS.ORDERS",
+		"FCT_ORDER_LINES.UNITS_PER_ORDER as FCT_ORDER_LINES.UNITS_SOLD / FCT_ORDERS.ORDERS",
+		"FCT_ORDERS.REFUND_RATE as FCT_ORDERS.REFUNDED_ORDERS / FCT_ORDERS.ORDERS",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("definition.md missing %q", want)

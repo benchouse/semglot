@@ -54,8 +54,16 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 	if s.Database != "" {
 		qualifiedView = fmt.Sprintf("%s.%s.%s", strings.ToUpper(s.Database), strings.ToUpper(viewSchema), view)
 	}
-	resolve := metricResolver(m)
 	notes := slices.Clone(m.Notes)
+
+	// metricTableOf maps each metric name to its owning table (uppercased) so a
+	// derived metric can reference its component metrics by qualified name.
+	metricTableOf := map[string]string{}
+	for _, t := range m.Tables {
+		for _, mt := range t.Metrics {
+			metricTableOf[mt.Name] = strings.ToUpper(t.Name)
+		}
+	}
 
 	var tables, rels, dims, metrics []string
 	for _, t := range m.Tables {
@@ -80,8 +88,17 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 				notes = append(notes, fmt.Sprintf("metric %q: %s", mt.Name, reason))
 				continue
 			}
+			expr, ok := renderSVMetricDef(mt.Def, metricTableOf)
+			if !ok {
+				// A derived metric that inlines aggregates (SUM(x)/SUM(y)) or
+				// references an unknown metric can't be a Snowflake semantic-view
+				// metric ("a metric must directly refer to another aggregate-level
+				// expression … without an aggregate"). Degrade to a note.
+				notes = append(notes, fmt.Sprintf("metric %q: derived ratio not expressible as a semantic-view metric", mt.Name))
+				continue
+			}
 			name := strings.ToUpper(mt.Name)
-			ml := fmt.Sprintf("%s.%s as %s", u, name, strings.ToUpper(renderSQL(mt.Def, resolve)))
+			ml := fmt.Sprintf("%s.%s as %s", u, name, expr)
 			if mt.Description != "" {
 				ml += fmt.Sprintf(" comment='%s'", sqlQuote(mt.Description))
 			}
@@ -164,3 +181,55 @@ func writeSection(b *bytes.Buffer, name string, items []string) {
 
 // sqlQuote escapes single quotes for a Snowflake string literal.
 func sqlQuote(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+// svNoResolve keeps metric references intact when rendering a leaf aggregate —
+// a simple metric has no refs, so it is never consulted, but passing it (rather
+// than nil) guards against a nil-call if one ever appears.
+func svNoResolve(string) (ir.Expr, bool) { return nil, false }
+
+// renderSVMetricDef renders a metric definition for a Snowflake semantic view.
+// A simple aggregate (SUM/COUNT/…) renders as-is. A DERIVED metric — arithmetic
+// over other metrics, e.g. a ratio — must REFER to those metrics by their
+// qualified name and must not contain an aggregate itself; Snowflake rejects
+// "SUM(x)/SUM(y)" ("a metric must directly refer to another aggregate-level
+// expression … without an aggregate"). Returns ok=false when the definition
+// can't be expressed that way (an aggregate or column inlined inside the
+// arithmetic, or a reference to an unknown metric), so the caller degrades it.
+func renderSVMetricDef(def ir.Expr, tblOf map[string]string) (string, bool) {
+	if _, isAgg := def.(ir.Agg); isAgg {
+		return strings.ToUpper(renderSQL(def, svNoResolve)), true
+	}
+	return renderSVDerived(def, tblOf)
+}
+
+// renderSVDerived renders a derived-metric expression: metric references become
+// qualified names (TABLE.METRIC), literals pass through, and nested arithmetic
+// recurses. Any inlined aggregate/column (ir.Agg/ir.Col/ir.Raw) is invalid here
+// and yields ok=false.
+func renderSVDerived(e ir.Expr, tblOf map[string]string) (string, bool) {
+	switch n := e.(type) {
+	case ir.Ref:
+		t, ok := tblOf[n.Metric]
+		if !ok {
+			return "", false
+		}
+		return t + "." + strings.ToUpper(n.Metric), true
+	case ir.Lit:
+		return n.Value, true
+	case ir.Binary:
+		l, lok := renderSVDerived(n.Left, tblOf)
+		r, rok := renderSVDerived(n.Right, tblOf)
+		if !lok || !rok {
+			return "", false
+		}
+		if _, ok := n.Left.(ir.Binary); ok {
+			l = "(" + l + ")"
+		}
+		if _, ok := n.Right.(ir.Binary); ok {
+			r = "(" + r + ")"
+		}
+		return l + " " + n.Op + " " + r, true
+	default:
+		return "", false
+	}
+}
