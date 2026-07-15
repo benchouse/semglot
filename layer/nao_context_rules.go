@@ -34,6 +34,29 @@ func (naoContextRules) Emit(m *ir.Model, dir string) error {
 			b.WriteByte('\n')
 		}
 	}
+	// Columns: per-column descriptions + synonyms. nao's auto-synced schema
+	// carries only column name+type (the warehouse has no column comments), so
+	// these semantics reach the agent ONLY through the context layer — this
+	// keeps the rules arm at parity with the semantic-model/cortex layers, which
+	// both emit column descriptions + synonyms. Columns with neither add nothing
+	// beyond the synced name+type and are omitted.
+	var cols []string
+	for _, t := range m.Tables {
+		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
+			body := appendClause(strings.TrimSpace(d.Description), synonymClause(d.Synonyms))
+			if body == "" {
+				continue
+			}
+			cols = append(cols, fmt.Sprintf("- `%s.%s`: %s", t.Name, d.Name, body))
+		}
+	}
+	if len(cols) > 0 {
+		b.WriteString("\n## Columns\n\n")
+		for _, c := range cols {
+			b.WriteString(c)
+			b.WriteByte('\n')
+		}
+	}
 	// Allowed values: categorical columns that declare an enum.
 	var enums []string
 	for _, t := range m.Tables {
@@ -58,17 +81,19 @@ func (naoContextRules) Emit(m *ir.Model, dir string) error {
 			}
 		}
 	}
-	// Table traps: best-effort, only what the model documents.
-	var traps []string
+	// Table reference: each table's grain + purpose (its description). NOT
+	// "traps" — this is a glossary, and deliberately carries only what the dbt
+	// model documents; the withheld data-quirk discriminators never appear here.
+	var tables []string
 	for _, t := range m.Tables {
 		if t.Description != "" {
-			traps = append(traps, fmt.Sprintf("- **%s**: %s", t.Name, t.Description))
+			tables = append(tables, fmt.Sprintf("- **%s**: %s", t.Name, t.Description))
 		}
 	}
-	traps = append(traps, notesToBullets(m.Notes)...)
-	if len(traps) > 0 {
-		b.WriteString("\n## Table traps\n\n")
-		for _, tr := range traps {
+	tables = append(tables, notesToBullets(m.Notes)...)
+	if len(tables) > 0 {
+		b.WriteString("\n## Table reference\n\n")
+		for _, tr := range tables {
 			b.WriteString(tr)
 			b.WriteByte('\n')
 		}
