@@ -68,23 +68,37 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 			line += fmt.Sprintf(" comment='%s'", sqlQuote(t.Description))
 		}
 		tables = append(tables, line)
-		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
-			dl := fmt.Sprintf("%s.%s as %s.%s", u, strings.ToUpper(d.Name), strings.ToLower(t.Name), strings.ToUpper(d.Expr))
-			if c := appendClause(d.Description, enumClause(d.Enum)); c != "" {
-				dl += fmt.Sprintf(" comment='%s'", sqlQuote(c))
-			}
-			dims = append(dims, dl)
-		}
+		// Snowflake requires expression names to be unique across a semantic
+		// view's dimensions and metrics for a given table. Emit metrics first and
+		// track the names used, so a dimension whose name collides with an emitted
+		// metric (e.g. a precomputed `roas` column that is also defined as a
+		// computed ROAS metric) is dropped — the computed metric is canonical.
+		// `seen` also guards against two dimensions sharing a name.
+		seen := map[string]bool{}
 		for _, mt := range t.Metrics {
 			if reason, degrade := cortexDegrade(mt.Def); degrade {
 				notes = append(notes, fmt.Sprintf("metric %q: %s", mt.Name, reason))
 				continue
 			}
-			ml := fmt.Sprintf("%s.%s as %s", u, strings.ToUpper(mt.Name), strings.ToUpper(renderSQL(mt.Def, resolve)))
+			name := strings.ToUpper(mt.Name)
+			ml := fmt.Sprintf("%s.%s as %s", u, name, strings.ToUpper(renderSQL(mt.Def, resolve)))
 			if mt.Description != "" {
 				ml += fmt.Sprintf(" comment='%s'", sqlQuote(mt.Description))
 			}
 			metrics = append(metrics, ml)
+			seen[name] = true
+		}
+		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
+			name := strings.ToUpper(d.Name)
+			if seen[name] {
+				continue // name already emitted (as a metric or earlier dimension)
+			}
+			seen[name] = true
+			dl := fmt.Sprintf("%s.%s as %s.%s", u, name, strings.ToLower(t.Name), strings.ToUpper(d.Expr))
+			if c := appendClause(d.Description, enumClause(d.Enum)); c != "" {
+				dl += fmt.Sprintf(" comment='%s'", sqlQuote(c))
+			}
+			dims = append(dims, dl)
 		}
 	}
 	for _, r := range m.Relationships {

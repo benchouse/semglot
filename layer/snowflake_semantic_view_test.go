@@ -65,6 +65,42 @@ func TestSVViewSchemaFallback(t *testing.T) {
 	}
 }
 
+// TestSVDedupsDimensionMetricNameCollision verifies a dimension whose name
+// collides with an emitted metric on the same table is dropped — Snowflake
+// requires expression names unique across a semantic view's dimensions and
+// metrics (e.g. a precomputed `roas` column alongside a computed ROAS metric).
+func TestSVDedupsDimensionMetricNameCollision(t *testing.T) {
+	dir := t.TempDir()
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "obt_marketing_daily",
+		PrimaryKey: []string{"campaign_id"},
+		Dimensions: []ir.Field{
+			{Name: "platform", Expr: "platform"},
+			{Name: "roas", Expr: "roas"}, // raw precomputed column
+		},
+		Metrics: []ir.Metric{
+			{Name: "roas", Def: ir.Binary{
+				Op:    "/",
+				Left:  ir.Agg{Func: "sum", Table: "obt_marketing_daily", Arg: ir.Col{Table: "obt_marketing_daily", Name: "attributed_revenue"}},
+				Right: ir.Agg{Func: "sum", Table: "obt_marketing_daily", Arg: ir.Col{Table: "obt_marketing_daily", Name: "spend"}},
+			}},
+		},
+	}}}
+	e := snowflakeSemanticView{}.WithOptions(Options{Database: "EVAL_MARTS", Schema: "MAIN", ViewSchema: "SEM", Name: "SV"})
+	if err := e.Emit(m, dir); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "definition.md"))
+	out := string(b)
+	if n := strings.Count(out, "OBT_MARKETING_DAILY.ROAS as"); n != 1 {
+		t.Errorf("ROAS must be emitted exactly once (metric wins), got %d:\n%s", n, out)
+	}
+	// the surviving ROAS must be the computed metric, not the raw column
+	if !strings.Contains(out, "OBT_MARKETING_DAILY.ROAS as SUM") {
+		t.Errorf("surviving ROAS should be the computed metric:\n%s", out)
+	}
+}
+
 // TestSVUnqualifiedWithoutDatabase verifies that with no database the view name
 // stays unqualified (keeps zero-value output valid rather than emitting a
 // leading-dot name).
