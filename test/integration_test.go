@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +26,7 @@ const (
 
 // sourceDirs is the dbt input, split across folders like a real project
 // (semantic_models + metrics under semantic/, classic models: schema under
-// marts/) — so the tests exercise multi-source (--source a --source b) parsing.
+// marts/), so the tests exercise multi-source (a `source:` list in the profile) parsing.
 var sourceDirs = []string{
 	"models/ecommerce/dbt/semantic",
 	"models/ecommerce/dbt/marts",
@@ -296,10 +297,22 @@ func TestCLIBinaryEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := t.TempDir()
+	cfg := filepath.Join(t.TempDir(), "semglot.yaml")
+	cfgBody := fmt.Sprintf(`profiles:
+  ecommerce:
+    source:
+      - %s
+      - %s
+    target-dialect: cortex
+    output: %s
+    database: ANALYTICS
+    model-name: ecommerce
+`, semantic, marts, out)
+	if err := os.WriteFile(cfg, []byte(cfgBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("go", "run", "./cmd/semglot", "build",
-		"--source", semantic, "--source", marts, // repeatable --source
-		"--target-type", "cortex", "--target", out,
-		"--database", "ANALYTICS", "--name", "ecommerce")
+		"--profile", "ecommerce", "--config", cfg)
 	cmd.Dir = moduleRoot
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cli run: %v\n%s", err, b)
