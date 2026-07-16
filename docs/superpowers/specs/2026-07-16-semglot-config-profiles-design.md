@@ -20,25 +20,36 @@ my outputs." Profiles fix that.
 
 ## Config file
 
-Default path `./semglot.yaml`, overridable with `--config <path>`. Shape:
+Default path `./semglot.yaml`, overridable with `--config <path>`. Every field:
 
 ```yaml
+# semglot.yaml
+# One entry per named profile. Each profile is a complete, self-contained build.
+# Build one with:  semglot build --profile <name>
 profiles:
-  view_prod:
-    source:      ./models                 # required; string or list of dirs
-    source-type: dbt                       # optional; default dbt
-    target-type: snowflake-semantic-view   # required
-    output:      ./out/view                # required; output directory
-    database:    ANALYTICS                 # required for Snowflake targets
-    schema:      SEM                        # optional; default MAIN
-    name:        catalog                    # optional; default: source dir basename
-    description: Curated semantic view.     # optional
 
-  cortex_staging:
-    source:      ./models
-    target-type: cortex
-    output:      ./out/cortex
-    database:    DEV
+  view_prod:
+    source: ./models                # REQUIRED. dbt source dir, or a list of dirs when
+                                     #   schema files span folders: [./a, ./b]
+    source-dialect: dbt             # optional. Dialect to parse. Default: dbt
+    target-dialect: snowflake-semantic-view
+                                     # REQUIRED. Output dialect. One of:
+                                     #   dbt | cortex | snowflake-semantic-view |
+                                     #   supersimple | nao-yaml | nao-context-rules
+    output: ./out/view              # REQUIRED. Directory to write the emitted layer into
+    database: ANALYTICS             # REQUIRED for Snowflake targets (cortex,
+                                     #   snowflake-semantic-view). Ignored otherwise.
+    schema: SEM                     # optional. Warehouse schema. Default: MAIN
+    model-name: catalog             # optional. Name of the emitted model / view.
+                                     #   Default: basename of the source dir
+    description: Curated semantic view over orders.
+                                     # optional. Free text written into the output
+
+  cortex_staging:                   # staging is just another profile (different database)
+    source: ./models
+    target-dialect: cortex
+    output: ./out/cortex-staging
+    database: DEV
 ```
 
 Rules:
@@ -48,8 +59,8 @@ Rules:
   inheritance. Staging vs production are two profiles that repeat what they share.
 - `source` accepts a single directory (string) or a list of directories, matching
   the current repeatable-source behavior.
-- Fields use the same vocabulary as the old flags (`target-type`, `source-type`,
-  `database`, `schema`, `name`, `description`), plus `source` and `output`.
+- Fields: `source`, `source-dialect`, `target-dialect`, `output`, `database`,
+  `schema`, `model-name`, `description`.
 
 ## CLI
 
@@ -70,9 +81,9 @@ Removed flags (breaking change): `--source`, `--target`, `--target-type`,
 No flag layering remains: the profile specifies the build. Built-in defaults fill
 only omitted optional fields:
 
-- `source-type` defaults to `dbt`.
+- `source-dialect` defaults to `dbt`.
 - `schema` defaults to `MAIN`.
-- `name` defaults to the basename of the (first) source directory.
+- `model-name` defaults to the basename of the (first) source directory.
 
 ## Validation and errors
 
@@ -80,7 +91,7 @@ only omitted optional fields:
 
 - the config file does not exist or does not parse;
 - `--profile <name>` is not present in the config;
-- a profile omits a required field (`source`, `target-type`, or `output`);
+- a profile omits a required field (`source`, `target-dialect`, or `output`);
 - a Snowflake target (`cortex`, `snowflake-semantic-view`) has no `database`.
 
 ## Implementation impact
@@ -88,9 +99,9 @@ only omitted optional fields:
 - `cmd/semglot/config.go`: replace the flat `configFile` struct and
   `resolveIdentity` with a profiles loader. It parses the config file, selects the
   named profile, applies defaults, validates, and returns a resolved build spec
-  (source list, source-type, target-type, output, and identity).
+  (source list, source-dialect, target-dialect, output, and identity).
 - `cmd/semglot/main.go`: `build` parses only `--profile` and `--config`; the old
-  flags are removed. It loads the spec, resolves parser and emitter by type, and
+  flags are removed. It loads the spec, resolves parser and emitter by dialect, and
   runs the build. The Snowflake-database check moves to profile validation.
 - Tests: `cmd/semglot/config_test.go` and `main_test.go` are rewritten around a
   `semglot.yaml` fixture; the integration test invokes the compiled CLI with
