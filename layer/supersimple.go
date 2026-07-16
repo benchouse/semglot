@@ -15,7 +15,7 @@ import (
 func init() { Register(supersimple{}) }
 
 // supersimple emits one supersimple config YAML per model. Zero value usable;
-// the build command sets Schema from --schema.
+// the build command sets Schema from the profile's schema field.
 type supersimple struct {
 	Schema string
 }
@@ -38,7 +38,7 @@ func isRatioDef(def ir.Expr) bool {
 	return ok && bin.Op == "/"
 }
 
-// WithOptions lets the CLI pass --schema (database/name/description are unused).
+// WithOptions lets the CLI pass the profile's schema (database/name/description are unused).
 func (supersimple) WithOptions(database, schema, name, description string) Emitter {
 	return supersimple{Schema: schema}
 }
