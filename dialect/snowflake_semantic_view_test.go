@@ -65,6 +65,40 @@ func TestSVViewSchemaFallback(t *testing.T) {
 	}
 }
 
+// TestSVEmitsSynonyms verifies dimension and metric synonyms render as a
+// `with synonyms (...)` clause placed before `comment` (Snowflake's required
+// order: AS expr -> WITH SYNONYMS -> COMMENT).
+func TestSVEmitsSynonyms(t *testing.T) {
+	dir := t.TempDir()
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_orders",
+		PrimaryKey: []string{"order_id"},
+		Dimensions: []ir.Field{{
+			Name: "customer_segment", Expr: "customer_segment",
+			Description: "Marketing segment.", Synonyms: []string{"segment", "customer type"},
+		}},
+		Metrics: []ir.Metric{{
+			Name: "orders", Description: "Order count.", Synonyms: []string{"order volume"},
+			Def: ir.Agg{Func: "count", Arg: ir.Col{Table: "fct_orders", Name: "order_id"}, Table: "fct_orders"},
+		}},
+	}}}
+	e := snowflakeSemanticView{}.WithOptions(Options{Database: "DB", Schema: "MAIN", Name: "SV"})
+	if err := e.Emit(m, dir); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "with synonyms ('segment', 'customer type') comment='Marketing segment.'") {
+		t.Errorf("dimension synonyms not emitted before comment:\n%s", out)
+	}
+	if !strings.Contains(out, "with synonyms ('order volume') comment='Order count.'") {
+		t.Errorf("metric synonyms not emitted before comment:\n%s", out)
+	}
+}
+
 // TestSVDedupsDimensionMetricNameCollision verifies a dimension whose name
 // collides with an emitted metric on the same table is dropped — Snowflake
 // requires expression names unique across a semantic view's dimensions and

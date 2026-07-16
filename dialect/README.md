@@ -44,7 +44,7 @@ description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)
 | Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` |
 | Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" |
 | Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose |
-| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `--` (gap) | `--` (gap) | `text` (into description) | `text` (into description) |
+| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) |
 | Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `text` (into description) | "Allowed values" |
 | Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" |
 | Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL |
@@ -56,13 +56,13 @@ is the part to get right.
 
 **Gaps (the target supports it, we do not emit it yet):**
 
-- **`snowflake-semantic-view` synonyms.** Snowflake's `create semantic view`
-  accepts `with synonyms ('...')` on dimensions and metrics
-  ([docs](https://docs.snowflake.com/en/sql-reference/sql/create-semantic-view)),
-  and the IR already carries `Field.Synonyms` / `Metric.Synonyms`. The emitter
-  just does not write the clause yet. This is an easy win, not a limitation.
 - **`supersimple` synonyms.** A `synonymClause` helper exists but is not wired
-  into the supersimple emitter.
+  into the supersimple emitter (it would fold into a property description, as the
+  nao dialects do).
+
+(`snowflake-semantic-view` synonyms used to be a gap here; it now emits a
+`with synonyms ('...')` clause, which Snowflake supports on dimensions and
+metrics: [docs](https://docs.snowflake.com/en/sql-reference/sql/create-semantic-view).)
 
 **Limits (the format has no place for it):**
 

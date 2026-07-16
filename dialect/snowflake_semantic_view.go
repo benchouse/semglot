@@ -99,6 +99,9 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 			}
 			name := strings.ToUpper(mt.Name)
 			ml := fmt.Sprintf("%s.%s as %s", u, name, expr)
+			if syn := svSynonyms(mt.Synonyms); syn != "" {
+				ml += " " + syn
+			}
 			if mt.Description != "" {
 				ml += fmt.Sprintf(" comment='%s'", sqlQuote(mt.Description))
 			}
@@ -112,6 +115,9 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 			}
 			seen[name] = true
 			dl := fmt.Sprintf("%s.%s as %s.%s", u, name, strings.ToLower(t.Name), strings.ToUpper(d.Expr))
+			if syn := svSynonyms(d.Synonyms); syn != "" {
+				dl += " " + syn
+			}
 			if c := appendClause(d.Description, enumClause(d.Enum)); c != "" {
 				dl += fmt.Sprintf(" comment='%s'", sqlQuote(c))
 			}
@@ -181,6 +187,20 @@ func writeSection(b *bytes.Buffer, name string, items []string) {
 
 // sqlQuote escapes single quotes for a Snowflake string literal.
 func sqlQuote(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+// svSynonyms renders a semantic-view `with synonyms (...)` clause, or "" when
+// there are none. Snowflake accepts synonyms on tables, dimensions, facts, and
+// metrics; the clause sits before `comment`.
+func svSynonyms(syns []string) string {
+	if len(syns) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(syns))
+	for i, s := range syns {
+		quoted[i] = "'" + sqlQuote(s) + "'"
+	}
+	return "with synonyms (" + strings.Join(quoted, ", ") + ")"
+}
 
 // svNoResolve keeps metric references intact when rendering a leaf aggregate —
 // a simple metric has no refs, so it is never consulted, but passing it (rather
