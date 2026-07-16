@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="logo-lockup.svg" alt="semglot" width="360">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo-lockup-dark.svg">
+    <img src="logo-lockup.svg" alt="semglot" width="360">
+  </picture>
 </p>
 
 <p align="center">
