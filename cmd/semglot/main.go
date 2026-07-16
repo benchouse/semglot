@@ -1,16 +1,16 @@
 // Command semglot transpiles a source semantic-layer dialect into a target
 // dialect through a neutral IR.
 //
-//	semglot build --source ./semantic --target-type cortex --target ./cortex/
+//	semglot build --profile <name> [--config semglot.yaml]
 //
-// v1 supports dbt (source) -> cortex (target). Scoring (`semglot score`) is v2.
+// Builds are configured with named profiles in semglot.yaml. Scoring
+// (`semglot score`) is v2.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/benchouse/semglot/layer"
 )
@@ -32,83 +32,54 @@ func main() {
 	}
 }
 
-// snowflakeTargets are the target-type dialects that emit into a physical
-// Snowflake database. They require a resolved database (via --database or
-// --config); without one they'd emit invalid, unqualified DDL.
-var snowflakeTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true}
-
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: semglot build --source <dir> [--source <dir> …] --target <dir> --target-type <dialect> [--config <file>] [--database --schema --name --description]")
-	fmt.Fprintln(os.Stderr, "--source is repeatable (dbt schema files may live in several folders, e.g. models/semantic + models/marts)")
-	fmt.Fprintln(os.Stderr, "target-type is one of: "+strings.Join(layer.Names(), ", "))
+	fmt.Fprintln(os.Stderr, "usage: semglot build --profile <name> [--config <file>]")
+	fmt.Fprintln(os.Stderr, "profiles are defined in semglot.yaml (override the path with --config)")
 }
-
-// sourceList is a repeatable string flag: each --source appends a directory,
-// so `--source a --source b` collects both.
-type sourceList []string
-
-func (s *sourceList) String() string     { return strings.Join(*s, " ") }
-func (s *sourceList) Set(v string) error { *s = append(*s, v); return nil }
 
 func buildCmd(args []string) int {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
-	sourceType := fs.String("source-type", "dbt", "source dialect")
-	var sources sourceList
-	fs.Var(&sources, "source", "source directory (required; repeatable: --source a --source b)")
-	targetType := fs.String("target-type", "", "target dialect (required); one of: "+strings.Join(layer.Names(), ", "))
-	target := fs.String("target", "", "output directory (required)")
-	config := fs.String("config", "", "path to a config file (optional)")
-	database := fs.String("database", "", "warehouse database (Snowflake targets)")
-	schema := fs.String("schema", "", "warehouse schema of the source tables (Snowflake targets; default MAIN)")
-	viewSchema := fs.String("view-schema", "", "schema for the emitted semantic-view object (Snowflake semantic view; defaults to --schema)")
-	name := fs.String("name", "", "model/view name (default: source basename)")
-	description := fs.String("description", "", "model description")
+	profileName := fs.String("profile", "", "profile name (required)")
+	config := fs.String("config", "semglot.yaml", "path to the config file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if len(sources) == 0 || *targetType == "" || *target == "" {
-		fmt.Fprintln(os.Stderr, "build: --source, --target and --target-type are required")
+	if *profileName == "" {
+		fmt.Fprintln(os.Stderr, "build: --profile is required")
 		return 2
 	}
-	set := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-
-	parser, err := layer.AsParser(*sourceType)
+	spec, err := loadProfile(*config, *profileName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		return 1
 	}
-	emitter, err := layer.AsEmitter(*targetType)
+
+	parser, err := layer.AsParser(spec.SourceDialect)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "build:", err)
+		return 1
+	}
+	emitter, err := layer.AsEmitter(spec.TargetDialect)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		return 1
 	}
 	if c, ok := emitter.(layer.Configurable); ok {
-		id, err := resolveIdentity(sources[0], *config, set,
-			identity{Database: *database, Schema: *schema, ViewSchema: *viewSchema, Name: *name, Description: *description})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "build:", err)
-			return 1
-		}
-		if snowflakeTargets[*targetType] && id.Database == "" {
-			fmt.Fprintf(os.Stderr, "build: --target-type %s requires a database (via --database or --config)\n", *targetType)
-			return 1
-		}
 		emitter = c.WithOptions(layer.Options{
-			Database:    id.Database,
-			Schema:      id.Schema,
-			ViewSchema:  id.ViewSchema,
-			Name:        id.Name,
-			Description: id.Description,
+			Database:    spec.Database,
+			Schema:      spec.Schema,
+			ViewSchema:  spec.ViewSchema,
+			Name:        spec.ModelName,
+			Description: spec.Description,
 		})
 	}
 
-	model, err := parser.Parse(sources...)
+	model, err := parser.Parse(spec.Sources...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build: parse:", err)
 		return 1
 	}
-	if err := emitter.Emit(model, *target); err != nil {
+	if err := emitter.Emit(model, spec.Output); err != nil {
 		fmt.Fprintln(os.Stderr, "build: emit:", err)
 		return 1
 	}
@@ -118,7 +89,7 @@ func buildCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "  - "+n)
 		}
 	}
-	if *targetType == "cortex" {
+	if spec.TargetDialect == "cortex" {
 		if gaps := layer.CortexTypeGaps(model); len(gaps) > 0 {
 			fmt.Fprintf(os.Stderr, "warning: %d Cortex column(s) had no source data_type; inferred a type (add data_type in dbt to fix):\n", len(gaps))
 			for _, g := range gaps {
@@ -126,6 +97,6 @@ func buildCmd(args []string) int {
 			}
 		}
 	}
-	fmt.Printf("wrote to %s (%s -> %s)\n", *target, *sourceType, *targetType)
+	fmt.Printf("wrote to %s (%s -> %s)\n", spec.Output, spec.SourceDialect, spec.TargetDialect)
 	return 0
 }
