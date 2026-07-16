@@ -85,29 +85,6 @@ type cortexCol struct {
 	SampleValues []string `yaml:"sample_values,omitempty"`
 }
 
-// cortexEnum renders a field's enum for Cortex, which has no per-value
-// description field: the values become sample_values, and any documented values
-// are folded into the column description as a "Values: v = meaning; …" clause.
-func cortexEnum(desc string, enum []ir.EnumValue) (string, []string) {
-	if len(enum) == 0 {
-		return desc, nil
-	}
-	vals := make([]string, len(enum))
-	hasDesc := false
-	for i, e := range enum {
-		vals[i] = e.Value
-		if e.Description != "" {
-			hasDesc = true
-		}
-	}
-	// sample_values already carries the bare values, so only fold the text
-	// clause in when it adds per-value meaning.
-	if hasDesc {
-		desc = appendClause(desc, enumClause(enum))
-	}
-	return desc, vals
-}
-
 type cortexMetric struct {
 	Name        string   `yaml:"name"`
 	Expr        string   `yaml:"expr"`
@@ -152,7 +129,7 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 			ct.PrimaryKey = &cortexPK{Columns: upperAll(t.PrimaryKey)}
 		}
 		for _, d := range t.Dimensions {
-			desc, sampleVals := cortexEnum(d.Description, d.Enum)
+			desc, sampleVals := enumValues(d.Description, d.Enum)
 			ct.Dimensions = append(ct.Dimensions, cortexCol{
 				Name: d.Name, Expr: strings.ToUpper(d.Expr), DataType: pickType(d.DataType, inferDataType(d.Name)),
 				Description: desc, Synonyms: d.Synonyms, SampleValues: sampleVals,

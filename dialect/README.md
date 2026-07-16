@@ -45,7 +45,7 @@ description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)
 | Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" |
 | Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose |
 | Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) |
-| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `text` (into description) | "Allowed values" |
+| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" |
 | Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" |
 | Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL |
 
@@ -59,18 +59,26 @@ is the part to get right.
 - **`supersimple` synonyms.** A `synonymClause` helper exists but is not wired
   into the supersimple emitter (it would fold into a property description, as the
   nao dialects do).
+- **`nao-yaml` metric `filters:`, per-metric `dimensions:`, and `notes:`.** nao's
+  metric supports a filter list, a slice-by `dimensions:` list, and per-metric
+  `notes:`. semglot omits them: which dimensions slice a metric and the editorial
+  notes are not derivable from a dbt model, and a filtered aggregation currently
+  renders as a derived `formula` rather than a structured `filters:`.
 
-(`snowflake-semantic-view` synonyms used to be a gap here; it now emits a
-`with synonyms ('...')` clause, which Snowflake supports on dimensions and
-metrics: [docs](https://docs.snowflake.com/en/sql-reference/sql/create-semantic-view).)
+(`snowflake-semantic-view` synonyms and `nao-yaml` enum `values:` used to be gaps
+here; both are emitted now. Snowflake supports `with synonyms ('...')`
+([docs](https://docs.snowflake.com/en/sql-reference/sql/create-semantic-view)),
+and nao dimensions carry a structured `values:` list
+([nao docs](https://docs.getnao.io/nao-agent/context-engineering/skills)).)
 
 **Limits (the format has no place for it):**
 
-- **`nao-yaml` tables and relationships.** As modeled here (`naoDoc` =
-  `dimensions` + `metrics` + `notes`), nao-yaml is a flat, model-global document
-  with no table grouping and no join field, so there is nowhere to put them. If
-  nao's own spec turns out to support joins, adding them is a future enhancement
-  rather than a fix. (nao-context-rules, being prose, does emit joins.)
+- **`nao-yaml` tables and relationships.** nao's format is a flat, model-global
+  list of `dimensions:` and `metrics:` with no table grouping and no
+  relationships/joins section; joins are written as prose inside descriptions and
+  notes. Verified against nao's own docs and the eval's real `semantic.yaml`, so
+  there is nowhere structured to emit tables or relationships. (nao-context-rules,
+  being prose, does emit joins.)
 - **Data types in `snowflake-semantic-view` and the nao dialects.** Omitted on
   purpose: these formats lean on the synced source-table schema for types rather
   than restating them in the semantic doc.

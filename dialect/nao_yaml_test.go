@@ -38,6 +38,28 @@ func TestNaoYamlFoldsSynonyms(t *testing.T) {
 	}
 }
 
+// TestNaoYamlEmitsEnumValues verifies a categorical enum becomes a structured
+// `values:` list, while any per-value meanings fold into the description (nao's
+// format has no per-value description slot).
+func TestNaoYamlEmitsEnumValues(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "dim_customer",
+		Dimensions: []ir.Field{{
+			Name: "segment", Description: "Marketing segment.",
+			Enum: []ir.EnumValue{{Value: "new", Description: "First order"}, {Value: "vip"}},
+		}},
+	}}}
+	out := emitNaoYaml(t, m)
+	for _, want := range []string{"values:", "- new", "- vip"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing structured value %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "Values: new = First order") {
+		t.Errorf("per-value meaning should fold into the description:\n%s", out)
+	}
+}
+
 // TestNaoYamlDedupPrefersEnumVariant verifies that when a column name is shared
 // across tables, the flat dimension dedup keeps the enum-bearing variant rather
 // than a plainer first-seen duplicate — regardless of table order.
@@ -46,12 +68,17 @@ func TestNaoYamlDedupPrefersEnumVariant(t *testing.T) {
 		Enum: []ir.EnumValue{{Value: "open"}, {Value: "closed"}}}
 	plainField := ir.Field{Name: "status", Description: "Product status."}
 
+	// The enum variant carries a structured `values:` list; the plain one does not.
+	hasEnumValues := func(out string) bool {
+		return strings.Contains(out, "values:") && strings.Contains(out, "- open") && strings.Contains(out, "- closed")
+	}
+
 	// Plain seen first, enum second → enum must win (replace).
 	out := emitNaoYaml(t, &ir.Model{Tables: []ir.Table{
 		{Name: "dim_product", Dimensions: []ir.Field{plainField}},
 		{Name: "fct_support_tickets", Dimensions: []ir.Field{enumField}},
 	}})
-	if !strings.Contains(out, "Values: open, closed.") {
+	if !hasEnumValues(out) {
 		t.Errorf("enum variant did not win when seen second:\n%s", out)
 	}
 	if strings.Count(out, "name: status") != 1 {
@@ -63,7 +90,7 @@ func TestNaoYamlDedupPrefersEnumVariant(t *testing.T) {
 		{Name: "fct_support_tickets", Dimensions: []ir.Field{enumField}},
 		{Name: "dim_product", Dimensions: []ir.Field{plainField}},
 	}})
-	if !strings.Contains(out2, "Values: open, closed.") {
+	if !hasEnumValues(out2) {
 		t.Errorf("plain variant displaced the enum when seen second:\n%s", out2)
 	}
 }
