@@ -30,7 +30,7 @@ create or replace semantic view ANALYTICS.MAIN.ECOMMERCE
 		FCT_ORDER_LINES.PRODUCT_ID as fct_order_lines.PRODUCT_ID comment='Product sold on the line.',
 		FCT_ORDER_LINES.ORDER_DATE as fct_order_lines.ORDER_DATE comment='Date the parent order was placed.',
 		DIM_CUSTOMER.CUSTOMER_SK as dim_customer.CUSTOMER_SK comment='Customer surrogate key.',
-		DIM_CUSTOMER.CUSTOMER_SEGMENT as dim_customer.CUSTOMER_SEGMENT comment='Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.',
+		DIM_CUSTOMER.CUSTOMER_SEGMENT as dim_customer.CUSTOMER_SEGMENT with synonyms ('segment', 'customer_type') comment='Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.',
 		DIM_CUSTOMER.ACCEPTS_MARKETING as dim_customer.ACCEPTS_MARKETING comment='Whether the customer opted in to marketing.',
 		DIM_PRODUCT.PRODUCT_ID as dim_product.PRODUCT_ID comment='Product surrogate key.',
 		DIM_PRODUCT.CATEGORY as dim_product.CATEGORY comment='Product category.',
