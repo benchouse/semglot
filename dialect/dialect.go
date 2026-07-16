@@ -1,6 +1,6 @@
-// Package layer defines the dialect plugin surface (Parser/Emitter) and a
+// Package dialect defines the dialect plugin surface (Parser/Emitter) and a
 // registry mapping dialect names to implementations.
-package layer
+package dialect
 
 import (
 	"fmt"
@@ -9,14 +9,14 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
-// Layer is any registered semantic-layer dialect.
-type Layer interface {
+// Dialect is any registered semantic-layer dialect.
+type Dialect interface {
 	Name() string
 }
 
 // Parser reads a dialect's files from dir into the neutral IR.
 type Parser interface {
-	Layer
+	Dialect
 	// Parse reads *.yml from each source directory (non-recursive) and merges
 	// them into one IR model. Multiple sources let a dbt project's schema files
 	// spread across folders (e.g. models/semantic + models/marts) be combined.
@@ -25,7 +25,7 @@ type Parser interface {
 
 // Emitter writes the neutral IR out as a dialect's files under dir.
 type Emitter interface {
-	Layer
+	Dialect
 	Emit(m *ir.Model, dir string) error
 }
 
@@ -43,13 +43,13 @@ type Configurable interface {
 	WithOptions(Options) Emitter
 }
 
-var registry = map[string]Layer{}
+var registry = map[string]Dialect{}
 
-// Register adds a layer to the global registry. Intended for use from init().
-func Register(l Layer) { registry[l.Name()] = l }
+// Register adds a dialect to the global registry. Intended for use from init().
+func Register(l Dialect) { registry[l.Name()] = l }
 
-// Get returns a registered layer by name.
-func Get(name string) (Layer, bool) {
+// Get returns a registered dialect by name.
+func Get(name string) (Dialect, bool) {
 	l, ok := registry[name]
 	return l, ok
 }

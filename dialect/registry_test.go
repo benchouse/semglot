@@ -1,4 +1,4 @@
-package layer
+package dialect
 
 import (
 	"testing"

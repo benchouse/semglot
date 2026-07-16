@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/benchouse/semglot/layer"
+	"github.com/benchouse/semglot/dialect"
 )
 
 func main() {
@@ -54,18 +54,18 @@ func buildCmd(args []string) int {
 		return 1
 	}
 
-	parser, err := layer.AsParser(spec.SourceDialect)
+	parser, err := dialect.AsParser(spec.SourceDialect)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		return 1
 	}
-	emitter, err := layer.AsEmitter(spec.TargetDialect)
+	emitter, err := dialect.AsEmitter(spec.TargetDialect)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build:", err)
 		return 1
 	}
-	if c, ok := emitter.(layer.Configurable); ok {
-		emitter = c.WithOptions(layer.Options{
+	if c, ok := emitter.(dialect.Configurable); ok {
+		emitter = c.WithOptions(dialect.Options{
 			Database:    spec.Database,
 			Schema:      spec.Schema,
 			ViewSchema:  spec.ViewSchema,
@@ -90,7 +90,7 @@ func buildCmd(args []string) int {
 		}
 	}
 	if spec.TargetDialect == "cortex" {
-		if gaps := layer.CortexTypeGaps(model); len(gaps) > 0 {
+		if gaps := dialect.CortexTypeGaps(model); len(gaps) > 0 {
 			fmt.Fprintf(os.Stderr, "warning: %d Cortex column(s) had no source data_type; inferred a type (add data_type in dbt to fix):\n", len(gaps))
 			for _, g := range gaps {
 				fmt.Fprintln(os.Stderr, "  - "+g)
