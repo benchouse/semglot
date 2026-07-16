@@ -40,7 +40,7 @@ type cortex struct {
 func (cortex) Name() string { return "cortex" }
 
 // WithOptions returns a cortex emitter carrying the given base_table and model
-// identity. Used by the CLI to pass --database/--schema/--name/--description.
+// identity. Used by the CLI to pass a profile's database/schema/model-name/description.
 func (cortex) WithOptions(database, schema, name, description string) Emitter {
 	return cortex{Database: database, Schema: schema, ModelName: name, Description: description}
 }
