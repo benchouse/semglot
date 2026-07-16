@@ -11,8 +11,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/benchouse/semglot/dialect"
 	"github.com/benchouse/semglot/ir"
-	"github.com/benchouse/semglot/layer"
 )
 
 const (
@@ -73,7 +73,7 @@ func relSortKey(r ir.Relationship) string {
 // TestDBTRoundTrip proves the AST/IR captures the dbt source losslessly: parse
 // the fixture -> emit dbt -> re-parse -> the (canonicalized) IR is unchanged.
 func TestDBTRoundTrip(t *testing.T) {
-	p, err := layer.AsParser("dbt")
+	p, err := dialect.AsParser("dbt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestDBTRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
-	e, err := layer.AsEmitter("dbt")
+	e, err := dialect.AsEmitter("dbt")
 	if err != nil {
 		t.Fatalf("dbt is not an Emitter: %v", err)
 	}
@@ -103,11 +103,11 @@ func TestDBTRoundTrip(t *testing.T) {
 // TestDBTEmitGolden pins the emitted-dbt document so the generated dbt is
 // reviewable and regression-locked. Run with UPDATE_GOLDEN=1 to (re)create it.
 func TestDBTEmitGolden(t *testing.T) {
-	p, err := layer.AsParser("dbt")
+	p, err := dialect.AsParser("dbt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := layer.AsEmitter("dbt")
+	e, err := dialect.AsEmitter("dbt")
 	if err != nil {
 		t.Fatalf("dbt is not an Emitter: %v", err)
 	}
@@ -144,16 +144,16 @@ func TestDBTEmitGolden(t *testing.T) {
 // returns the emitted Cortex YAML.
 func emit(t *testing.T) []byte {
 	t.Helper()
-	p, err := layer.AsParser("dbt")
+	p, err := dialect.AsParser("dbt")
 	if err != nil {
 		t.Fatalf("AsParser: %v", err)
 	}
-	e, err := layer.AsEmitter("cortex")
+	e, err := dialect.AsEmitter("cortex")
 	if err != nil {
 		t.Fatalf("AsEmitter: %v", err)
 	}
-	if c, ok := e.(layer.Configurable); ok {
-		e = c.WithOptions(layer.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
+	if c, ok := e.(dialect.Configurable); ok {
+		e = c.WithOptions(dialect.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
 	}
 	m, err := p.Parse(sourceDirs...)
 	if err != nil {
@@ -403,14 +403,14 @@ func assertStr(t *testing.T, label, got, want string) {
 }
 
 func TestEcommerceSupersimpleGolden(t *testing.T) {
-	e, err := layer.AsEmitter("supersimple")
+	e, err := dialect.AsEmitter("supersimple")
 	if err != nil {
 		t.Fatalf("AsEmitter: %v", err)
 	}
-	if c, ok := e.(layer.Configurable); ok {
-		e = c.WithOptions(layer.Options{Schema: "MAIN"})
+	if c, ok := e.(dialect.Configurable); ok {
+		e = c.WithOptions(dialect.Options{Schema: "MAIN"})
 	}
-	p, err := layer.AsParser("dbt")
+	p, err := dialect.AsParser("dbt")
 	if err != nil {
 		t.Fatal(err)
 	}

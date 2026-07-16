@@ -1,4 +1,4 @@
-package layer
+package dialect
 
 // A minimal SQL-expression lexer. It is NOT a full SQL parser — just enough to
 // split an expression into a faithful token stream so callers can rewrite

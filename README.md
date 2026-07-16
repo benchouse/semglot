@@ -31,7 +31,7 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `nao-yaml`                |        |   ✓    |
 | `nao-context-rules`       |        |   ✓    |
 
-Adding a dialect is small, self-contained work: implement the `Layer` interface
+Adding a dialect is small, self-contained work: implement the `Dialect` interface
 (`Parse`, `Emit`, or both) and register it, and every conversion to and from it
 comes for free. Missing one you need? Please
 [open an issue or PR](https://github.com/benchouse/semglot/issues).

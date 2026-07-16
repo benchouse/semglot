@@ -11,7 +11,7 @@ import (
 
 func TestBuildCmdEndToEnd(t *testing.T) {
 	out := t.TempDir()
-	src, err := filepath.Abs("../../layer/testdata/dbt")
+	src, err := filepath.Abs("../../dialect/testdata/dbt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestBuildCmdEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
-	want, err := os.ReadFile("../../layer/testdata/cortex/semantic_model.golden.yaml")
+	want, err := os.ReadFile("../../dialect/testdata/cortex/semantic_model.golden.yaml")
 	if err != nil {
 		t.Fatalf("read golden: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildCmdSourceWithoutParser(t *testing.T) {
 // fails clearly (mentioning "database") instead of emitting invalid DDL when no
 // database is set in the profile.
 func TestBuildCmdSnowflakeTargetRequiresDatabase(t *testing.T) {
-	src, err := filepath.Abs("../../layer/testdata/dbt")
+	src, err := filepath.Abs("../../dialect/testdata/dbt")
 	if err != nil {
 		t.Fatal(err)
 	}

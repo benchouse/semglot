@@ -6,20 +6,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/benchouse/semglot/layer"
+	"github.com/benchouse/semglot/dialect"
 	"gopkg.in/yaml.v3"
 )
 
 func emitTarget(t *testing.T, target, file string) string {
 	t.Helper()
-	e, err := layer.AsEmitter(target)
+	e, err := dialect.AsEmitter(target)
 	if err != nil {
 		t.Fatalf("AsEmitter(%s): %v", target, err)
 	}
-	if c, ok := e.(layer.Configurable); ok {
-		e = c.WithOptions(layer.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
+	if c, ok := e.(dialect.Configurable); ok {
+		e = c.WithOptions(dialect.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
 	}
-	p, err := layer.AsParser("dbt")
+	p, err := dialect.AsParser("dbt")
 	if err != nil {
 		t.Fatal(err)
 	}
