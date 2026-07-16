@@ -29,9 +29,10 @@ type naoDoc struct {
 	Notes      string      `yaml:"notes,omitempty"`
 }
 type naoDim struct {
-	Name        string `yaml:"name"`
-	Type        string `yaml:"type"`
-	Description string `yaml:"description,omitempty"`
+	Name        string   `yaml:"name"`
+	Type        string   `yaml:"type"`
+	Description string   `yaml:"description,omitempty"`
+	Values      []string `yaml:"values,omitempty"`
 }
 type naoMetric struct {
 	Name       string     `yaml:"name"`
@@ -78,8 +79,12 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 	type dimSlot struct{ idx, rich int }
 	seen := map[string]dimSlot{}
 	addDim := func(f ir.Field, typ string) {
-		desc := appendClause(appendClause(f.Description, enumClause(f.Enum)), synonymClause(f.Synonyms))
-		nd := naoDim{Name: f.Name, Type: typ, Description: desc}
+		// nao dimensions carry a structured `values:` list for categoricals; any
+		// per-value meanings and the synonyms fold into the description, which nao
+		// has no separate slot for.
+		desc, values := enumValues(f.Description, f.Enum)
+		desc = appendClause(desc, synonymClause(f.Synonyms))
+		nd := naoDim{Name: f.Name, Type: typ, Description: desc, Values: values}
 		rich := dimRichness(f)
 		if slot, ok := seen[f.Name]; ok {
 			if rich > slot.rich {

@@ -35,6 +35,30 @@ func enumClause(enum []ir.EnumValue) string {
 	return "Values: " + strings.Join(parts, sep) + "."
 }
 
+// enumValues splits a field's enum for a target that HAS a structured values
+// field (e.g. Cortex sample_values, nao-yaml values): it returns the bare value
+// list, plus the description with per-value meanings folded in as a
+// "Values: v = meaning; …" clause, added only when a value carries a meaning
+// (the bare values already live in the structured field). Returns (desc, nil)
+// for an empty enum.
+func enumValues(desc string, enum []ir.EnumValue) (string, []string) {
+	if len(enum) == 0 {
+		return desc, nil
+	}
+	vals := make([]string, len(enum))
+	hasDesc := false
+	for i, e := range enum {
+		vals[i] = e.Value
+		if e.Description != "" {
+			hasDesc = true
+		}
+	}
+	if hasDesc {
+		desc = appendClause(desc, enumClause(enum))
+	}
+	return desc, vals
+}
+
 // synonymClause renders a field's synonyms as one sentence for targets that
 // have no structured synonyms field (e.g. nao-yaml, which folds them into the
 // dimension description). Returns "" for an empty list.

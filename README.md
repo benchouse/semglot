@@ -155,7 +155,7 @@ the only source).
 | Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |
 | Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |
 | Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |
-| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ≈      |          ✓          |
+| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |
 
 `✓` structured · `≈` rolled up as text in a description or comment · `~` partial · blank not emitted.
 
