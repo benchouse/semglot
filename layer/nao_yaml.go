@@ -19,8 +19,8 @@ func init() { Register(naoYaml{}) }
 type naoYaml struct{ Database, Schema, ModelName, Description string }
 
 func (naoYaml) Name() string { return "nao-yaml" }
-func (naoYaml) WithOptions(database, schema, name, description string) Emitter {
-	return naoYaml{database, schema, name, description}
+func (naoYaml) WithOptions(o Options) Emitter {
+	return naoYaml{o.Database, o.Schema, o.Name, o.Description}
 }
 
 type naoDoc struct {

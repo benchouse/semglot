@@ -34,6 +34,7 @@ type profile struct {
 	Output        string      `yaml:"output"`
 	Database      string      `yaml:"database"`
 	Schema        string      `yaml:"schema"`
+	ViewSchema    string      `yaml:"view-schema"`
 	ModelName     string      `yaml:"model-name"`
 	Description   string      `yaml:"description"`
 }
@@ -51,6 +52,7 @@ type buildSpec struct {
 	Output        string
 	Database      string
 	Schema        string
+	ViewSchema    string
 	ModelName     string
 	Description   string
 }
@@ -90,6 +92,7 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 		Output:        p.Output,
 		Database:      p.Database,
 		Schema:        p.Schema,
+		ViewSchema:    p.ViewSchema,
 		ModelName:     p.ModelName,
 		Description:   p.Description,
 	}

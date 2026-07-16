@@ -65,7 +65,13 @@ func buildCmd(args []string) int {
 		return 1
 	}
 	if c, ok := emitter.(layer.Configurable); ok {
-		emitter = c.WithOptions(spec.Database, spec.Schema, spec.ModelName, spec.Description)
+		emitter = c.WithOptions(layer.Options{
+			Database:    spec.Database,
+			Schema:      spec.Schema,
+			ViewSchema:  spec.ViewSchema,
+			Name:        spec.ModelName,
+			Description: spec.Description,
+		})
 	}
 
 	model, err := parser.Parse(spec.Sources...)

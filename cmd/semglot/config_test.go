@@ -52,6 +52,7 @@ func TestLoadProfileExplicitValues(t *testing.T) {
     output: ./out
     database: ANALYTICS
     schema: SEM
+    view-schema: SEM_VIEW
     model-name: catalog
     description: hi
 `)
@@ -66,6 +67,7 @@ func TestLoadProfileExplicitValues(t *testing.T) {
 		Output:        "./out",
 		Database:      "ANALYTICS",
 		Schema:        "SEM",
+		ViewSchema:    "SEM_VIEW",
 		ModelName:     "catalog",
 		Description:   "hi",
 	}

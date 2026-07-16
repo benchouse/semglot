@@ -5,7 +5,7 @@ This is a Snowflake **semantic view** — use this to understand the intended wa
 ## Definition
 
 ```sql
-create or replace semantic view ECOMMERCE
+create or replace semantic view ANALYTICS.MAIN.ECOMMERCE
 	tables (
 		FCT_ORDERS as ANALYTICS.MAIN.FCT_ORDERS primary key (ORDER_ID) comment='Order-grain finance fact. One row per order.',
 		FCT_ORDER_LINES as ANALYTICS.MAIN.FCT_ORDER_LINES primary key (ORDER_LINE_ID) comment='Order-line grain. One row per line item.',
@@ -43,10 +43,10 @@ create or replace semantic view ECOMMERCE
 		FCT_ORDERS.NET_REVENUE as SUM(FCT_ORDERS.ORDER_NET_BOOKED) comment='Net booked revenue.',
 		FCT_ORDERS.ORDERS as COUNT(DISTINCT FCT_ORDERS.ORDER_ID),
 		FCT_ORDERS.REFUNDED_ORDERS as SUM(CASE WHEN FCT_ORDERS.IS_REFUNDED THEN 1 ELSE 0 END) comment='Count of refunded orders.',
-		FCT_ORDERS.AOV as SUM(FCT_ORDERS.ORDER_NET_BOOKED) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID) comment='Average order value (net revenue / orders).',
-		FCT_ORDERS.REFUND_RATE as SUM(CASE WHEN FCT_ORDERS.IS_REFUNDED THEN 1 ELSE 0 END) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID) comment='Refunded orders / all orders.',
+		FCT_ORDERS.AOV as FCT_ORDERS.NET_REVENUE / FCT_ORDERS.ORDERS comment='Average order value (net revenue / orders).',
+		FCT_ORDERS.REFUND_RATE as FCT_ORDERS.REFUNDED_ORDERS / FCT_ORDERS.ORDERS comment='Refunded orders / all orders.',
 		FCT_ORDER_LINES.UNITS_SOLD as SUM(FCT_ORDER_LINES.QUANTITY) comment='Units sold.',
-		FCT_ORDER_LINES.UNITS_PER_ORDER as SUM(FCT_ORDER_LINES.QUANTITY) / COUNT(DISTINCT FCT_ORDERS.ORDER_ID) comment='Units per order (cross-table).'
+		FCT_ORDER_LINES.UNITS_PER_ORDER as FCT_ORDER_LINES.UNITS_SOLD / FCT_ORDERS.ORDERS comment='Units per order (cross-table).'
 	)
 ;
 ```

@@ -123,7 +123,8 @@ profiles:
     target-dialect: snowflake-semantic-view   # required
     output: ./out/view            # required. directory to write into
     database: ANALYTICS           # required for Snowflake targets (cortex, snowflake-semantic-view)
-    schema: SEM                   # optional. default: MAIN
+    schema: SEM                   # optional. default: MAIN (schema of the source tables)
+    view-schema: SEM_VIEWS        # optional. schema for the emitted semantic-view object; defaults to schema
     model-name: catalog           # optional. default: source dir name
     description: Curated view.     # optional
 ```

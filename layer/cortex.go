@@ -29,7 +29,7 @@ func cortexDegrade(def ir.Expr) (reason string, degrade bool) {
 func init() { Register(cortex{}) }
 
 // cortex emits a Snowflake Cortex semantic model. Zero value is usable; the
-// build command sets Database/Schema/Name/Description from flags.
+// build command sets Database/Schema/Name/Description from a profile.
 type cortex struct {
 	Database    string
 	Schema      string
@@ -41,8 +41,8 @@ func (cortex) Name() string { return "cortex" }
 
 // WithOptions returns a cortex emitter carrying the given base_table and model
 // identity. Used by the CLI to pass a profile's database/schema/model-name/description.
-func (cortex) WithOptions(database, schema, name, description string) Emitter {
-	return cortex{Database: database, Schema: schema, ModelName: name, Description: description}
+func (cortex) WithOptions(o Options) Emitter {
+	return cortex{Database: o.Database, Schema: o.Schema, ModelName: o.Name, Description: o.Description}
 }
 
 // ---- Cortex YAML shapes ----

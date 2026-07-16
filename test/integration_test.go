@@ -153,7 +153,7 @@ func emit(t *testing.T) []byte {
 		t.Fatalf("AsEmitter: %v", err)
 	}
 	if c, ok := e.(layer.Configurable); ok {
-		e = c.WithOptions("ANALYTICS", "MAIN", "ecommerce", "")
+		e = c.WithOptions(layer.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
 	}
 	m, err := p.Parse(sourceDirs...)
 	if err != nil {
@@ -408,7 +408,7 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 		t.Fatalf("AsEmitter: %v", err)
 	}
 	if c, ok := e.(layer.Configurable); ok {
-		e = c.WithOptions("", "MAIN", "", "")
+		e = c.WithOptions(layer.Options{Schema: "MAIN"})
 	}
 	p, err := layer.AsParser("dbt")
 	if err != nil {
