@@ -873,6 +873,8 @@ func aggExpr(agg, col string) string {
 // pkFromModel collects primary-key columns from model-level and column-level
 // contract constraints.
 func pkFromModel(md dbtModel) []string {
+	// Explicit primary_key constraints are authoritative (a model-level composite
+	// key lists its columns together; a column-level one names one column).
 	var pk []string
 	for _, con := range md.Constraints {
 		if con.Type == "primary_key" {
@@ -885,7 +887,20 @@ func pkFromModel(md dbtModel) []string {
 				pk = append(pk, c.Name)
 			}
 		}
-		// dbt idiom: a column tested both unique AND not_null is the primary key.
+	}
+	if len(pk) > 0 {
+		return pk
+	}
+
+	// Fallback idiom: a column tested both unique AND not_null is a primary key.
+	// A table may have SEVERAL such columns (e.g. a surrogate key AND a natural
+	// key) — those are independent candidate keys, NOT one composite PK. Inferring
+	// a composite here would invalidate otherwise-valid single-column joins:
+	// Snowflake requires a relationship's referenced columns to exactly equal the
+	// referenced entity's key. Infer a single-column PK, preferring the surrogate
+	// (_sk) key, else the first candidate (surrogate keys are listed first).
+	var candidates []string
+	for _, c := range md.Columns {
 		var uniq, notNull bool
 		for _, t := range append(append([]dbtTest{}, c.DataTests...), c.Tests...) {
 			switch t.Name {
@@ -895,11 +910,19 @@ func pkFromModel(md dbtModel) []string {
 				notNull = true
 			}
 		}
-		if uniq && notNull && !contains(pk, c.Name) {
-			pk = append(pk, c.Name)
+		if uniq && notNull {
+			candidates = append(candidates, c.Name)
 		}
 	}
-	return pk
+	for _, c := range candidates {
+		if strings.HasSuffix(strings.ToLower(c), "_sk") {
+			return []string{c}
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[:1]
+	}
+	return nil
 }
 
 // parseRef extracts the model name from a dbt ref, e.g. ref('dim_customer') ->

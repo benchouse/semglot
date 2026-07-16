@@ -29,9 +29,18 @@ type Emitter interface {
 	Emit(m *ir.Model, dir string) error
 }
 
-// Configurable is an Emitter that accepts base_table/model identity options.
+// Options carries the model/view identity a Configurable emitter needs.
+type Options struct {
+	Database    string // warehouse database (e.g. EVAL_MARTS)
+	Schema      string // schema of the SOURCE tables the model reads (e.g. MAIN)
+	ViewSchema  string // schema where the emitted view OBJECT is created (Snowflake semantic view); falls back to Schema when empty
+	Name        string
+	Description string
+}
+
+// Configurable is an Emitter that accepts model/view identity options.
 type Configurable interface {
-	WithOptions(database, schema, name, description string) Emitter
+	WithOptions(Options) Emitter
 }
 
 var registry = map[string]Layer{}

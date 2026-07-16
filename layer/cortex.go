@@ -41,8 +41,8 @@ func (cortex) Name() string { return "cortex" }
 
 // WithOptions returns a cortex emitter carrying the given base_table and model
 // identity. Used by the CLI to pass --database/--schema/--name/--description.
-func (cortex) WithOptions(database, schema, name, description string) Emitter {
-	return cortex{Database: database, Schema: schema, ModelName: name, Description: description}
+func (cortex) WithOptions(o Options) Emitter {
+	return cortex{Database: o.Database, Schema: o.Schema, ModelName: o.Name, Description: o.Description}
 }
 
 // ---- Cortex YAML shapes ----

@@ -55,6 +55,28 @@ func TestResolveIdentityFlagOverridesConfig(t *testing.T) {
 	}
 }
 
+func TestResolveIdentityViewSchema(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "c.yml")
+	os.WriteFile(cfg, []byte("database: EVAL_MARTS\nschema: MAIN\nview_schema: SEM\nname: SV_ECOMM\n"), 0o644)
+	// config supplies view_schema; the --view-schema flag overrides when passed.
+	got, err := resolveIdentity("/x/ecommerce", cfg, map[string]bool{}, identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Schema != "MAIN" || got.ViewSchema != "SEM" {
+		t.Errorf("schema/view_schema = %q/%q, want MAIN/SEM", got.Schema, got.ViewSchema)
+	}
+	got, err = resolveIdentity("/x/ecommerce", cfg,
+		map[string]bool{"view-schema": true}, identity{ViewSchema: "CURATED"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ViewSchema != "CURATED" {
+		t.Errorf("view_schema = %q, want CURATED (explicit flag wins)", got.ViewSchema)
+	}
+}
+
 func TestResolveIdentityExplicitEmptyBeatsConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "c.yml")

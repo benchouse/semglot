@@ -38,9 +38,9 @@ func isRatioDef(def ir.Expr) bool {
 	return ok && bin.Op == "/"
 }
 
-// WithOptions lets the CLI pass --schema (database/name/description are unused).
-func (supersimple) WithOptions(database, schema, name, description string) Emitter {
-	return supersimple{Schema: schema}
+// WithOptions lets the CLI pass --schema (other identity fields are unused).
+func (supersimple) WithOptions(o Options) Emitter {
+	return supersimple{Schema: o.Schema}
 }
 
 const ssHeader = "# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json\n"

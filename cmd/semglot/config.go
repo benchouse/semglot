@@ -13,6 +13,7 @@ import (
 type identity struct {
 	Database    string
 	Schema      string
+	ViewSchema  string
 	Name        string
 	Description string
 }
@@ -21,6 +22,7 @@ type identity struct {
 type configFile struct {
 	Database    string `yaml:"database"`
 	Schema      string `yaml:"schema"`
+	ViewSchema  string `yaml:"view_schema"`
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 }
@@ -46,6 +48,9 @@ func resolveIdentity(sourceDir, configPath string, set map[string]bool, flags id
 		if cf.Schema != "" {
 			id.Schema = cf.Schema
 		}
+		if cf.ViewSchema != "" {
+			id.ViewSchema = cf.ViewSchema
+		}
 		if cf.Name != "" {
 			id.Name = cf.Name
 		}
@@ -59,6 +64,9 @@ func resolveIdentity(sourceDir, configPath string, set map[string]bool, flags id
 	}
 	if set["schema"] {
 		id.Schema = flags.Schema
+	}
+	if set["view-schema"] {
+		id.ViewSchema = flags.ViewSchema
 	}
 	if set["name"] {
 		id.Name = flags.Name
