@@ -452,7 +452,7 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 	}
 
 	// Reverse direction: every golden must have been produced, so a regression
-	// that stops emitting a file (e.g. NOTES.md or a whole table) is caught —
+	// that stops emitting a file (e.g. NOTES.md or a whole table) is caught;
 	// the loop above only checks produced->golden.
 	if os.Getenv("UPDATE_GOLDEN") != "1" {
 		goldens, err := os.ReadDir(goldenDir)
