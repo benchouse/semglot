@@ -46,8 +46,21 @@ go build -o semglot ./cmd/semglot
 
 ## Usage
 
-`build` transpiles a source semantic layer into a target dialect. Take a small
-dbt table:
+`build` transpiles a source semantic layer into a target dialect. Builds are
+configured with named **profiles** in `semglot.yaml`:
+
+```yaml
+# semglot.yaml
+profiles:
+  catalog:
+    source: ./models
+    target-dialect: snowflake-semantic-view
+    output: ./out
+    database: ANALYTICS
+    model-name: catalog
+```
+
+Given a small dbt table:
 
 ```yaml
 # models/schema.yml
@@ -68,10 +81,10 @@ models:
         data_type: varchar
 ```
 
-Build it for a Snowflake semantic view:
+run the profile:
 
 ```sh
-semglot build --source ./models --target ./out --target-type snowflake-semantic-view --database ANALYTICS --name catalog
+semglot build --profile catalog
 ```
 
 semglot writes `out/definition.md` with the create statement:
@@ -91,49 +104,37 @@ create or replace semantic view CATALOG
 
 ### Options
 
-- `--source` is **repeatable**, since dbt schema files often live in several
-  folders (e.g. `models/semantic` + `models/marts`):
-  `--source models/semantic --source models/marts`.
-- `--source-type` defaults to `dbt`.
-- `--target-type` is one of the target dialects above.
-- Snowflake targets (`cortex`, `snowflake-semantic-view`) need a database
-  (see [Configuration](#configuration)); without one they'd emit invalid,
-  unqualified DDL.
+- `--profile <name>` selects a profile from the config. Required.
+- `--config <path>` points at the config file. Defaults to `./semglot.yaml`.
 
 Anything a target dialect can't express is reported rather than dropped silently
 (e.g. a `NOTES.md` sidecar listing metrics that don't map).
 
 ## Configuration
 
-Emitted layers carry an **identity**: the database, schema, model name, and
-description written into the output. You can set these on the command line, or
-keep them in a YAML file and pass it with `--config`:
+A profile is a complete, self-contained build. Every field:
 
 ```yaml
 # semglot.yaml
-database:    ANALYTICS
-schema:      MARTS
-name:        ecommerce
-description: Orders, customers, and marketing spend.
+profiles:
+  view_prod:
+    source: ./models              # required. dbt source dir, or a list of dirs
+    source-dialect: dbt           # optional. default: dbt
+    target-dialect: snowflake-semantic-view   # required
+    output: ./out/view            # required. directory to write into
+    database: ANALYTICS           # required for Snowflake targets (cortex, snowflake-semantic-view)
+    schema: SEM                   # optional. default: MAIN
+    model-name: catalog           # optional. default: source dir name
+    description: Curated view.     # optional
 ```
 
-```sh
-semglot build --source ./models --target ./out --target-type cortex --config semglot.yaml
-```
-
-Each field is resolved independently, with later sources overriding earlier ones:
-
-```
-built-in defaults  <  --config file  <  explicit flags
-```
-
-So a `--config` file can hold your shared settings while a one-off flag
-overrides a single field for one run. The individual flags are `--database`,
-`--schema`, `--name`, and `--description`.
-
-Defaults when nothing sets them: `schema` is `MAIN`, and `name` is taken from the
-source directory. Snowflake targets have no default `database`, so one must come
-from `--database` or `--config`.
+- Each profile is independent: there is no shared or inherited config. Staging and
+  production are two profiles that differ only in `database` and `output`.
+- Omitted optional fields take defaults: `source-dialect` is `dbt`, `schema` is
+  `MAIN`, and `model-name` is the source directory name.
+- `build` fails clearly when the config is missing or unparseable, the `--profile`
+  is not found, a required field (`source`, `target-dialect`, `output`) is absent,
+  or a Snowflake target has no `database`.
 
 ## Dialect support
 
