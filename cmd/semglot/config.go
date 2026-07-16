@@ -9,69 +9,108 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// identity is the model-identity settings a Configurable emitter needs.
-type identity struct {
-	Database    string
-	Schema      string
-	Name        string
-	Description string
+// sourcePaths is a profile's `source`. It accepts either a single directory
+// (a YAML scalar) or a list of directories (a YAML sequence).
+type sourcePaths []string
+
+func (s *sourcePaths) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*s = sourcePaths{node.Value}
+		return nil
+	}
+	var list []string
+	if err := node.Decode(&list); err != nil {
+		return err
+	}
+	*s = list
+	return nil
 }
 
-// configFile is the flat YAML shape read from --config.
+// profile is one named build in semglot.yaml.
+type profile struct {
+	Source        sourcePaths `yaml:"source"`
+	SourceDialect string      `yaml:"source-dialect"`
+	TargetDialect string      `yaml:"target-dialect"`
+	Output        string      `yaml:"output"`
+	Database      string      `yaml:"database"`
+	Schema        string      `yaml:"schema"`
+	ModelName     string      `yaml:"model-name"`
+	Description   string      `yaml:"description"`
+}
+
+// configFile is the top-level shape of semglot.yaml.
 type configFile struct {
-	Database    string `yaml:"database"`
-	Schema      string `yaml:"schema"`
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+	Profiles map[string]profile `yaml:"profiles"`
 }
 
-// resolveIdentity layers defaults < config file < explicit flags. set holds the
-// names of flags the user actually passed (from flag.FlagSet.Visit); flags holds
-// their raw values. A non-empty configPath must exist and parse.
-func resolveIdentity(sourceDir, configPath string, set map[string]bool, flags identity) (identity, error) {
-	id := identity{Schema: "MAIN", Name: defaultName(sourceDir)}
-
-	if configPath != "" {
-		b, err := os.ReadFile(configPath)
-		if err != nil {
-			return identity{}, fmt.Errorf("read --config: %w", err)
-		}
-		var cf configFile
-		if err := yaml.Unmarshal(b, &cf); err != nil {
-			return identity{}, fmt.Errorf("parse --config %s: %w", configPath, err)
-		}
-		if cf.Database != "" {
-			id.Database = cf.Database
-		}
-		if cf.Schema != "" {
-			id.Schema = cf.Schema
-		}
-		if cf.Name != "" {
-			id.Name = cf.Name
-		}
-		if cf.Description != "" {
-			id.Description = cf.Description
-		}
-	}
-
-	if set["database"] {
-		id.Database = flags.Database
-	}
-	if set["schema"] {
-		id.Schema = flags.Schema
-	}
-	if set["name"] {
-		id.Name = flags.Name
-	}
-	if set["description"] {
-		id.Description = flags.Description
-	}
-	return id, nil
+// buildSpec is a fully-resolved build: a validated profile with defaults applied.
+type buildSpec struct {
+	Sources       []string
+	SourceDialect string
+	TargetDialect string
+	Output        string
+	Database      string
+	Schema        string
+	ModelName     string
+	Description   string
 }
 
-// defaultName derives the default model name from the source directory basename.
-func defaultName(sourceDir string) string {
-	base := filepath.Base(strings.TrimRight(sourceDir, "/"))
+// snowflakeTargets emit into a physical Snowflake database and therefore require
+// a database; without one they'd emit invalid, unqualified DDL.
+var snowflakeTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true}
+
+// loadProfile reads configPath, selects the named profile, applies defaults, and
+// validates it into a buildSpec.
+func loadProfile(configPath, name string) (buildSpec, error) {
+	b, err := os.ReadFile(configPath)
+	if err != nil {
+		return buildSpec{}, fmt.Errorf("read config %s: %w", configPath, err)
+	}
+	var cf configFile
+	if err := yaml.Unmarshal(b, &cf); err != nil {
+		return buildSpec{}, fmt.Errorf("parse config %s: %w", configPath, err)
+	}
+	p, ok := cf.Profiles[name]
+	if !ok {
+		return buildSpec{}, fmt.Errorf("profile %q not found in %s", name, configPath)
+	}
+	if len(p.Source) == 0 {
+		return buildSpec{}, fmt.Errorf("profile %q: source is required", name)
+	}
+	if p.TargetDialect == "" {
+		return buildSpec{}, fmt.Errorf("profile %q: target-dialect is required", name)
+	}
+	if p.Output == "" {
+		return buildSpec{}, fmt.Errorf("profile %q: output is required", name)
+	}
+	spec := buildSpec{
+		Sources:       []string(p.Source),
+		SourceDialect: p.SourceDialect,
+		TargetDialect: p.TargetDialect,
+		Output:        p.Output,
+		Database:      p.Database,
+		Schema:        p.Schema,
+		ModelName:     p.ModelName,
+		Description:   p.Description,
+	}
+	if spec.SourceDialect == "" {
+		spec.SourceDialect = "dbt"
+	}
+	if spec.Schema == "" {
+		spec.Schema = "MAIN"
+	}
+	if spec.ModelName == "" {
+		spec.ModelName = defaultModelName(spec.Sources)
+	}
+	if snowflakeTargets[spec.TargetDialect] && spec.Database == "" {
+		return buildSpec{}, fmt.Errorf("profile %q: target-dialect %s requires a database", name, spec.TargetDialect)
+	}
+	return spec, nil
+}
+
+// defaultModelName derives the model name from the first source directory basename.
+func defaultModelName(sources []string) string {
+	base := filepath.Base(strings.TrimRight(sources[0], "/"))
 	if base == "" || base == "." || base == string(filepath.Separator) {
 		return "semantic_model"
 	}
