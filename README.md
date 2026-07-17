@@ -9,6 +9,10 @@
   <em>A semantic-layer transpiler: one neutral IR, many dialects.</em>
 </p>
 
+<p align="center">
+  Built for <a href="https://benchouse.ai">benchouse.ai</a>, the independent leaderboard for analytics agents, and open-sourced for everyone.
+</p>
+
 ---
 
 Where [`sqlglot`](https://github.com/tobymao/sqlglot) translates across SQL
