@@ -392,7 +392,11 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 			}
 		}
 		for _, m := range sm.Measures {
-			f := field(m.Name, m.Expr)
+			col := m.Expr
+			if col == "" {
+				col = m.Name
+			}
+			f := field(m.Name, col)
 			// A count aggregates cardinality, not the column's value, so the
 			// underlying column's description would mislabel the fact — drop it.
 			if a := strings.ToLower(m.Agg); a == "count" || a == "count_distinct" {
@@ -401,7 +405,7 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 			t.Measures = append(t.Measures, ir.Measure{Field: f, Agg: m.Agg})
 			measureTable[m.Name] = name
 			measureAgg[m.Name] = m.Agg
-			measureCol[m.Name] = m.Expr
+			measureCol[m.Name] = col
 		}
 		// Columns documented in models: but not surfaced by the semantic layer
 		// become plain dimensions (this is the whole model for models:-only projects).

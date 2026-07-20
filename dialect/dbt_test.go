@@ -138,6 +138,32 @@ func TestDBTParseTimeDimEntityDedup(t *testing.T) {
 	}
 }
 
+// MetricFlow's `expr:` on a measure is optional and defaults to the measure
+// name — exactly like the entity and dimension loops just above it in
+// dbt.go. A measure with no expr must not produce an empty column reference
+// (that renders downstream as sum(), which every warehouse rejects).
+func TestDBTParseMeasureNoExprDefaultsToName(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_measure_no_expr")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got.Tables) != 1 {
+		t.Fatalf("want 1 table, got %d", len(got.Tables))
+	}
+	var found bool
+	for _, m := range got.Tables[0].Measures {
+		if m.Name == "order_total" {
+			found = true
+			if m.Expr != "order_total" {
+				t.Errorf("order_total.Expr = %q, want %q (default to measure name)", m.Expr, "order_total")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("measure order_total not found in parsed table")
+	}
+}
+
 // A column's enum is the superset of its accepted_values list and its meta.enum
 // map: accepted_values order first, meta-only values appended, descriptions from
 // meta.enum. meta.synonyms is carried onto the field too.

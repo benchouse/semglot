@@ -275,6 +275,29 @@ func TestDatabricksMetricViewMixedCaseTableStripsQualifier(t *testing.T) {
 	}
 }
 
+// TestDatabricksMetricViewMeasureNoExprDefaultsToName is Fix A's target-level
+// guard: a dbt measure declared with no expr must parse to a defaulted
+// column name (fixed in the parser, dialect/dbt.go) so the databricks target
+// never renders an argument-less aggregate like sum() — Databricks rejects
+// the entire view with WRONG_NUM_ARGS.WITHOUT_SUGGESTION for that.
+func TestDatabricksMetricViewMeasureNoExprDefaultsToName(t *testing.T) {
+	model, err := dbt{}.Parse("testdata/dbt_measure_no_expr")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	files := emitDbx(t, model)
+	got, ok := files["fct_orders.yaml"]
+	if !ok {
+		t.Fatalf("expected fct_orders.yaml, got files: %v", keysOfDbx(files))
+	}
+	if strings.Contains(got, "sum()") {
+		t.Fatalf("measure with no expr must never emit sum(), got:\n%s", got)
+	}
+	if !strings.Contains(got, "expr: sum(order_total)") {
+		t.Errorf("expected expr: sum(order_total), got:\n%s", got)
+	}
+}
+
 func keysOfDbx(m map[string]string) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
