@@ -63,3 +63,70 @@ func TestLightdashRegisteredAndSkeleton(t *testing.T) {
 		t.Errorf("description = %q", doc.Models[0].Description)
 	}
 }
+
+func TestLightdashDimensions(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "orders",
+		Dimensions: []ir.Field{
+			{Name: "status", Expr: "status", Description: "Order state.",
+				Enum: []ir.EnumValue{{Value: "paid"}, {Value: "refunded", Description: "money returned"}}},
+			{Name: "is_first_order", Expr: "is_first_order"},
+			{Name: "customer_sk", Expr: "customer_sk"},
+			{Name: "region", Expr: "region", DataType: "varchar", Synonyms: []string{"area"}},
+		},
+		TimeDimensions: []ir.Field{
+			{Name: "order_date", Expr: "order_date"},
+		},
+	}}}
+	got := emitLightdash(t, m, Options{Name: "ecommerce"})
+
+	var doc struct {
+		Models []struct {
+			Columns []struct {
+				Name        string `yaml:"name"`
+				Description string `yaml:"description"`
+				Meta        struct {
+					Dimension struct {
+						Type  string `yaml:"type"`
+						Label string `yaml:"label"`
+					} `yaml:"dimension"`
+				} `yaml:"meta"`
+			} `yaml:"columns"`
+		} `yaml:"models"`
+	}
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, got)
+	}
+	cols := map[string]struct {
+		desc, typ string
+	}{}
+	for _, c := range doc.Models[0].Columns {
+		cols[c.Name] = struct{ desc, typ string }{c.Description, c.Meta.Dimension.Type}
+	}
+
+	// enum meanings fold into the description; bare values are dropped (no slot).
+	if !strings.Contains(cols["status"].desc, "refunded = money returned") {
+		t.Errorf("status description missing enum meaning: %q", cols["status"].desc)
+	}
+	// synonyms fold into the description.
+	if !strings.Contains(cols["region"].desc, "Synonyms: area") {
+		t.Errorf("region description missing synonyms: %q", cols["region"].desc)
+	}
+	// type from name/DataType signals; order_date is a time dimension.
+	if cols["is_first_order"].typ != "boolean" {
+		t.Errorf("is_first_order type = %q, want boolean", cols["is_first_order"].typ)
+	}
+	if cols["customer_sk"].typ != "number" {
+		t.Errorf("customer_sk type = %q, want number", cols["customer_sk"].typ)
+	}
+	if cols["region"].typ != "string" {
+		t.Errorf("region type = %q, want string", cols["region"].typ)
+	}
+	if cols["order_date"].typ != "timestamp" {
+		t.Errorf("order_date type = %q, want timestamp", cols["order_date"].typ)
+	}
+	// no confident signal and no DataType => type omitted (empty).
+	if cols["status"].typ != "" {
+		t.Errorf("status type = %q, want empty (omitted)", cols["status"].typ)
+	}
+}
