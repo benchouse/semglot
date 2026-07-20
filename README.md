@@ -37,6 +37,7 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `supersimple`             |        |   ✓    |
 | `nao-yaml`                |        |   ✓    |
 | `nao-context-rules`       |        |   ✓    |
+| `lightdash`               |        |   ✓    |
 
 Adding a dialect is small, self-contained work: implement the `Dialect` interface
 (`Parse`, `Emit`, or both) and register it, and every conversion to and from it
@@ -150,19 +151,19 @@ Every dialect maps to the same neutral IR, but targets differ in how much of it
 they can express. This is what each **target** emits today (`dbt` is currently
 the only source).
 
-| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` |
-|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|
-| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |
-| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |
-| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |
-| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |
-| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |
-| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |
-| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |
-| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |
-| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |
-| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |
-| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |
+| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `lightdash` |
+|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:-----------:|
+| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |      ✓      |
+| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |      ✓      |
+| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |      ✓      |
+| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |      ✓      |
+| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |      ~      |
+| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |      ~      |
+| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |      ✓      |
+| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |      ✓      |
+| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |      ~      |
+| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |      ≈      |
+| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |      ≈      |
 
 `✓` structured · `≈` rolled up as text in a description or comment · `~` partial · blank not emitted.
 
@@ -179,6 +180,7 @@ drops it:
 - **`nao-yaml`** is a flat, model-global document, so it has no table grouping.
 - **`nao-context-rules`** is prose, so it lists only elements that carry a
   description or synonyms.
+- **`lightdash`** emits a dbt `schema.yml` with Lightdash `meta:` blocks (dimensions, metrics, joins). It emits single-column primary keys and reference-only ratios, degrading composite keys, filtered aggregates, and cross-table derived metrics to a leading `# semglot:` comment block. A `meta-style` profile option switches `meta:` (dbt 1.9 and earlier) to `config.meta:` (dbt 1.10 and later).
 
 ## License
 
