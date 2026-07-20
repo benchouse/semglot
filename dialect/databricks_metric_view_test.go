@@ -68,8 +68,20 @@ func dbxTestModel() *ir.Model {
 			{Field: ir.Field{Name: "net_revenue", Expr: "net_revenue"}, Agg: "sum"},
 		},
 	}
+	// mixedCase: a table name carrying original dbt-YAML casing, reproducing the
+	// real Databricks failure where a mixed-case semantic-model name (e.g.
+	// FCT_Orders) survives into the rendered measure expr as a qualifier that
+	// Databricks cannot resolve (the source relation is aliased `source`).
+	mixedCase := ir.Table{
+		Name:       "FCT_Orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+		Metrics: []ir.Metric{
+			{Name: "gross_amount",
+				Def: ir.Agg{Func: "sum", Table: "FCT_Orders", Arg: ir.Col{Table: "FCT_Orders", Name: "amount"}}},
+		},
+	}
 	return &ir.Model{
-		Tables: []ir.Table{orders, customers, lines, obtWide},
+		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase},
 		Relationships: []ir.Relationship{
 			{Left: "orders", Right: "customers", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
 		},
@@ -243,6 +255,23 @@ func TestDatabricksMetricViewUncoveredRawMeasureSurvives(t *testing.T) {
 	}
 	if strings.Contains(got, "orders_count") {
 		t.Errorf("orders.yaml: raw measure orders_count duplicates order_count metric's expr; must not be emitted\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewMixedCaseTableStripsQualifier is Fix 2: a table name
+// carrying dbt-YAML case (FCT_Orders) must not leak that qualifier into a
+// rendered measure expr — the source relation in a metric view is aliased
+// `source`, and Databricks cannot resolve `FCT_Orders.amount`.
+func TestDatabricksMetricViewMixedCaseTableStripsQualifier(t *testing.T) {
+	got, ok := emitDbx(t, dbxTestModel())["fct_orders.yaml"]
+	if !ok {
+		t.Fatalf("expected fct_orders.yaml (from table FCT_Orders)")
+	}
+	if !strings.Contains(got, "expr: sum(amount)") {
+		t.Errorf("expected bare sum(amount), got:\n%s", got)
+	}
+	if strings.Contains(got, "FCT_Orders.") {
+		t.Errorf("measure expr must not carry the mixed-case source-table qualifier:\n%s", got)
 	}
 }
 

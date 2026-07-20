@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/benchouse/semglot/ir"
@@ -296,13 +297,26 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 
 // dbxStripSourceQualifier removes the source table's own name qualifier from a
 // rendered measure expression. renderSQL qualifies a metric's columns with its
-// owning table (e.g. "sum(fct_orders.order_gross)"), but in a metric view the
-// source relation is the alias `source`, not its physical name — source columns
-// are referenced bare, matching how fields are emitted. Cross-grain metrics
-// (which reference another table) are degraded before rendering, so only the
-// source qualifier can appear in a measure expr here.
+// owning table exactly as the IR carries it (e.g. "sum(FCT_Orders.order_gross)"
+// when the dbt YAML named the semantic model FCT_Orders), but in a metric view
+// the source relation is the alias `source`, not its physical name — source
+// columns are referenced bare, matching how fields are emitted. Cross-grain
+// metrics (which reference another table) are degraded before rendering, so
+// only the source qualifier can appear in a measure expr here.
+//
+// The match is case-insensitive because renderSQL preserves the table's
+// original case while callers here (buildView) pass table names that may
+// differ only in case from what's embedded in the expr — matching case-
+// sensitively would silently leave the qualifier in place for any
+// mixed-/upper-case semantic-model name, which Databricks then cannot resolve
+// (the source relation is aliased `source`), rejecting the entire view. The
+// leading word boundary avoids stripping a partial match inside a longer
+// identifier (e.g. "my_fct_orders."); it does not protect a string literal
+// containing "<table>." verbatim — a known, accepted, deferred weakness that
+// would need a full SQL tokeniser to close, out of scope here.
 func dbxStripSourceQualifier(expr, table string) string {
-	return strings.ReplaceAll(expr, strings.ToLower(table)+".", "")
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\.`)
+	return re.ReplaceAllString(expr, "")
 }
 
 // dbxQualify builds a Unity Catalog table reference, three-part when a catalog
