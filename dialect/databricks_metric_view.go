@@ -279,6 +279,17 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	for _, j := range mv.Joins {
 		jt := tableByName[j.Name]
 		for _, f := range append(append([]ir.Field{}, jt.Dimensions...), jt.TimeDimensions...) {
+			// A joined field is prefixed with the join name (<join>.<expr>) to
+			// qualify it against the source alias. That's only well-formed when
+			// Expr is a bare column — a compound expression (e.g. coalesce(region,
+			// 'unknown'), date_trunc('month', ordered_at)) would become invalid SQL
+			// like "dim_customer.coalesce(region, 'unknown')" and Databricks rejects
+			// the entire view for it. Skip it and note it instead of guessing how to
+			// qualify a compound expression.
+			if !isIdent(f.Expr) {
+				notes = append(notes, "joined dimension "+j.Name+"."+f.Name+" (expr "+f.Expr+"): compound expression cannot be safely qualified with the join name — skipped")
+				continue
+			}
 			name := strings.ToLower(f.Name)
 			if seen[name] {
 				name = j.Name + "_" + name

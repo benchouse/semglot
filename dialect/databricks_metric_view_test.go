@@ -101,10 +101,27 @@ func dbxTestModel() *ir.Model {
 			{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
 		},
 	}
+	// orders2/dimCustomer2: Fix D. A joined dimension whose Expr is a compound
+	// expression (not a bare column) must not be blindly prefixed with the join
+	// name (dim_customer2.coalesce(region, 'unknown') is invalid SQL that fails
+	// the whole view) — it must be skipped and noted. A bare-column joined
+	// dimension (tier) must still be emitted prefixed as before.
+	orders2 := ir.Table{
+		Name:       "orders2",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}
+	dimCustomer2 := ir.Table{
+		Name: "dim_customer2",
+		Dimensions: []ir.Field{
+			{Name: "tier", Expr: "tier"},
+			{Name: "region_norm", Expr: "coalesce(region, 'unknown')"},
+		},
+	}
 	return &ir.Model{
-		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase, caseDedup},
+		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase, caseDedup, orders2, dimCustomer2},
 		Relationships: []ir.Relationship{
 			{Left: "orders", Right: "customers", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
+			{Left: "orders2", Right: "dim_customer2", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
 		},
 	}
 }
@@ -353,6 +370,32 @@ func TestDatabricksMetricViewExprDedupIsCaseInsensitive(t *testing.T) {
 	}
 	if n := strings.Count(got, "count(distinct"); n != 1 {
 		t.Errorf("expected exactly one count(distinct ...) measure, got %d:\n%s", n, got)
+	}
+}
+
+// TestDatabricksMetricViewJoinedCompoundExprSkipped is Fix D: a joined
+// dimension whose Expr is not a bare column (coalesce(region, 'unknown'))
+// must not be blindly prefixed with the join name — that emits invalid SQL
+// (dim_customer2.coalesce(...)) and Databricks rejects the entire view. It
+// must be skipped and noted in the comment instead. A bare-column joined
+// dimension (tier) is unaffected and still emitted prefixed.
+func TestDatabricksMetricViewJoinedCompoundExprSkipped(t *testing.T) {
+	files := emitDbx(t, dbxTestModel())
+	got, ok := files["orders2.yaml"]
+	if !ok {
+		t.Fatalf("expected orders2.yaml, got files: %v", keysOfDbx(files))
+	}
+	if strings.Contains(got, "name: region_norm") {
+		t.Errorf("compound joined dimension must not be emitted as a field:\n%s", got)
+	}
+	if strings.Contains(got, "dim_customer2.coalesce") {
+		t.Errorf("compound joined dimension must never be emitted as invalid SQL:\n%s", got)
+	}
+	if !strings.Contains(got, "region_norm") {
+		t.Errorf("skipped joined dimension must be noted in the view comment:\n%s", got)
+	}
+	if !strings.Contains(got, "expr: dim_customer2.tier") {
+		t.Errorf("bare-column joined dimension must still be emitted prefixed:\n%s", got)
 	}
 }
 
