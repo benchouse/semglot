@@ -77,9 +77,9 @@ func TestDatabricksMetricViewOrders(t *testing.T) {
 		`version: "1.1"`,
 		"source: analytics.main.orders",
 		`"on": source.customer_id = customers.customer_id`,
-		"source: analytics.main.customers", // the join source
-		"expr: customers.region",           // joined dimension, prefixed
-		"expr: sum(amount)",                 // simple metric lowered (renderSQL is lowercase)
+		"source: analytics.main.customers",       // the join source
+		"expr: customers.region",                 // joined dimension, prefixed
+		"expr: sum(amount)",                      // simple metric lowered (renderSQL is lowercase)
 		"sum(amount) / count(distinct order_id)", // same-grain derived, inlined
 	} {
 		if !strings.Contains(got, want) {
