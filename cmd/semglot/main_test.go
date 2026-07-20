@@ -81,3 +81,18 @@ func TestBuildCmdSnowflakeTargetRequiresDatabase(t *testing.T) {
 		t.Fatalf("stderr = %q, want a message mentioning \"database\"", stderr)
 	}
 }
+
+func TestBuildDatabricksRequiresDatabase(t *testing.T) {
+	// databricks-metric-view needs a catalog for its three-part source ref;
+	// building without --database must fail (exit non-zero).
+	out := t.TempDir()
+	code := buildCmd([]string{
+		"--source", "../../test/models/ecommerce/dbt/semantic",
+		"--source", "../../test/models/ecommerce/dbt/marts",
+		"--target", out,
+		"--target-type", "databricks-metric-view",
+	})
+	if code == 0 {
+		t.Fatal("expected non-zero exit when --database is omitted for databricks-metric-view")
+	}
+}

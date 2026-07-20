@@ -32,10 +32,15 @@ func main() {
 	}
 }
 
-// snowflakeTargets are the target-type dialects that emit into a physical
-// Snowflake database. They require a resolved database (via --database or
-// --config); without one they'd emit invalid, unqualified DDL.
-var snowflakeTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true}
+// warehouseTargets are the target-type dialects that emit into a physical
+// warehouse (Snowflake, or a Databricks Unity Catalog). They require a resolved
+// database/catalog (via --database or --config); without one they'd emit
+// invalid, unqualified references.
+var warehouseTargets = map[string]bool{
+	"cortex":                  true,
+	"snowflake-semantic-view": true,
+	"databricks-metric-view":  true,
+}
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: semglot build --source <dir> [--source <dir> …] --target <dir> --target-type <dialect> [--config <file>] [--database --schema --name --description]")
@@ -90,7 +95,7 @@ func buildCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "build:", err)
 			return 1
 		}
-		if snowflakeTargets[*targetType] && id.Database == "" {
+		if warehouseTargets[*targetType] && id.Database == "" {
 			fmt.Fprintf(os.Stderr, "build: --target-type %s requires a database (via --database or --config)\n", *targetType)
 			return 1
 		}
