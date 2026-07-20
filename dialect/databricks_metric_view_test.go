@@ -35,11 +35,13 @@ func dbxTestModel() *ir.Model {
 				Def: ir.Agg{Func: "sum", Table: "orders",
 					Arg: ir.Raw{SQL: "case when refunded then 1 else 0 end", Columns: []string{"refunded"}}}},
 		},
-		// Raw measures alongside metrics: orders_count would (if it leaked through)
-		// near-duplicate the order_count metric above. When a table has metrics,
-		// measures must come from metrics only — these must NOT also appear.
+		// Raw measures alongside metrics: orders_count near-duplicates the
+		// order_count metric above (same expr, different name) and must NOT also
+		// be emitted. avg_shipping_cost has no metric equivalent and must survive
+		// alongside the metric-derived measures.
 		Measures: []ir.Measure{
 			{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
+			{Field: ir.Field{Name: "avg_shipping_cost", Expr: "shipping_cost", Description: "Average shipping cost"}, Agg: "avg"},
 		},
 	}
 	customers := ir.Table{
@@ -219,6 +221,28 @@ func TestDatabricksMetricViewMeasureDimensionCollision(t *testing.T) {
 	}
 	if !strings.Contains(got, "sum(amount) / count(distinct order_id)") {
 		t.Errorf("computed aov metric must still be emitted as a measure:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewUncoveredRawMeasureSurvives is Fix 1: a table with
+// metrics must not drop raw measures no metric covers. orders has metrics AND
+// a raw measure (avg_shipping_cost) whose expression no metric produces, so it
+// must still be emitted. orders_count, whose expr duplicates the order_count
+// metric, must still be suppressed (guards the near-duplicate regression the
+// original all-or-nothing design existed to prevent).
+func TestDatabricksMetricViewUncoveredRawMeasureSurvives(t *testing.T) {
+	got := emitDbx(t, dbxTestModel())["orders.yaml"]
+	for _, want := range []string{
+		"name: avg_shipping_cost",
+		"expr: avg(shipping_cost)",
+		"comment: Average shipping cost",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("orders.yaml missing uncovered raw measure %q\n--- got ---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "orders_count") {
+		t.Errorf("orders.yaml: raw measure orders_count duplicates order_count metric's expr; must not be emitted\n%s", got)
 	}
 }
 

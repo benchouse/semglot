@@ -536,6 +536,16 @@ func TestDatabricksMetricViewStructure(t *testing.T) {
 	if !strings.Contains(dimCustomer, "expr: count(1)") || !strings.Contains(dimCustomer, "name: row_count") {
 		t.Errorf("dim_customer.yaml missing synthesised row-count measure\n--- got ---\n%s", dimCustomer)
 	}
+	// fct_order_lines has a metric (units_sold) AND a raw measure the metric
+	// doesn't cover (net_line_revenue) — it must not be silently dropped just
+	// because the table also has metrics.
+	orderLines, ok := files["fct_order_lines.yaml"]
+	if !ok {
+		t.Fatal("expected fct_order_lines.yaml")
+	}
+	if !strings.Contains(orderLines, "name: net_line_revenue") {
+		t.Errorf("fct_order_lines.yaml: raw measure net_line_revenue (uncovered by any metric) must survive alongside metric-derived measures\n--- got ---\n%s", orderLines)
+	}
 }
 
 func keysOf(m map[string]string) []string {

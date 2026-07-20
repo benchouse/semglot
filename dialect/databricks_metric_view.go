@@ -16,14 +16,16 @@ func init() { Register(databricksMetricView{}) }
 // layer Databricks AI/BI Genie grounds its answers on. It writes one
 // <table>.yaml per IR table, rooted at that table with direct joins to the
 // dimension tables it references — parity with sibling targets (cortex,
-// snowflake-semantic-view, supersimple), which all emit every table. A table
-// with metrics sources its measures from those metrics; a table with measures
-// but no metrics (e.g. a wide OBT with dbt `measures:` that no metric
-// references) renders its measures directly from the raw ir.Measure. A table
-// left with zero measures either way (a pure dimension table, or one whose
-// metrics all degraded) gets a synthesised row-count measure, since a metric
-// view requires at least one. A table with zero dimensions is skipped
-// entirely — a metric view also requires at least one, and there is no way to
+// snowflake-semantic-view, supersimple), which all emit every table. Measures
+// come from the table's metrics first, then any raw ir.Measure not already
+// represented — by lowercased name or by rendered expression — so a table
+// with metrics still surfaces raw measures no metric covers, while a raw
+// measure that would just near-duplicate a metric (same expr, different name,
+// e.g. orders_count beside an orders metric) is suppressed. A table left with
+// zero measures either way (a pure dimension table, or one whose metrics all
+// degraded) gets a synthesised row-count measure, since a metric view
+// requires at least one. A table with zero dimensions is skipped entirely —
+// a metric view also requires at least one, and there is no way to
 // synthesise a meaningful one. Zero value is usable; the build command sets
 // identity from flags. Emit does not mutate m. Database is the Unity Catalog
 // catalog; Schema is the source-table schema.
@@ -170,13 +172,15 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		})
 	}
 
-	// Measures: from metrics when the table has any (avoids emitting a
-	// near-duplicate raw measure alongside its owning metric, e.g. orders_count
-	// next to the orders metric). Degrade window/conversion and cross-grain
-	// derived metrics to a note rather than emit SQL we cannot stand behind. A
-	// table with measures but no metrics (e.g. a wide OBT with dbt `measures:`
-	// that no metric references) renders its measures directly from the raw
-	// ir.Measure, so it isn't dropped entirely.
+	// Measures: metric-derived measures first (avoids emitting a near-duplicate
+	// raw measure alongside its owning metric, e.g. orders_count next to the
+	// orders metric — same expr, different name). Degrade window/conversion and
+	// cross-grain derived metrics to a note rather than emit SQL we cannot stand
+	// behind. Then append raw ir.Measures not already represented — by lowercased
+	// name OR by rendered expression — so a table with >=1 metric still surfaces
+	// measures no metric covers (e.g. a fact with one metric and a second raw
+	// measure the model never turned into a metric), instead of silently
+	// dropping every raw measure just because the table also has metrics.
 	//
 	// Built before fields (see the `seen` seeding below): Databricks requires
 	// measure and dimension names to be unique across a metric view, and rejects
@@ -186,30 +190,40 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// (sum(attributed_revenue)/sum(spend)). Mirrors the identical fix in
 	// snowflake-semantic-view (see its buildView), which resolves the same
 	// collision by treating the computed metric as canonical.
-	if len(t.Metrics) > 0 {
-		for _, mt := range t.Metrics {
-			if reason, degrade := dbxDegrade(mt); degrade {
-				notes = append(notes, "metric "+mt.Name+": "+reason)
-				continue
-			}
-			if dbxCrossGrain(mt.Def, metricOwner, t.Name) {
-				notes = append(notes, "metric "+mt.Name+": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
-				continue
-			}
-			mv.Measures = append(mv.Measures, dbxMeasure{
-				Name: strings.ToLower(mt.Name), Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
-				Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
-			})
+	for _, mt := range t.Metrics {
+		if reason, degrade := dbxDegrade(mt); degrade {
+			notes = append(notes, "metric "+mt.Name+": "+reason)
+			continue
 		}
-	} else {
-		for _, ms := range t.Measures {
-			mv.Measures = append(mv.Measures, dbxMeasure{
-				Name:     strings.ToLower(ms.Name),
-				Expr:     aggExpr(ms.Agg, strings.ToLower(ms.Expr)),
-				Comment:  ms.Description,
-				Synonyms: dbxCapSyn(ms.Synonyms),
-			})
+		if dbxCrossGrain(mt.Def, metricOwner, t.Name) {
+			notes = append(notes, "metric "+mt.Name+": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
+			continue
 		}
+		mv.Measures = append(mv.Measures, dbxMeasure{
+			Name: strings.ToLower(mt.Name), Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
+			Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
+		})
+	}
+	usedNames := map[string]bool{}
+	usedExprs := map[string]bool{}
+	for _, ms := range mv.Measures {
+		usedNames[strings.ToLower(ms.Name)] = true
+		usedExprs[ms.Expr] = true
+	}
+	for _, ms := range t.Measures {
+		name := strings.ToLower(ms.Name)
+		expr := aggExpr(ms.Agg, strings.ToLower(ms.Expr))
+		if usedNames[name] || usedExprs[expr] {
+			continue
+		}
+		usedNames[name] = true
+		usedExprs[expr] = true
+		mv.Measures = append(mv.Measures, dbxMeasure{
+			Name:     name,
+			Expr:     expr,
+			Comment:  ms.Description,
+			Synonyms: dbxCapSyn(ms.Synonyms),
+		})
 	}
 
 	// A metric view must declare at least one measure. A table whose source

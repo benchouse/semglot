@@ -53,3 +53,6 @@ measures:
     expr: sum(quantity)
     comment: Units sold.
     display_name: Units sold
+  - name: net_line_revenue
+    expr: sum(net_line_revenue)
+    comment: Net revenue for the line.
