@@ -46,6 +46,12 @@ models:
         model_id: FCT_ORDER_LINES
         join_strategy:
           join_key: ORDER_ID
+      sales:
+        name: Sales
+        type: hasMany
+        model_id: OBT_SALES
+        join_strategy:
+          join_key: ORDER_ID
 metrics:
   aov:
     name: Average order value

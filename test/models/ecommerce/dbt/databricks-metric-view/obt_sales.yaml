@@ -1,0 +1,45 @@
+version: "1.1"
+comment: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+source: analytics.main.obt_sales
+joins:
+  - name: fct_orders
+    source: analytics.main.fct_orders
+    "on": source.order_id = fct_orders.order_id
+fields:
+  - name: order_line_id
+    expr: order_line_id
+    comment: Line-item surrogate key.
+  - name: order_id
+    expr: order_id
+    comment: Order the line belongs to.
+  - name: customer_segment
+    expr: customer_segment
+    comment: Marketing segment.
+  - name: is_refunded
+    expr: is_refunded
+    comment: Whether the order line was refunded.
+  - name: order_date
+    expr: order_date
+    comment: Date the order was placed.
+  - name: fct_orders_order_id
+    expr: fct_orders.order_id
+    comment: Order surrogate key.
+  - name: customer_sk
+    expr: fct_orders.customer_sk
+    comment: Customer the order belongs to.
+  - name: fct_orders_is_refunded
+    expr: fct_orders.is_refunded
+    comment: Whether the order was refunded.
+  - name: channel_id
+    expr: fct_orders.channel_id
+    comment: Sales channel the order came through.
+  - name: fct_orders_order_date
+    expr: fct_orders.order_date
+    comment: Date the order was placed.
+measures:
+  - name: obt_units_sold
+    expr: sum(quantity)
+    comment: Units sold on the line.
+  - name: obt_net_revenue_line
+    expr: sum(net_revenue)
+    comment: Net revenue for the line.

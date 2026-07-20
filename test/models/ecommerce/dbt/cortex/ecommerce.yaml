@@ -159,6 +159,46 @@ tables:
         expr: TITLE
         data_type: TEXT
         description: Product title.
+  - name: obt_sales
+    description: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+    base_table:
+      database: ANALYTICS
+      schema: MAIN
+      table: OBT_SALES
+    primary_key:
+      columns:
+        - ORDER_LINE_ID
+    dimensions:
+      - name: order_line_id
+        expr: ORDER_LINE_ID
+        data_type: NUMBER
+        description: Line-item surrogate key.
+      - name: order_id
+        expr: ORDER_ID
+        data_type: NUMBER
+        description: Order the line belongs to.
+      - name: customer_segment
+        expr: CUSTOMER_SEGMENT
+        data_type: TEXT
+        description: Marketing segment.
+      - name: is_refunded
+        expr: IS_REFUNDED
+        data_type: BOOLEAN
+        description: Whether the order line was refunded.
+    time_dimensions:
+      - name: order_date
+        expr: ORDER_DATE
+        data_type: DATE
+        description: Date the order was placed.
+    facts:
+      - name: obt_units_sold
+        expr: QUANTITY
+        data_type: NUMBER
+        description: Units sold on the line.
+      - name: obt_net_revenue_line
+        expr: NET_REVENUE
+        data_type: NUMBER
+        description: Net revenue for the line.
   - name: dim_channel
     description: Sales channel dimension.
     base_table:
@@ -196,6 +236,12 @@ relationships:
     relationship_columns:
       - left_column: PRODUCT_ID
         right_column: PRODUCT_ID
+  - name: obt_sales_to_fct_orders
+    left_table: obt_sales
+    right_table: fct_orders
+    relationship_columns:
+      - left_column: ORDER_ID
+        right_column: ORDER_ID
   - name: fct_orders_to_dim_channel
     left_table: fct_orders
     right_table: dim_channel

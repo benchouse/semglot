@@ -27,6 +27,12 @@ func dbxTestModel() *ir.Model {
 				Def: ir.Agg{Func: "sum", Table: "orders",
 					Arg: ir.Raw{SQL: "case when refunded then 1 else 0 end", Columns: []string{"refunded"}}}},
 		},
+		// Raw measures alongside metrics: orders_count would (if it leaked through)
+		// near-duplicate the order_count metric above. When a table has metrics,
+		// measures must come from metrics only — these must NOT also appear.
+		Measures: []ir.Measure{
+			{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
+		},
 	}
 	customers := ir.Table{
 		Name:       "customers",
@@ -40,8 +46,19 @@ func dbxTestModel() *ir.Model {
 				Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "units"}, Right: ir.Ref{Metric: "order_count"}}},
 		},
 	}
+	// obt_wide: measures but zero metrics. It must still get its own view, with
+	// measures rendered directly from the raw ir.Measure (aggExpr), since there
+	// is no metric to source them from.
+	obtWide := ir.Table{
+		Name:       "obt_wide",
+		Dimensions: []ir.Field{{Name: "segment", Expr: "segment"}},
+		Measures: []ir.Measure{
+			{Field: ir.Field{Name: "units_sold", Expr: "quantity", Description: "Units sold", Synonyms: []string{"qty"}}, Agg: "sum"},
+			{Field: ir.Field{Name: "net_revenue", Expr: "net_revenue"}, Agg: "sum"},
+		},
+	}
 	return &ir.Model{
-		Tables: []ir.Table{orders, customers, lines},
+		Tables: []ir.Table{orders, customers, lines, obtWide},
 		Relationships: []ir.Relationship{
 			{Left: "orders", Right: "customers", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
 		},
@@ -117,4 +134,47 @@ func TestDatabricksMetricViewCrossGrainDegrades(t *testing.T) {
 	if !strings.Contains(got, "units_per_order") || !strings.Contains(strings.ToLower(got), "cross-grain") {
 		t.Errorf("cross-grain metric should be noted in the comment\n%s", got)
 	}
+}
+
+// TestDatabricksMetricViewMeasuresOnlyTable covers Filter 1 and Filter 2: a
+// table with measures but zero metrics must not be dropped, and its measures
+// must be rendered from the raw ir.Measure (via aggExpr), since there is no
+// metric to source them from.
+func TestDatabricksMetricViewMeasuresOnlyTable(t *testing.T) {
+	files := emitDbx(t, dbxTestModel())
+	got, ok := files["obt_wide.yaml"]
+	if !ok {
+		t.Fatalf("expected obt_wide.yaml (measures-only table must still get a view); got files: %v", keysOfDbx(files))
+	}
+	for _, want := range []string{
+		"name: units_sold",
+		"expr: sum(quantity)",
+		"name: net_revenue",
+		"expr: sum(net_revenue)",
+		"comment: Units sold",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("obt_wide.yaml missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+}
+
+// TestDatabricksMetricViewMetricsWinOverRawMeasures guards against a
+// duplication regression: when a table HAS metrics, its measures must come
+// from metrics only — raw ir.Measure entries on the same table (orders_count)
+// must not also be emitted, since that would near-duplicate the order_count
+// metric.
+func TestDatabricksMetricViewMetricsWinOverRawMeasures(t *testing.T) {
+	got := emitDbx(t, dbxTestModel())["orders.yaml"]
+	if strings.Contains(got, "orders_count") {
+		t.Errorf("orders.yaml has metrics; raw measure orders_count must not also be emitted\n%s", got)
+	}
+}
+
+func keysOfDbx(m map[string]string) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }

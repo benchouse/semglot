@@ -105,6 +105,36 @@ models:
       - name: title
         description: Product title.
         data_type: varchar
+  - name: obt_sales
+    description: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+    columns:
+      - name: order_line_id
+        description: Line-item surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: order_id
+        description: Order the line belongs to.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('fct_orders')
+              field: order_id
+      - name: customer_segment
+        description: Marketing segment.
+        data_type: varchar
+      - name: is_refunded
+        description: Whether the order line was refunded.
+        data_type: boolean
+      - name: order_date
+        description: Date the order was placed.
+        data_type: date
+      - name: quantity
+        description: Units sold on the line.
+        data_type: number
+      - name: net_revenue
+        description: Net revenue for the line.
+        data_type: number
   - name: dim_channel
     description: Sales channel dimension.
     columns:
@@ -175,6 +205,27 @@ semantic_models:
         type: categorical
       - name: title
         type: categorical
+  - name: obt_sales
+    model: ref('obt_sales')
+    defaults:
+      agg_time_dimension: order_date
+    entities:
+      - name: order_line_id
+        type: primary
+    dimensions:
+      - name: customer_segment
+        type: categorical
+      - name: is_refunded
+        type: categorical
+      - name: order_date
+        type: time
+    measures:
+      - name: obt_units_sold
+        agg: sum
+        expr: quantity
+      - name: obt_net_revenue_line
+        agg: sum
+        expr: net_revenue
   - name: dim_channel
     model: ref('dim_channel')
     entities:

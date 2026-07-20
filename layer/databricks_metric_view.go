@@ -14,10 +14,16 @@ func init() { Register(databricksMetricView{}) }
 
 // databricksMetricView emits Unity Catalog metric views — the YAML semantic
 // layer Databricks AI/BI Genie grounds its answers on. It writes one
-// <fact>.yaml per fact table (a table with >=1 metric), rooted at that table
-// with direct joins to the dimension tables it references. Zero value is
-// usable; the build command sets identity from flags. Emit does not mutate m.
-// Database is the Unity Catalog catalog; Schema is the source-table schema.
+// <fact>.yaml per fact table (a table with >=1 metric OR >=1 measure), rooted
+// at that table with direct joins to the dimension tables it references. A
+// table with metrics sources its measures from those metrics; a table with
+// measures but no metrics (e.g. a wide OBT with dbt `measures:` that no
+// metric references) renders its measures directly from the raw ir.Measure,
+// so it isn't dropped and the target doesn't carry strictly less information
+// than sibling targets that emit raw measures independently of metrics (e.g.
+// cortex). Zero value is usable; the build command sets identity from flags.
+// Emit does not mutate m. Database is the Unity Catalog catalog; Schema is
+// the source-table schema.
 type databricksMetricView struct{ Database, Schema, ModelName, Description string }
 
 func (databricksMetricView) Name() string { return "databricks-metric-view" }
@@ -114,8 +120,8 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) error {
 		return err
 	}
 	for _, t := range m.Tables {
-		if len(t.Metrics) == 0 {
-			continue // not a fact; surfaces only as a join on other views
+		if len(t.Metrics) == 0 && len(t.Measures) == 0 {
+			continue // neither metrics nor measures; surfaces only as a join on other views
 		}
 		mv := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
 		var buf bytes.Buffer
@@ -195,21 +201,37 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		}
 	}
 
-	// Measures: from metrics only. Degrade window/conversion and cross-grain
-	// derived metrics to a note rather than emit SQL we cannot stand behind.
-	for _, mt := range t.Metrics {
-		if reason, degrade := dbxDegrade(mt); degrade {
-			notes = append(notes, "metric "+mt.Name+": "+reason)
-			continue
+	// Measures: from metrics when the table has any (avoids emitting a
+	// near-duplicate raw measure alongside its owning metric, e.g. orders_count
+	// next to the orders metric). Degrade window/conversion and cross-grain
+	// derived metrics to a note rather than emit SQL we cannot stand behind. A
+	// table with measures but no metrics (e.g. a wide OBT with dbt `measures:`
+	// that no metric references) renders its measures directly from the raw
+	// ir.Measure, so it isn't dropped entirely.
+	if len(t.Metrics) > 0 {
+		for _, mt := range t.Metrics {
+			if reason, degrade := dbxDegrade(mt); degrade {
+				notes = append(notes, "metric "+mt.Name+": "+reason)
+				continue
+			}
+			if dbxCrossGrain(mt.Def, metricOwner, t.Name) {
+				notes = append(notes, "metric "+mt.Name+": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
+				continue
+			}
+			mv.Measures = append(mv.Measures, dbxMeasure{
+				Name: strings.ToLower(mt.Name), Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
+				Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
+			})
 		}
-		if dbxCrossGrain(mt.Def, metricOwner, t.Name) {
-			notes = append(notes, "metric "+mt.Name+": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
-			continue
+	} else {
+		for _, ms := range t.Measures {
+			mv.Measures = append(mv.Measures, dbxMeasure{
+				Name:     strings.ToLower(ms.Name),
+				Expr:     aggExpr(ms.Agg, strings.ToLower(ms.Expr)),
+				Comment:  ms.Description,
+				Synonyms: dbxCapSyn(ms.Synonyms),
+			})
 		}
-		mv.Measures = append(mv.Measures, dbxMeasure{
-			Name: strings.ToLower(mt.Name), Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
-			Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
-		})
 	}
 
 	var parts []string

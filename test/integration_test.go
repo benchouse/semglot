@@ -238,7 +238,7 @@ func TestEcommerceCortexStructure(t *testing.T) {
 	for _, tb := range m.Tables {
 		tables = append(tables, tb.Name)
 	}
-	assertEqual(t, "tables", tables, []string{"fct_orders", "fct_order_lines", "dim_customer", "dim_product", "dim_channel"})
+	assertEqual(t, "tables", tables, []string{"fct_orders", "fct_order_lines", "dim_customer", "dim_product", "obt_sales", "dim_channel"})
 
 	// Every foreign entity becomes a relationship, including fact->fact.
 	var rels []string
@@ -249,6 +249,7 @@ func TestEcommerceCortexStructure(t *testing.T) {
 		"fct_orders_to_dim_customer",
 		"fct_order_lines_to_fct_orders",
 		"fct_order_lines_to_dim_product",
+		"obt_sales_to_fct_orders",   // measures-only OBT, foreign entity to fct_orders
 		"fct_orders_to_dim_channel", // classic-only target, PK via unique+not_null, arguments: rel form
 	})
 

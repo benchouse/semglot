@@ -11,12 +11,14 @@ create or replace semantic view ANALYTICS.MAIN.ECOMMERCE
 		FCT_ORDER_LINES as ANALYTICS.MAIN.FCT_ORDER_LINES primary key (ORDER_LINE_ID) comment='Order-line grain. One row per line item.',
 		DIM_CUSTOMER as ANALYTICS.MAIN.DIM_CUSTOMER primary key (CUSTOMER_SK) comment='Customer dimension.',
 		DIM_PRODUCT as ANALYTICS.MAIN.DIM_PRODUCT primary key (PRODUCT_ID) comment='Product dimension.',
+		OBT_SALES as ANALYTICS.MAIN.OBT_SALES primary key (ORDER_LINE_ID) comment='Wide sales table at order-line grain. One row per order line. Measures only, no metrics.',
 		DIM_CHANNEL as ANALYTICS.MAIN.DIM_CHANNEL primary key (CHANNEL_ID) comment='Sales channel dimension.'
 	)
 	relationships (
 		FCT_ORDERS_DIM_CUSTOMER as FCT_ORDERS(CUSTOMER_SK) references DIM_CUSTOMER(CUSTOMER_SK),
 		FCT_ORDER_LINES_FCT_ORDERS as FCT_ORDER_LINES(ORDER_ID) references FCT_ORDERS(ORDER_ID),
 		FCT_ORDER_LINES_DIM_PRODUCT as FCT_ORDER_LINES(PRODUCT_ID) references DIM_PRODUCT(PRODUCT_ID),
+		OBT_SALES_FCT_ORDERS as OBT_SALES(ORDER_ID) references FCT_ORDERS(ORDER_ID),
 		FCT_ORDERS_DIM_CHANNEL as FCT_ORDERS(CHANNEL_ID) references DIM_CHANNEL(CHANNEL_ID)
 	)
 	dimensions (
@@ -35,6 +37,11 @@ create or replace semantic view ANALYTICS.MAIN.ECOMMERCE
 		DIM_PRODUCT.PRODUCT_ID as dim_product.PRODUCT_ID comment='Product surrogate key.',
 		DIM_PRODUCT.CATEGORY as dim_product.CATEGORY comment='Product category.',
 		DIM_PRODUCT.TITLE as dim_product.TITLE comment='Product title.',
+		OBT_SALES.ORDER_LINE_ID as obt_sales.ORDER_LINE_ID comment='Line-item surrogate key.',
+		OBT_SALES.ORDER_ID as obt_sales.ORDER_ID comment='Order the line belongs to.',
+		OBT_SALES.CUSTOMER_SEGMENT as obt_sales.CUSTOMER_SEGMENT comment='Marketing segment.',
+		OBT_SALES.IS_REFUNDED as obt_sales.IS_REFUNDED comment='Whether the order line was refunded.',
+		OBT_SALES.ORDER_DATE as obt_sales.ORDER_DATE comment='Date the order was placed.',
 		DIM_CHANNEL.CHANNEL_ID as dim_channel.CHANNEL_ID comment='Channel surrogate key.',
 		DIM_CHANNEL.CHANNEL_NAME as dim_channel.CHANNEL_NAME comment='Channel display name.'
 	)

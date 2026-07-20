@@ -28,6 +28,11 @@
 - `dim_product.product_id`: Product surrogate key.
 - `dim_product.category`: Product category.
 - `dim_product.title`: Product title.
+- `obt_sales.order_line_id`: Line-item surrogate key.
+- `obt_sales.order_id`: Order the line belongs to.
+- `obt_sales.customer_segment`: Marketing segment.
+- `obt_sales.is_refunded`: Whether the order line was refunded.
+- `obt_sales.order_date`: Date the order was placed.
 - `dim_channel.channel_id`: Channel surrogate key.
 - `dim_channel.channel_name`: Channel display name.
 
@@ -40,6 +45,7 @@
 - `fct_orders.customer_sk → dim_customer.customer_sk`
 - `fct_order_lines.order_id → fct_orders.order_id`
 - `fct_order_lines.product_id → dim_product.product_id`
+- `obt_sales.order_id → fct_orders.order_id`
 - `fct_orders.channel_id → dim_channel.channel_id`
 
 ## Table reference
@@ -48,4 +54,5 @@
 - **fct_order_lines**: Order-line grain. One row per line item.
 - **dim_customer**: Customer dimension.
 - **dim_product**: Product dimension.
+- **obt_sales**: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
 - **dim_channel**: Sales channel dimension.
