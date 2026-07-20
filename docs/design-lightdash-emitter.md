@@ -72,7 +72,7 @@ models:
 | `Table.PrimaryKey` (single column) | `models[].meta.primary_key` |
 | `Table.PrimaryKey` (composite) | omitted; surfaced as a note (Lightdash `primary_key` is a single column) |
 | `Dimensions` | `columns[]` with `meta.dimension.type` in {string, number, timestamp, date, boolean} |
-| `TimeDimensions` | same, plus `time_intervals` where a grain is known |
+| `TimeDimensions` | same, typed `timestamp`/`date` (Lightdash auto-generates the interval breakdown; the IR carries no interval list, so `time_intervals` is not emitted in v1) |
 | `Field.Enum` | folded into the column `description` via `enumValues`/`appendClause` (Lightdash has no enum type) |
 | `Field.Synonyms` | folded into the column `description` via `synonymClause` (no native synonym slot) |
 | simple `Measure`/`Metric` | column-level `meta.metrics.<name>` on the backing column |
@@ -87,9 +87,9 @@ The IR does not always carry a SQL type. Lightdash auto-detects types from the w
 
 Following the repository's established rule (never emit a definition the target cannot stand behind, as `cortexDegrade` does), metrics lower in three tiers:
 
-1. Simple aggregate: `Agg` with a `Col` or nil arg and no filter. Emits a column-level metric on the backing column, `type` mapped (`avg` to `average`, `count_distinct` kept, `count(*)` to `count`, and `sum`/`min`/`max`/`median` passed through). No `sql` needed; Lightdash auto-references the column.
-2. Reference-only derived: a `Binary` tree whose leaves are all `Ref` (to other named metrics) or `Lit`. Emits a model-level metric, `type: number`, `sql` rendered in Lightdash `${metric}` reference form by a new small `renderLightdash`. Lightdash `type: number` metrics may only reference other metrics, so this tier is exactly the ratio/derived case the dbt and nao emitters already isolate.
-3. Everything else: filtered aggregates, ratios with inline (unnamed) aggregate operands, `Raw`, `Window`, `Conversion`. Not emitted as a metric. Degraded to a note. `Window`/`Conversion` reuse `cortexDegrade`.
+1. Simple aggregate: `Agg` with a `Col` arg and no filter. Emits a column-level metric on the backing column, `type` mapped (`avg` to `average`, `count_distinct` kept, and `sum`/`count`/`min`/`max`/`median` passed through). No `sql` needed; Lightdash auto-references the column. A `count(*)` (nil arg) has no backing column and degrades to a note in v1.
+2. Reference-only derived: a `Binary` tree whose leaves are all `Lit` or `Ref` to a same-table simple metric that is itself emitted (tier 1). Emits a model-level metric, `type: number`, `sql` rendered in Lightdash `${metric}` reference form by a new small `renderLightdash`. Requiring the refs to resolve to emitted same-table simple metrics is what prevents a dangling `${...}`: a derived metric whose operand degraded (for example a ratio over a filtered aggregate) degrades in turn rather than referencing a metric that was never written. Cross-table refs are out of scope for v1 and degrade.
+3. Everything else: filtered aggregates, `count(*)`, ratios referencing degraded or cross-table metrics, `Raw`, `Window`, `Conversion`. Not emitted as a metric. Degraded to a note. `Window`/`Conversion` reuse `cortexDegrade`.
 
 Notes have no `custom_instructions` equivalent in a Lightdash schema file. They surface two ways: as a leading `# semglot:` comment block prepended to the emitted file, and through the existing CLI `warning:` output driven by `model.Notes`.
 
@@ -118,7 +118,7 @@ Lightdash is not a Snowflake target, so it is absent from `snowflakeTargets` and
 
 Unit tests in `dialect/lightdash_test.go`:
 
-- a dimension of each mapped type, including time dimensions with `time_intervals`
+- a dimension of each mapped type, including a time dimension typed `timestamp`
 - a simple aggregate emitting a column-level metric, with agg-name mapping
 - a ratio emitting a model-level `type: number` metric with `${metric}` sql
 - an enum-bearing dimension folding values into the description
