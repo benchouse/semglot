@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -453,6 +454,112 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 		for _, g := range goldens {
 			if !produced[g.Name()] {
 				t.Fatalf("golden %q was not produced by Emit (stopped emitting or renamed?)", g.Name())
+			}
+		}
+	}
+}
+
+// emitDatabricks runs dbt -> databricks-metric-view over the ecommerce fixture
+// and returns every emitted file keyed by name.
+func emitDatabricks(t *testing.T) map[string]string {
+	t.Helper()
+	e, err := layer.AsEmitter("databricks-metric-view")
+	if err != nil {
+		t.Fatalf("AsEmitter: %v", err)
+	}
+	if c, ok := e.(layer.Configurable); ok {
+		e = c.WithOptions(layer.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
+	}
+	p, err := layer.AsParser("dbt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.Parse(sourceDirs...)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out := t.TempDir()
+	if err := e.Emit(m, out); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	files := map[string]string{}
+	ents, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ent := range ents {
+		b, err := os.ReadFile(filepath.Join(out, ent.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[ent.Name()] = string(b)
+	}
+	return files
+}
+
+func TestDatabricksMetricViewStructure(t *testing.T) {
+	files := emitDatabricks(t)
+	orders, ok := files["fct_orders.yaml"]
+	if !ok {
+		t.Fatalf("expected fct_orders.yaml; got %v keys", keysOf(files))
+	}
+	for _, want := range []string{
+		`version: "1.1"`,
+		"source: analytics.main.fct_orders",
+		`"on":`, // a quoted join key
+	} {
+		if !strings.Contains(orders, want) {
+			t.Errorf("fct_orders.yaml missing %q\n--- got ---\n%s", want, orders)
+		}
+	}
+	// dim_customer is a pure dimension — it must NOT get its own view.
+	if _, ok := files["dim_customer.yaml"]; ok {
+		t.Error("dim_customer has no metrics; should not be emitted as its own metric view")
+	}
+}
+
+func keysOf(m map[string]string) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
+}
+
+// databricksGoldenDir is the pinned databricks-metric-view output, one yaml per
+// fact table. Regenerate with UPDATE_GOLDEN=1 and eyeball for valid YAML.
+const databricksGoldenDir = "models/ecommerce/dbt/databricks-metric-view"
+
+func TestDatabricksMetricViewGolden(t *testing.T) {
+	files := emitDatabricks(t)
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		_ = os.MkdirAll(databricksGoldenDir, 0o755)
+	}
+	for name, got := range files {
+		gpath := filepath.Join(databricksGoldenDir, name)
+		if os.Getenv("UPDATE_GOLDEN") == "1" {
+			if err := os.WriteFile(gpath, []byte(got), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(gpath)
+		if err != nil {
+			t.Fatalf("read golden %s (UPDATE_GOLDEN=1 to create): %v", gpath, err)
+		}
+		if got != string(want) {
+			t.Fatalf("%s != golden:\n--- got ---\n%s", name, got)
+		}
+	}
+	// Reverse: every golden must still be produced (catch a dropped file).
+	if os.Getenv("UPDATE_GOLDEN") != "1" {
+		goldens, err := os.ReadDir(databricksGoldenDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range goldens {
+			if _, ok := files[g.Name()]; !ok {
+				t.Errorf("golden %s was not produced by emit", g.Name())
 			}
 		}
 	}

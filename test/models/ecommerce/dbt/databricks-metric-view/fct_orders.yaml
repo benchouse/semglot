@@ -1,0 +1,68 @@
+version: "1.1"
+comment: Order-grain finance fact. One row per order.
+source: analytics.main.fct_orders
+joins:
+  - name: dim_customer
+    source: analytics.main.dim_customer
+    "on": source.customer_sk = dim_customer.customer_sk
+  - name: dim_channel
+    source: analytics.main.dim_channel
+    "on": source.channel_id = dim_channel.channel_id
+fields:
+  - name: order_id
+    expr: order_id
+    comment: Order surrogate key.
+  - name: customer_sk
+    expr: customer_sk
+    comment: Customer the order belongs to.
+  - name: is_refunded
+    expr: is_refunded
+    comment: Whether the order was refunded.
+  - name: channel_id
+    expr: channel_id
+    comment: Sales channel the order came through.
+  - name: order_date
+    expr: order_date
+    comment: Date the order was placed.
+  - name: dim_customer_customer_sk
+    expr: dim_customer.customer_sk
+    comment: Customer surrogate key.
+  - name: customer_segment
+    expr: dim_customer.customer_segment
+    comment: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.'
+    synonyms:
+      - segment
+      - customer_type
+  - name: accepts_marketing
+    expr: dim_customer.accepts_marketing
+    comment: Whether the customer opted in to marketing.
+  - name: dim_channel_channel_id
+    expr: dim_channel.channel_id
+    comment: Channel surrogate key.
+  - name: channel_name
+    expr: dim_channel.channel_name
+    comment: Channel display name.
+measures:
+  - name: gross_revenue
+    expr: sum(fct_orders.order_gross)
+    comment: Gross order revenue.
+    display_name: Gross revenue
+  - name: net_revenue
+    expr: sum(fct_orders.order_net_booked)
+    comment: Net booked revenue.
+    display_name: Net revenue
+  - name: orders
+    expr: count(distinct fct_orders.order_id)
+    display_name: Orders
+  - name: refunded_orders
+    expr: sum(case when fct_orders.is_refunded then 1 else 0 end)
+    comment: Count of refunded orders.
+    display_name: Refunded orders
+  - name: aov
+    expr: sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)
+    comment: Average order value (net revenue / orders).
+    display_name: Average order value
+  - name: refund_rate
+    expr: sum(case when fct_orders.is_refunded then 1 else 0 end) / count(distinct fct_orders.order_id)
+    comment: Refunded orders / all orders.
+    display_name: Refund rate
