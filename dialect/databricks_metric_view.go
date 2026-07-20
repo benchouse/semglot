@@ -209,12 +209,18 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	usedExprs := map[string]bool{}
 	for _, ms := range mv.Measures {
 		usedNames[strings.ToLower(ms.Name)] = true
-		usedExprs[ms.Expr] = true
+		// Compared lowercased: renderSQL preserves the source column's original
+		// case (e.g. "count(distinct ORDER_ID)" for an uppercase dbt column),
+		// while the raw side below always lowercases its column via aggExpr. A
+		// case-sensitive comparison would let a near-duplicate through purely
+		// because of casing. This normalises the LOOKUP key only — the expr
+		// actually emitted to YAML (ms.Expr) keeps its original case.
+		usedExprs[strings.ToLower(ms.Expr)] = true
 	}
 	for _, ms := range t.Measures {
 		name := strings.ToLower(ms.Name)
 		expr := aggExpr(ms.Agg, strings.ToLower(ms.Expr))
-		if usedNames[name] || usedExprs[expr] {
+		if usedNames[name] || usedExprs[strings.ToLower(expr)] {
 			continue
 		}
 		usedNames[name] = true

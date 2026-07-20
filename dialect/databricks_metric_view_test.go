@@ -86,8 +86,23 @@ func dbxTestModel() *ir.Model {
 				Def: ir.Agg{Func: "sum", Table: "FCT_Orders", Arg: ir.Col{Table: "FCT_Orders", Name: "amount"}}},
 		},
 	}
+	// caseDedup: a metric whose rendered expr keeps source case (ORDER_ID) beside
+	// a raw measure over the same column lowercase (order_id). Fix C: the
+	// expression dedup must compare on a normalised (lowercased) form, or the
+	// near-duplicate slips through case-sensitively and both are emitted.
+	caseDedup := ir.Table{
+		Name:       "case_dedup",
+		Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
+		Metrics: []ir.Metric{
+			{Name: "unique_orders",
+				Def: ir.Agg{Func: "count_distinct", Table: "case_dedup", Arg: ir.Col{Name: "ORDER_ID"}}},
+		},
+		Measures: []ir.Measure{
+			{Field: ir.Field{Name: "orders_count", Expr: "order_id"}, Agg: "count_distinct"},
+		},
+	}
 	return &ir.Model{
-		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase},
+		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase, caseDedup},
 		Relationships: []ir.Relationship{
 			{Left: "orders", Right: "customers", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
 		},
@@ -320,6 +335,24 @@ func TestDatabricksMetricViewRawVsRawNotDeduped(t *testing.T) {
 	}
 	if n := strings.Count(got, "sum(amount)"); n != 2 {
 		t.Errorf("expected sum(amount) to appear twice (once per distinct measure), got %d:\n%s", n, got)
+	}
+}
+
+// TestDatabricksMetricViewExprDedupIsCaseInsensitive is Fix C: the metric side
+// renders with source case preserved (count(distinct ORDER_ID)); the raw side
+// always lowercases its column (count(distinct order_id)). The near-duplicate
+// dedup must compare a normalised (lowercased) form, or a case difference lets
+// both through.
+func TestDatabricksMetricViewExprDedupIsCaseInsensitive(t *testing.T) {
+	got, ok := emitDbx(t, dbxTestModel())["case_dedup.yaml"]
+	if !ok {
+		t.Fatalf("expected case_dedup.yaml")
+	}
+	if strings.Contains(got, "orders_count") {
+		t.Errorf("raw measure orders_count duplicates the unique_orders metric's expr (case-insensitively); must not also be emitted:\n%s", got)
+	}
+	if n := strings.Count(got, "count(distinct"); n != 1 {
+		t.Errorf("expected exactly one count(distinct ...) measure, got %d:\n%s", n, got)
 	}
 }
 
