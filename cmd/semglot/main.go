@@ -71,6 +71,7 @@ func buildCmd(args []string) int {
 			ViewSchema:  spec.ViewSchema,
 			Name:        spec.ModelName,
 			Description: spec.Description,
+			MetaStyle:   spec.MetaStyle,
 		})
 	}
 

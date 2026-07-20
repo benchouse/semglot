@@ -254,3 +254,60 @@ func TestLightdashJoinsAndPrimaryKey(t *testing.T) {
 		t.Errorf("missing composite-PK note:\n%s", got)
 	}
 }
+
+func TestLightdashConfigMetaStyle(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		PrimaryKey: []string{"order_id"},
+		Dimensions: []ir.Field{{Name: "status", Expr: "status", DataType: "varchar"}},
+		Metrics: []ir.Metric{
+			{Name: "net_revenue", Def: ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Name: "amount"}}},
+		},
+	}}}
+
+	// default style: meta directly under model and column.
+	def := emitLightdash(t, m, Options{Name: "ecommerce"})
+	if !strings.Contains(def, "\n    meta:\n") {
+		t.Errorf("default style should nest under meta:, got:\n%s", def)
+	}
+	if strings.Contains(def, "config:") {
+		t.Errorf("default style must not emit config:, got:\n%s", def)
+	}
+
+	// config.meta style: meta nested under config.
+	got := emitLightdash(t, m, Options{Name: "ecommerce", MetaStyle: "config.meta"})
+	var doc struct {
+		Models []struct {
+			Config struct {
+				Meta struct {
+					PrimaryKey string `yaml:"primary_key"`
+				} `yaml:"meta"`
+			} `yaml:"config"`
+			Meta struct {
+				PrimaryKey string `yaml:"primary_key"`
+			} `yaml:"meta"`
+			Columns []struct {
+				Config struct {
+					Meta struct {
+						Dimension struct {
+							Type string `yaml:"type"`
+						} `yaml:"dimension"`
+					} `yaml:"meta"`
+				} `yaml:"config"`
+			} `yaml:"columns"`
+		} `yaml:"models"`
+	}
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, got)
+	}
+	if doc.Models[0].Config.Meta.PrimaryKey != "order_id" {
+		t.Errorf("config.meta model primary_key = %q, want order_id\n%s", doc.Models[0].Config.Meta.PrimaryKey, got)
+	}
+	if doc.Models[0].Meta.PrimaryKey != "" {
+		t.Errorf("config.meta style must not also emit top-level meta")
+	}
+	if doc.Models[0].Columns[0].Config.Meta.Dimension.Type != "string" {
+		t.Errorf("config.meta column dimension type = %q, want string\n%s",
+			doc.Models[0].Columns[0].Config.Meta.Dimension.Type, got)
+	}
+}

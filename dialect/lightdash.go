@@ -25,7 +25,7 @@ type lightdash struct {
 
 func (lightdash) Name() string { return "lightdash" }
 func (lightdash) WithOptions(o Options) Emitter {
-	return lightdash{ModelName: o.Name, Description: o.Description}
+	return lightdash{ModelName: o.Name, Description: o.Description, MetaStyle: o.MetaStyle}
 }
 
 // ---- Lightdash YAML shapes ----
@@ -342,6 +342,7 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 	var notes []string
 	notes = append(notes, m.Notes...)
 
+	configMeta := l.MetaStyle == "config.meta"
 	f := ldFile{Version: 2}
 	for _, t := range m.Tables {
 		cols := newColumnSet()
@@ -396,6 +397,18 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 		model := ldModel{Name: t.Name, Description: t.Description, Columns: cols.list()}
 		if !mm.empty() {
 			model.Meta = mm
+		}
+		if configMeta {
+			if model.Meta != nil {
+				model.Config = &ldModelCfg{Meta: model.Meta}
+				model.Meta = nil
+			}
+			for i := range model.Columns {
+				if model.Columns[i].Meta != nil {
+					model.Columns[i].Config = &ldColCfg{Meta: model.Columns[i].Meta}
+					model.Columns[i].Meta = nil
+				}
+			}
 		}
 		f.Models = append(f.Models, model)
 	}

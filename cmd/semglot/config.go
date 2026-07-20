@@ -37,6 +37,7 @@ type profile struct {
 	ViewSchema    string      `yaml:"view-schema"`
 	ModelName     string      `yaml:"model-name"`
 	Description   string      `yaml:"description"`
+	MetaStyle     string      `yaml:"meta-style"`
 }
 
 // configFile is the top-level shape of semglot.yaml.
@@ -55,6 +56,7 @@ type buildSpec struct {
 	ViewSchema    string
 	ModelName     string
 	Description   string
+	MetaStyle     string
 }
 
 // snowflakeTargets emit into a physical Snowflake database and therefore require
@@ -95,6 +97,7 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 		ViewSchema:    p.ViewSchema,
 		ModelName:     p.ModelName,
 		Description:   p.Description,
+		MetaStyle:     p.MetaStyle,
 	}
 	if spec.SourceDialect == "" {
 		spec.SourceDialect = "dbt"
