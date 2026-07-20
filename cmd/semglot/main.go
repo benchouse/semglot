@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/benchouse/semglot/dialect"
 )
@@ -55,7 +56,14 @@ func resolveTimestamp(spec buildSpec) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	// git renders %cI in the local timezone, so the same commit reads as
+	// "...T00:00:00Z" in UTC and "...T09:00:00+09:00" in Tokyo. Normalize to UTC
+	// or the bundle stops being reproducible across machines.
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(out)))
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func buildCmd(args []string) int {

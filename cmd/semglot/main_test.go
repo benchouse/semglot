@@ -117,23 +117,32 @@ func TestResolveTimestampPrefersProfile(t *testing.T) {
 }
 
 // TestResolveTimestampFromGit verifies the fallback is the source's last commit
-// date, which keeps a bundle reproducible from the same checkout.
+// date, normalized to UTC. git's %cI renders in the local timezone, so without
+// normalization the same commit yields different bytes on machines in different
+// zones, and the bundle stops being reproducible.
 func TestResolveTimestampFromGit(t *testing.T) {
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"init"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "seed", "--date", "2026-07-20T00:00:00+00:00"},
+		{"commit", "--allow-empty", "-m", "seed"},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_COMMITTER_DATE=2026-07-20T00:00:00+00:00")
+		cmd.Env = append(os.Environ(),
+			"GIT_COMMITTER_DATE=2026-07-20T00:00:00+00:00",
+			"GIT_AUTHOR_DATE=2026-07-20T00:00:00+00:00")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable: %v: %s", err, out)
 		}
 	}
-	got := resolveTimestamp(buildSpec{Sources: []string{dir}})
-	if got != "2026-07-20T00:00:00+00:00" {
-		t.Errorf("resolveTimestamp = %q, want the commit date", got)
+
+	// Same commit, read from two different local timezones: identical bytes.
+	for _, tz := range []string{"UTC", "Asia/Tokyo", "America/Los_Angeles"} {
+		t.Setenv("TZ", tz)
+		got := resolveTimestamp(buildSpec{Sources: []string{dir}})
+		if got != "2026-07-20T00:00:00Z" {
+			t.Errorf("TZ=%s: resolveTimestamp = %q, want 2026-07-20T00:00:00Z", tz, got)
+		}
 	}
 }
 
