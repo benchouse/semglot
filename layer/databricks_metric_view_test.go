@@ -23,6 +23,9 @@ func dbxTestModel() *ir.Model {
 				Def: ir.Agg{Func: "count_distinct", Table: "orders", Arg: ir.Col{Name: "order_id"}}},
 			{Name: "aov", // same-grain derived: revenue / order_count
 				Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "revenue"}, Right: ir.Ref{Metric: "order_count"}}},
+			{Name: "refunded", Description: "Refunded orders",
+				Def: ir.Agg{Func: "sum", Table: "orders",
+					Arg: ir.Raw{SQL: "case when refunded then 1 else 0 end", Columns: []string{"refunded"}}}},
 		},
 	}
 	customers := ir.Table{
@@ -92,6 +95,16 @@ func TestDatabricksMetricViewNoDimensionFile(t *testing.T) {
 	files := emitDbx(t, dbxTestModel())
 	if _, ok := files["customers.yaml"]; ok {
 		t.Error("customers is a pure dimension (no metrics); should not get its own view")
+	}
+}
+
+func TestDatabricksMetricViewMeasuresBareColumns(t *testing.T) {
+	got := emitDbx(t, dbxTestModel())["orders.yaml"]
+	if !strings.Contains(got, "sum(case when refunded then 1 else 0 end)") {
+		t.Errorf("expected bare filtered sum, got:\n%s", got)
+	}
+	if strings.Contains(got, "orders.refunded") || strings.Contains(got, "sum(orders.") {
+		t.Errorf("measure expr must not carry the source-table qualifier:\n%s", got)
 	}
 }
 

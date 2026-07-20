@@ -44,25 +44,25 @@ fields:
     comment: Channel display name.
 measures:
   - name: gross_revenue
-    expr: sum(fct_orders.order_gross)
+    expr: sum(order_gross)
     comment: Gross order revenue.
     display_name: Gross revenue
   - name: net_revenue
-    expr: sum(fct_orders.order_net_booked)
+    expr: sum(order_net_booked)
     comment: Net booked revenue.
     display_name: Net revenue
   - name: orders
-    expr: count(distinct fct_orders.order_id)
+    expr: count(distinct order_id)
     display_name: Orders
   - name: refunded_orders
-    expr: sum(case when fct_orders.is_refunded then 1 else 0 end)
+    expr: sum(case when is_refunded then 1 else 0 end)
     comment: Count of refunded orders.
     display_name: Refunded orders
   - name: aov
-    expr: sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)
+    expr: sum(order_net_booked) / count(distinct order_id)
     comment: Average order value (net revenue / orders).
     display_name: Average order value
   - name: refund_rate
-    expr: sum(case when fct_orders.is_refunded then 1 else 0 end) / count(distinct fct_orders.order_id)
+    expr: sum(case when is_refunded then 1 else 0 end) / count(distinct order_id)
     comment: Refunded orders / all orders.
     display_name: Refund rate

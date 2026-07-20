@@ -207,7 +207,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			continue
 		}
 		mv.Measures = append(mv.Measures, dbxMeasure{
-			Name: strings.ToLower(mt.Name), Expr: renderSQL(mt.Def, resolve),
+			Name: strings.ToLower(mt.Name), Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
 			Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
 		})
 	}
@@ -224,6 +224,17 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	}
 	mv.Comment = strings.Join(parts, " ")
 	return mv
+}
+
+// dbxStripSourceQualifier removes the source table's own name qualifier from a
+// rendered measure expression. renderSQL qualifies a metric's columns with its
+// owning table (e.g. "sum(fct_orders.order_gross)"), but in a metric view the
+// source relation is the alias `source`, not its physical name — source columns
+// are referenced bare, matching how fields are emitted. Cross-grain metrics
+// (which reference another table) are degraded before rendering, so only the
+// source qualifier can appear in a measure expr here.
+func dbxStripSourceQualifier(expr, table string) string {
+	return strings.ReplaceAll(expr, strings.ToLower(table)+".", "")
 }
 
 // dbxQualify builds a Unity Catalog table reference, three-part when a catalog

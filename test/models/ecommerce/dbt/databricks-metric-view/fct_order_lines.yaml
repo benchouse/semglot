@@ -47,6 +47,6 @@ fields:
     comment: Product title.
 measures:
   - name: units_sold
-    expr: sum(fct_order_lines.quantity)
+    expr: sum(quantity)
     comment: Units sold.
     display_name: Units sold
