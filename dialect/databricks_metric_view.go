@@ -208,7 +208,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		// duplicate name — the exact failure this dedup exists to prevent
 		// elsewhere (field/measure collisions). The first metric wins.
 		if usedNames[name] {
-			notes = append(notes, "metric "+mt.Name+": name collides with another metric on this table (case-insensitive) — skipped")
+			notes = append(notes, "metric "+mt.Name+": skipped, its name collides with another metric on this table (case-insensitive)")
 			continue
 		}
 		usedNames[name] = true
@@ -297,7 +297,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			// the entire view for it. Skip it and note it instead of guessing how to
 			// qualify a compound expression.
 			if !isIdent(f.Expr) {
-				notes = append(notes, "joined dimension "+j.Name+"."+f.Name+" (expr "+f.Expr+"): compound expression cannot be safely qualified with the join name — skipped")
+				notes = append(notes, "joined dimension "+j.Name+"."+f.Name+" (expr "+f.Expr+"): skipped, a compound expression cannot be safely qualified with the join name")
 				continue
 			}
 			name := strings.ToLower(f.Name)
