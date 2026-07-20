@@ -14,8 +14,16 @@ import (
 // derived ratio that references a metric on another fact (lines).
 func dbxTestModel() *ir.Model {
 	orders := ir.Table{
-		Name:       "orders",
-		Dimensions: []ir.Field{{Name: "status", Expr: "status", Description: "Order status"}},
+		Name: "orders",
+		Dimensions: []ir.Field{
+			{Name: "status", Expr: "status", Description: "Order status"},
+			// aov: a precomputed physical column that collides with the aov metric
+			// below (revenue / order_count). Reproduces the real Databricks failure
+			// (METRIC_VIEW_INVALID_VIEW_DEFINITION: duplicate name) where a source
+			// table has both a precomputed column and a computed metric of the same
+			// name; the computed metric must win and the column must be dropped.
+			{Name: "aov", Expr: "aov", Description: "Precomputed average order value"},
+		},
 		Metrics: []ir.Metric{
 			{Name: "revenue", Label: "Revenue", Description: "Gross revenue",
 				Def: ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Name: "amount"}}},
@@ -191,6 +199,26 @@ func TestDatabricksMetricViewNoSpuriousRowCount(t *testing.T) {
 	got := emitDbx(t, dbxTestModel())["orders.yaml"]
 	if strings.Contains(got, "row_count") {
 		t.Errorf("orders.yaml has real measures from metrics; must not also get a synthesised row_count\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewMeasureDimensionCollision reproduces a live Databricks
+// deploy failure: METRIC_VIEW_INVALID_VIEW_DEFINITION, "Measure and dimension
+// names must be unique. Duplicate names: roas". orders has both a computed aov
+// metric and a precomputed aov dimension column (see dbxTestModel). Databricks
+// requires field and measure names to be disjoint, so the column must be
+// dropped and the computed metric must win — mirroring the established
+// snowflake-semantic-view precedent for the same collision.
+func TestDatabricksMetricViewMeasureDimensionCollision(t *testing.T) {
+	got := emitDbx(t, dbxTestModel())["orders.yaml"]
+	if n := strings.Count(got, "name: aov"); n != 1 {
+		t.Errorf("expected aov to appear exactly once (as the measure), got %d occurrences:\n%s", n, got)
+	}
+	if strings.Contains(got, "expr: aov") {
+		t.Errorf("precomputed aov column must be dropped as a field, not emitted:\n%s", got)
+	}
+	if !strings.Contains(got, "sum(amount) / count(distinct order_id)") {
+		t.Errorf("computed aov metric must still be emitted as a measure:\n%s", got)
 	}
 }
 

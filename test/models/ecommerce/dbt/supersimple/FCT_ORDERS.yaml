@@ -7,6 +7,10 @@ models:
       - ORDER_ID
     description: Order-grain finance fact. One row per order.
     properties:
+      AOV:
+        name: AOV
+        type: Float
+        description: Precomputed average order value; superseded by the computed aov metric.
       CHANNEL_ID:
         name: CHANNEL_ID
         type: Number

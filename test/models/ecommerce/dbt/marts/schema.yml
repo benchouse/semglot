@@ -35,6 +35,9 @@ models:
               arguments:
                 to: ref('dim_channel')
                 field: channel_id
+      - name: aov
+        description: Precomputed average order value; superseded by the computed aov metric.
+        data_type: double
 
   - name: fct_order_lines
     description: Order-line grain. One row per line item.

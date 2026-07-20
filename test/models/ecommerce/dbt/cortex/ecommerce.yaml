@@ -26,6 +26,10 @@ tables:
         expr: CHANNEL_ID
         data_type: NUMBER
         description: Sales channel the order came through.
+      - name: aov
+        expr: AOV
+        data_type: FLOAT
+        description: Precomputed average order value; superseded by the computed aov metric.
     time_dimensions:
       - name: order_date
         expr: ORDER_DATE

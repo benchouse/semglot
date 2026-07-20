@@ -33,6 +33,9 @@ fields:
   - name: channel_id
     expr: fct_orders.channel_id
     comment: Sales channel the order came through.
+  - name: aov
+    expr: fct_orders.aov
+    comment: Precomputed average order value; superseded by the computed aov metric.
   - name: fct_orders_order_date
     expr: fct_orders.order_date
     comment: Date the order was placed.

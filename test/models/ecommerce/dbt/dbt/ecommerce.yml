@@ -24,6 +24,9 @@ models:
           - relationships:
               to: ref('dim_channel')
               field: channel_id
+      - name: aov
+        description: Precomputed average order value; superseded by the computed aov metric.
+        data_type: double
       - name: order_date
         description: Date the order was placed.
         data_type: date
@@ -154,6 +157,8 @@ semantic_models:
         type: primary
     dimensions:
       - name: is_refunded
+        type: categorical
+      - name: aov
         type: categorical
       - name: order_date
         type: time

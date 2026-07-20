@@ -17,6 +17,7 @@
 - `fct_orders.customer_sk`: Customer the order belongs to.
 - `fct_orders.is_refunded`: Whether the order was refunded.
 - `fct_orders.channel_id`: Sales channel the order came through.
+- `fct_orders.aov`: Precomputed average order value; superseded by the computed aov metric.
 - `fct_orders.order_date`: Date the order was placed.
 - `fct_order_lines.order_line_id`: Line-item surrogate key.
 - `fct_order_lines.order_id`: Order the line belongs to.

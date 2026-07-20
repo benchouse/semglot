@@ -170,40 +170,6 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		})
 	}
 
-	// Fields: own dimensions (bare expr), then joined tables' dimensions
-	// (prefixed expr). Names must be unique within a view; a joined field whose
-	// bare name collides is prefixed with the join name, mirroring the
-	// snowflake-semantic-view dedup.
-	seen := map[string]bool{}
-	for _, f := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
-		name := strings.ToLower(f.Name)
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		mv.Fields = append(mv.Fields, dbxField{
-			Name: name, Expr: strings.ToLower(f.Expr),
-			Comment: dbxFieldComment(f), Synonyms: dbxCapSyn(f.Synonyms),
-		})
-	}
-	for _, j := range mv.Joins {
-		jt := tableByName[j.Name]
-		for _, f := range append(append([]ir.Field{}, jt.Dimensions...), jt.TimeDimensions...) {
-			name := strings.ToLower(f.Name)
-			if seen[name] {
-				name = j.Name + "_" + name
-			}
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			mv.Fields = append(mv.Fields, dbxField{
-				Name: name, Expr: j.Name + "." + strings.ToLower(f.Expr),
-				Comment: dbxFieldComment(f), Synonyms: dbxCapSyn(f.Synonyms),
-			})
-		}
-	}
-
 	// Measures: from metrics when the table has any (avoids emitting a
 	// near-duplicate raw measure alongside its owning metric, e.g. orders_count
 	// next to the orders metric). Degrade window/conversion and cross-grain
@@ -211,6 +177,15 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// table with measures but no metrics (e.g. a wide OBT with dbt `measures:`
 	// that no metric references) renders its measures directly from the raw
 	// ir.Measure, so it isn't dropped entirely.
+	//
+	// Built before fields (see the `seen` seeding below): Databricks requires
+	// measure and dimension names to be unique across a metric view, and rejects
+	// the view outright if they collide (METRIC_VIEW_INVALID_VIEW_DEFINITION:
+	// "Measure and dimension names must be unique") — e.g. a source table with
+	// both a precomputed `roas` column and a computed `roas` metric
+	// (sum(attributed_revenue)/sum(spend)). Mirrors the identical fix in
+	// snowflake-semantic-view (see its buildView), which resolves the same
+	// collision by treating the computed metric as canonical.
 	if len(t.Metrics) > 0 {
 		for _, mt := range t.Metrics {
 			if reason, degrade := dbxDegrade(mt); degrade {
@@ -241,13 +216,54 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// declares none (a pure dimension table), or whose metrics all degraded,
 	// still carries useful dimensions, so give it a row count. count(1) asserts
 	// no business semantics — synthesising SUM/AVG over a column would invent
-	// meaning the source never declared.
+	// meaning the source never declared. Run before the fields loop below so
+	// row_count is also protected by the seen-seeding, in the unlikely case a
+	// dimension is itself named row_count.
 	if len(mv.Measures) == 0 {
 		mv.Measures = append(mv.Measures, dbxMeasure{
 			Name:    "row_count",
 			Expr:    "count(1)",
 			Comment: "Row count. Synthesised: the source declares no measures for this table.",
 		})
+	}
+
+	// Fields: own dimensions (bare expr), then joined tables' dimensions
+	// (prefixed expr). Names must be unique within a view; seed `seen` with the
+	// measure names already emitted above so a dimension colliding with a
+	// measure is dropped (the computed measure wins — see the comment on the
+	// measures block). A joined field whose bare name collides is prefixed with
+	// the join name, mirroring the snowflake-semantic-view dedup.
+	seen := map[string]bool{}
+	for _, ms := range mv.Measures {
+		seen[strings.ToLower(ms.Name)] = true
+	}
+	for _, f := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
+		name := strings.ToLower(f.Name)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		mv.Fields = append(mv.Fields, dbxField{
+			Name: name, Expr: strings.ToLower(f.Expr),
+			Comment: dbxFieldComment(f), Synonyms: dbxCapSyn(f.Synonyms),
+		})
+	}
+	for _, j := range mv.Joins {
+		jt := tableByName[j.Name]
+		for _, f := range append(append([]ir.Field{}, jt.Dimensions...), jt.TimeDimensions...) {
+			name := strings.ToLower(f.Name)
+			if seen[name] {
+				name = j.Name + "_" + name
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			mv.Fields = append(mv.Fields, dbxField{
+				Name: name, Expr: j.Name + "." + strings.ToLower(f.Expr),
+				Comment: dbxFieldComment(f), Synonyms: dbxCapSyn(f.Synonyms),
+			})
+		}
 	}
 
 	var parts []string
