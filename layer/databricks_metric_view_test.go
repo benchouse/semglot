@@ -39,7 +39,8 @@ func dbxTestModel() *ir.Model {
 		Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
 	}
 	lines := ir.Table{
-		Name: "lines",
+		Name:       "lines",
+		Dimensions: []ir.Field{{Name: "sku", Expr: "sku"}},
 		Metrics: []ir.Metric{
 			{Name: "units", Def: ir.Agg{Func: "sum", Table: "lines", Arg: ir.Col{Name: "qty"}}},
 			{Name: "units_per_order", // cross-grain: references orders' order_count
@@ -108,10 +109,22 @@ func TestDatabricksMetricViewOrders(t *testing.T) {
 	}
 }
 
+// TestDatabricksMetricViewNoDimensionFile: a pure dimension table (no metrics,
+// no measures) still gets its own metric view — a Databricks metric view
+// requires >=1 measure, so one is synthesised as a row count. This mirrors the
+// sibling targets (cortex, snowflake-semantic-view, supersimple), which all
+// emit every IR table rather than dropping dimension-only ones.
 func TestDatabricksMetricViewNoDimensionFile(t *testing.T) {
 	files := emitDbx(t, dbxTestModel())
-	if _, ok := files["customers.yaml"]; ok {
-		t.Error("customers is a pure dimension (no metrics); should not get its own view")
+	got, ok := files["customers.yaml"]
+	if !ok {
+		t.Fatalf("customers is dimension-only but must still get a view with a synthesised row count; got files: %v", keysOfDbx(files))
+	}
+	if !strings.Contains(got, "expr: count(1)") {
+		t.Errorf("expected synthesised row-count measure expr, got:\n%s", got)
+	}
+	if !strings.Contains(got, "name: row_count") {
+		t.Errorf("expected synthesised row-count measure name, got:\n%s", got)
 	}
 }
 
@@ -168,6 +181,16 @@ func TestDatabricksMetricViewMetricsWinOverRawMeasures(t *testing.T) {
 	got := emitDbx(t, dbxTestModel())["orders.yaml"]
 	if strings.Contains(got, "orders_count") {
 		t.Errorf("orders.yaml has metrics; raw measure orders_count must not also be emitted\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewNoSpuriousRowCount guards the fallback's precision:
+// a table whose measures list ends up non-empty (from metrics, here) must not
+// also get a synthesised row_count alongside its real measures.
+func TestDatabricksMetricViewNoSpuriousRowCount(t *testing.T) {
+	got := emitDbx(t, dbxTestModel())["orders.yaml"]
+	if strings.Contains(got, "row_count") {
+		t.Errorf("orders.yaml has real measures from metrics; must not also get a synthesised row_count\n%s", got)
 	}
 }
 

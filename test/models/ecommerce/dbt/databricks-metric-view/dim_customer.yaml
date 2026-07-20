@@ -1,0 +1,20 @@
+version: "1.1"
+comment: Customer dimension.
+source: analytics.main.dim_customer
+fields:
+  - name: customer_sk
+    expr: customer_sk
+    comment: Customer surrogate key.
+  - name: customer_segment
+    expr: customer_segment
+    comment: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.'
+    synonyms:
+      - segment
+      - customer_type
+  - name: accepts_marketing
+    expr: accepts_marketing
+    comment: Whether the customer opted in to marketing.
+measures:
+  - name: row_count
+    expr: count(1)
+    comment: 'Row count. Synthesised: the source declares no measures for this table.'

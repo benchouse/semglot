@@ -14,16 +14,19 @@ func init() { Register(databricksMetricView{}) }
 
 // databricksMetricView emits Unity Catalog metric views — the YAML semantic
 // layer Databricks AI/BI Genie grounds its answers on. It writes one
-// <fact>.yaml per fact table (a table with >=1 metric OR >=1 measure), rooted
-// at that table with direct joins to the dimension tables it references. A
-// table with metrics sources its measures from those metrics; a table with
-// measures but no metrics (e.g. a wide OBT with dbt `measures:` that no
-// metric references) renders its measures directly from the raw ir.Measure,
-// so it isn't dropped and the target doesn't carry strictly less information
-// than sibling targets that emit raw measures independently of metrics (e.g.
-// cortex). Zero value is usable; the build command sets identity from flags.
-// Emit does not mutate m. Database is the Unity Catalog catalog; Schema is
-// the source-table schema.
+// <table>.yaml per IR table, rooted at that table with direct joins to the
+// dimension tables it references — parity with sibling targets (cortex,
+// snowflake-semantic-view, supersimple), which all emit every table. A table
+// with metrics sources its measures from those metrics; a table with measures
+// but no metrics (e.g. a wide OBT with dbt `measures:` that no metric
+// references) renders its measures directly from the raw ir.Measure. A table
+// left with zero measures either way (a pure dimension table, or one whose
+// metrics all degraded) gets a synthesised row-count measure, since a metric
+// view requires at least one. A table with zero dimensions is skipped
+// entirely — a metric view also requires at least one, and there is no way to
+// synthesise a meaningful one. Zero value is usable; the build command sets
+// identity from flags. Emit does not mutate m. Database is the Unity Catalog
+// catalog; Schema is the source-table schema.
 type databricksMetricView struct{ Database, Schema, ModelName, Description string }
 
 func (databricksMetricView) Name() string { return "databricks-metric-view" }
@@ -120,10 +123,10 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) error {
 		return err
 	}
 	for _, t := range m.Tables {
-		if len(t.Metrics) == 0 && len(t.Measures) == 0 {
-			continue // neither metrics nor measures; surfaces only as a join on other views
-		}
 		mv := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
+		if len(mv.Fields) == 0 {
+			continue // no dimensions: cannot form a valid metric view
+		}
 		var buf bytes.Buffer
 		enc := yaml.NewEncoder(&buf)
 		enc.SetIndent(2)
@@ -232,6 +235,19 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 				Synonyms: dbxCapSyn(ms.Synonyms),
 			})
 		}
+	}
+
+	// A metric view must declare at least one measure. A table whose source
+	// declares none (a pure dimension table), or whose metrics all degraded,
+	// still carries useful dimensions, so give it a row count. count(1) asserts
+	// no business semantics — synthesising SUM/AVG over a column would invent
+	// meaning the source never declared.
+	if len(mv.Measures) == 0 {
+		mv.Measures = append(mv.Measures, dbxMeasure{
+			Name:    "row_count",
+			Expr:    "count(1)",
+			Comment: "Row count. Synthesised: the source declares no measures for this table.",
+		})
 	}
 
 	var parts []string

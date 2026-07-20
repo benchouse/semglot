@@ -1,0 +1,14 @@
+version: "1.1"
+comment: Sales channel dimension.
+source: analytics.main.dim_channel
+fields:
+  - name: channel_id
+    expr: channel_id
+    comment: Channel surrogate key.
+  - name: channel_name
+    expr: channel_name
+    comment: Channel display name.
+measures:
+  - name: row_count
+    expr: count(1)
+    comment: 'Row count. Synthesised: the source declares no measures for this table.'

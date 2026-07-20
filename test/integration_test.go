@@ -513,9 +513,15 @@ func TestDatabricksMetricViewStructure(t *testing.T) {
 			t.Errorf("fct_orders.yaml missing %q\n--- got ---\n%s", want, orders)
 		}
 	}
-	// dim_customer is a pure dimension — it must NOT get its own view.
-	if _, ok := files["dim_customer.yaml"]; ok {
-		t.Error("dim_customer has no metrics; should not be emitted as its own metric view")
+	// dim_customer is a pure dimension — it now gets its own view with a
+	// synthesised row-count measure, so every IR table is emitted (parity with
+	// the sibling targets, which all emit one file per table).
+	dimCustomer, ok := files["dim_customer.yaml"]
+	if !ok {
+		t.Fatal("expected dim_customer.yaml (dimension-only tables must still get a view with a synthesised row count)")
+	}
+	if !strings.Contains(dimCustomer, "expr: count(1)") || !strings.Contains(dimCustomer, "name: row_count") {
+		t.Errorf("dim_customer.yaml missing synthesised row-count measure\n--- got ---\n%s", dimCustomer)
 	}
 }
 
