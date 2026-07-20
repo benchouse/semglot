@@ -869,6 +869,14 @@ func aggExpr(agg, col string) string {
 		return "min(" + col + ")"
 	case "max":
 		return "max(" + col + ")"
+	case "median":
+		return "median(" + col + ")"
+	case "sum_boolean":
+		// MetricFlow's semantics: sum a boolean column as 1/0. Not a Databricks/
+		// Snowflake builtin, so lower it to an explicit CASE rather than fall
+		// through to the default passthrough (sum_boolean(col), which no target
+		// SQL dialect defines).
+		return "sum(case when " + col + " then 1 else 0 end)"
 	default:
 		return strings.ToLower(agg) + "(" + col + ")"
 	}

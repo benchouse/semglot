@@ -377,6 +377,25 @@ func TestQualifyExpr(t *testing.T) {
 	}
 }
 
+// TestAggExprSumBooleanAndMedian: sum_boolean is MetricFlow's "sum a boolean
+// as 1/0" idiom, not a Databricks/Snowflake builtin, so it must lower to an
+// explicit CASE rather than fall through to the default passthrough
+// (sum_boolean(col), which no target SQL dialect defines). median is already
+// documented in ir.Agg's Func list and is valid SQL on both targets, so it
+// gets its own case rather than accidentally working via the same passthrough.
+func TestAggExprSumBooleanAndMedian(t *testing.T) {
+	cases := []struct{ agg, col, want string }{
+		{"sum", "amount", "sum(amount)"},
+		{"sum_boolean", "is_refunded", "sum(case when is_refunded then 1 else 0 end)"},
+		{"median", "order_total", "median(order_total)"},
+	}
+	for _, c := range cases {
+		if got := aggExpr(c.agg, c.col); got != c.want {
+			t.Errorf("aggExpr(%q, %q) = %q, want %q", c.agg, c.col, got, c.want)
+		}
+	}
+}
+
 // When both sources describe the same model, model properties supply the table
 // description, column descriptions and real data types; the semantic layer
 // supplies roles (dimension vs measure) and aggregations.

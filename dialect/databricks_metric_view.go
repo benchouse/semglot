@@ -211,9 +211,18 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			notes = append(notes, "metric "+mt.Name+": skipped, its name collides with another metric on this table (case-insensitive)")
 			continue
 		}
+		expr := dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name)
+		// A simple metric renders through aggExpr exactly like a raw measure
+		// (see dbxValidMeasureExpr's doc comment): an agg outside the set
+		// aggExpr can render safely produces SQL Databricks rejects, taking the
+		// whole view down with it. Skip and note rather than emit it.
+		if !dbxValidMeasureExpr(expr) {
+			notes = append(notes, "metric "+mt.Name+": aggregation cannot be rendered as valid Databricks SQL ("+expr+"), skipped")
+			continue
+		}
 		usedNames[name] = true
 		mv.Measures = append(mv.Measures, dbxMeasure{
-			Name: name, Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
+			Name: name, Expr: expr,
 			Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
 		})
 	}
@@ -231,6 +240,14 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		name := strings.ToLower(ms.Name)
 		expr := aggExpr(ms.Agg, strings.ToLower(ms.Expr))
 		if usedNames[name] || usedExprs[strings.ToLower(expr)] {
+			continue
+		}
+		// A raw measure whose Agg is empty, unknown to aggExpr, or missing an
+		// argument (no Expr) renders SQL Databricks rejects. See
+		// dbxValidMeasureExpr's doc comment for why that must never reach the
+		// YAML.
+		if !dbxValidMeasureExpr(expr) {
+			notes = append(notes, "measure "+ms.Name+": aggregation "+ms.Agg+" cannot be rendered as valid Databricks SQL, skipped")
 			continue
 		}
 		usedNames[name] = true
@@ -373,6 +390,48 @@ func dbxCapSyn(syn []string) []string {
 		return syn[:10]
 	}
 	return syn
+}
+
+// dbxKnownAggs are the aggregate function names aggExpr renders explicitly:
+// sum, count/count_distinct, avg/average, min, max, median, sum_boolean.
+// count_distinct and sum_boolean both lower to a call whose own function name
+// is "count"/"sum" respectively, so they need no separate entry here. Any
+// other agg falls through aggExpr's default passthrough, which other targets
+// rely on but which dbxValidMeasureExpr below must reject.
+var dbxKnownAggs = map[string]bool{
+	"sum": true, "count": true, "avg": true, "min": true, "max": true, "median": true,
+}
+
+// dbxValidMeasureExpr is the single choke point every rendered measure
+// expression (metric-derived, via renderSQL, and raw, via aggExpr) passes
+// through before being written to a view's `measures`. It reports whether
+// expr is composed only of known-safe aggregate calls (dbxKnownAggs) with a
+// non-empty argument, joined by arithmetic, literals and parens: the shape a
+// simple or same-grain-derived metric-view measure can legally take.
+//
+// This exists because Databricks rejects the ENTIRE metric view when a
+// single measure's expr is not valid SQL, not just that measure (verified
+// live: one measure with an unsupported agg like percentile, an agg with no
+// Databricks equivalent, or an aggregate call with no argument, e.g. sum()
+// from a measure with no expr, loses every other measure, dimension and join
+// of that view). An aggregation that cannot be rendered safely must
+// therefore never reach the YAML; it is skipped and noted instead.
+func dbxValidMeasureExpr(expr string) bool {
+	toks := sqlTokens(expr)
+	calls := 0
+	for i := 0; i+1 < len(toks); i++ {
+		if toks[i].typ != sqlIdent || toks[i+1].val != "(" {
+			continue // not a function call: a bare identifier, keyword, or operand
+		}
+		if !dbxKnownAggs[strings.ToLower(toks[i].val)] {
+			return false // unsupported aggregate (e.g. percentile, sum_boolean's old passthrough)
+		}
+		if i+2 >= len(toks) || toks[i+2].val == ")" {
+			return false // empty argument list, e.g. sum() from a measure with no expr
+		}
+		calls++
+	}
+	return calls > 0 // must contain at least one known aggregate call
 }
 
 // dbxDegrade reports metric kinds with no validated metric-view primitive

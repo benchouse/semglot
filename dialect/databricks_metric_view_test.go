@@ -3,10 +3,12 @@ package dialect
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/benchouse/semglot/ir"
+	"gopkg.in/yaml.v3"
 )
 
 // dbxTestModel: one fact (orders) joined to a dimension (customers), with a
@@ -425,6 +427,112 @@ func TestDatabricksMetricViewMetricNameCaseCollision(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(got), "collide") {
 		t.Errorf("expected a note about the metric name collision:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewHostileAggsNeverReachYAML is Fix 1 + Fix 2: three
+// review rounds in a row, the defect has been "an expression Databricks would
+// reject reached the YAML" (unqualified names, compound joined dimensions,
+// now an unvalidated agg). One invalid measure rejects the ENTIRE metric
+// view, losing every other measure/dimension/join of that table, so this is
+// a structural guard against the whole defect class rather than another
+// single reproduction: it builds a table with a normal measure alongside
+// every hostile shape named in the review (an agg with no Databricks
+// equivalent, an agg omitted entirely, an expr omitted entirely, and the
+// now-fixed sum_boolean), then asserts, generically and without hardcoding
+// names, that every measures[].expr in every emitted view (this test's own
+// hostile table AND the shared fixture) is built only from known-safe
+// aggregate calls.
+func TestDatabricksMetricViewHostileAggsNeverReachYAML(t *testing.T) {
+	hostile := &ir.Model{
+		Tables: []ir.Table{{
+			Name:       "hostile",
+			Dimensions: []ir.Field{{Name: "segment", Expr: "segment"}},
+			Measures: []ir.Measure{
+				{Field: ir.Field{Name: "normal_sum", Expr: "amount"}, Agg: "sum"},
+				{Field: ir.Field{Name: "refunded_flag", Expr: "is_refunded"}, Agg: "sum_boolean"},
+				{Field: ir.Field{Name: "p50", Expr: "order_total"}, Agg: "percentile"},
+				{Field: ir.Field{Name: "no_agg", Expr: "shipping_cost"}, Agg: ""}, // Agg deliberately omitted
+				{Field: ir.Field{Name: "no_expr"}, Agg: "sum"},                    // Expr deliberately omitted
+			},
+		}},
+	}
+	files := emitDbx(t, hostile)
+	got, ok := files["hostile.yaml"]
+	if !ok {
+		t.Fatalf("expected hostile.yaml, got files: %v", keysOfDbx(files))
+	}
+
+	// The normal measure and the now-fixed sum_boolean measure must survive.
+	for _, want := range []string{
+		"name: normal_sum", "expr: sum(amount)",
+		"name: refunded_flag", "expr: sum(case when is_refunded then 1 else 0 end)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hostile.yaml missing surviving measure %q:\n%s", want, got)
+		}
+	}
+	// percentile (no Databricks equivalent), an omitted agg, and an omitted
+	// expr must all be skipped and named in a note instead of emitted.
+	for _, hostileName := range []string{"p50", "no_agg", "no_expr"} {
+		if strings.Contains(got, "name: "+hostileName) {
+			t.Errorf("hostile.yaml: measure %q has an unrenderable aggregation and must not be emitted:\n%s", hostileName, got)
+		}
+		if !strings.Contains(got, hostileName) {
+			t.Errorf("hostile.yaml: skipped measure %q must be named in a note:\n%s", hostileName, got)
+		}
+	}
+
+	// Structural invariant, generic across every view and measure: no matter
+	// what a future model throws at the emitter, every surviving
+	// measures[].expr must be built only from known-safe aggregate calls
+	// (sum/count/avg/min/max/median), possibly combined by arithmetic. This
+	// is the guard against the defect class itself, not just today's five
+	// reproductions of it.
+	for name, content := range files {
+		assertMeasureExprsAreSafe(t, name, content)
+	}
+	for name, content := range emitDbx(t, dbxTestModel()) {
+		assertMeasureExprsAreSafe(t, name, content)
+	}
+}
+
+// dbxSafeCallRe recognizes one known-safe aggregate call (sum/count/avg/min/
+// max/median) with a non-empty, non-nested argument. Deliberately
+// reimplemented independently of dbxValidMeasureExpr (rather than calling
+// it), so this test catches a regression in either function, not only in
+// whichever one happens to run first.
+var dbxSafeCallRe = regexp.MustCompile(`(?i)\b(sum|count|avg|min|max|median)\([^()]+\)`)
+
+// assertMeasureExprsAreSafe parses every measures[].expr out of a rendered
+// metric-view YAML file and asserts each is a known-aggregate call, or a
+// derived arithmetic expression composed only of such calls, literals and
+// operators: strip every recognized call out of the expr and require nothing
+// but arithmetic/parens/whitespace to remain, which catches an unknown
+// function call (e.g. percentile(x)) hiding alongside a legitimate one.
+func assertMeasureExprsAreSafe(t *testing.T, file, content string) {
+	t.Helper()
+	var doc struct {
+		Measures []struct {
+			Name string `yaml:"name"`
+			Expr string `yaml:"expr"`
+		} `yaml:"measures"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+		t.Fatalf("%s: unmarshal: %v", file, err)
+	}
+	if len(doc.Measures) == 0 {
+		t.Errorf("%s: expected at least one measure (a metric view requires >=1)", file)
+	}
+	for _, ms := range doc.Measures {
+		if !dbxSafeCallRe.MatchString(ms.Expr) {
+			t.Errorf("%s: measure %q has expr %q with no known-aggregate call", file, ms.Name, ms.Expr)
+			continue
+		}
+		rest := dbxSafeCallRe.ReplaceAllString(ms.Expr, "")
+		if regexp.MustCompile(`[A-Za-z_]`).MatchString(rest) {
+			t.Errorf("%s: measure %q expr %q contains something other than known aggregate calls (leftover %q)", file, ms.Name, ms.Expr, rest)
+		}
 	}
 }
 
