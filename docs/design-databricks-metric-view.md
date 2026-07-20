@@ -49,6 +49,7 @@ Key facts driving the design:
 - `format` specs (no data-type→format signal in the IR worth guessing).
 - `filter`, `parameters`, `materialization`, `window measures` — no IR source.
 - Transitive/snowflake-schema join nesting — only **direct** joins from each fact are emitted; a dimension that itself references a further dimension is not chained (noted, not expanded).
+- Joined dimensions whose `Expr` is a compound expression (e.g. `lower(region)`) rather than a bare column: v1 prefixes joined-field exprs unconditionally as `<join>.<expr>`, which is correct for the bare-column case the fixtures exercise but would mis-wrap a derived expression (`dim_customer.lower(region)`). Same latent limitation as the snowflake-semantic-view emitter; source-table dimensions are unaffected (emitted bare). Harden with a token-aware qualifier if derived joined dimensions become a real input.
 - The `CREATE VIEW … WITH METRICS` DDL wrapper — v1 emits raw YAML (decided; parallels `cortex`). A DDL-wrapped variant can be added later, reusing `ViewSchema`.
 
 ## Identity mapping (reuses `Options`, no new flags)
