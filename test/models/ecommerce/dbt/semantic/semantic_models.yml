@@ -44,3 +44,18 @@ semantic_models:
     dimensions:
       - {name: category, type: categorical}
       - {name: title, type: categorical}
+
+  - name: obt_sales
+    description: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+    model: ref('obt_sales')
+    defaults: {agg_time_dimension: order_date}
+    entities:
+      - {name: sales_line, type: primary, expr: order_line_id}
+      - {name: order, type: foreign, expr: order_id}
+    dimensions:
+      - {name: order_date, type: time, type_params: {time_granularity: day}}
+      - {name: customer_segment, type: categorical}
+      - {name: is_refunded, type: categorical}
+    measures:
+      - {name: obt_units_sold, agg: sum, expr: quantity}
+      - {name: obt_net_revenue_line, agg: sum, expr: net_revenue}

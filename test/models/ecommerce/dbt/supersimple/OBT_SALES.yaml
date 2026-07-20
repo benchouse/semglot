@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json
+models:
+  OBT_SALES:
+    name: Sales
+    table: MAIN.OBT_SALES
+    primary_key:
+      - ORDER_LINE_ID
+    description: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+    properties:
+      CUSTOMER_SEGMENT:
+        name: CUSTOMER_SEGMENT
+        type: String
+        description: Marketing segment.
+      IS_REFUNDED:
+        name: IS_REFUNDED
+        type: Boolean
+        description: Whether the order line was refunded.
+      NET_REVENUE:
+        name: NET_REVENUE
+        type: Number
+        description: Net revenue for the line.
+      ORDER_DATE:
+        name: ORDER_DATE
+        type: Date
+        description: Date the order was placed.
+      ORDER_ID:
+        name: ORDER_ID
+        type: Number
+        description: Order the line belongs to.
+      ORDER_LINE_ID:
+        name: ORDER_LINE_ID
+        type: Number
+        description: Line-item surrogate key.
+      QUANTITY:
+        name: QUANTITY
+        type: Number
+        description: Units sold on the line.

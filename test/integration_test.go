@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -238,7 +239,7 @@ func TestEcommerceCortexStructure(t *testing.T) {
 	for _, tb := range m.Tables {
 		tables = append(tables, tb.Name)
 	}
-	assertEqual(t, "tables", tables, []string{"fct_orders", "fct_order_lines", "dim_customer", "dim_product", "dim_channel"})
+	assertEqual(t, "tables", tables, []string{"fct_orders", "fct_order_lines", "dim_customer", "dim_product", "obt_sales", "dim_channel"})
 
 	// Every foreign entity becomes a relationship, including fact->fact.
 	var rels []string
@@ -249,6 +250,7 @@ func TestEcommerceCortexStructure(t *testing.T) {
 		"fct_orders_to_dim_customer",
 		"fct_order_lines_to_fct_orders",
 		"fct_order_lines_to_dim_product",
+		"obt_sales_to_fct_orders",   // measures-only OBT, foreign entity to fct_orders
 		"fct_orders_to_dim_channel", // classic-only target, PK via unique+not_null, arguments: rel form
 	})
 
@@ -466,6 +468,118 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 		for _, g := range goldens {
 			if !produced[g.Name()] {
 				t.Fatalf("golden %q was not produced by Emit (stopped emitting or renamed?)", g.Name())
+			}
+		}
+	}
+}
+
+// emitDatabricks runs dbt -> databricks-metric-view over the ecommerce fixture
+// and returns every emitted file keyed by name.
+func emitDatabricks(t *testing.T) map[string]string {
+	t.Helper()
+	e, err := dialect.AsEmitter("databricks-metric-view")
+	if err != nil {
+		t.Fatalf("AsEmitter: %v", err)
+	}
+	if c, ok := e.(dialect.Configurable); ok {
+		e = c.WithOptions(dialect.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
+	}
+	p, err := dialect.AsParser("dbt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.Parse(sourceDirs...)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out := t.TempDir()
+	if err := e.Emit(m, out); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	files := map[string]string{}
+	ents, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ent := range ents {
+		b, err := os.ReadFile(filepath.Join(out, ent.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[ent.Name()] = string(b)
+	}
+	return files
+}
+
+func TestDatabricksMetricViewStructure(t *testing.T) {
+	files := emitDatabricks(t)
+	orders, ok := files["fct_orders.yaml"]
+	if !ok {
+		t.Fatalf("expected fct_orders.yaml; got %v keys", keysOf(files))
+	}
+	for _, want := range []string{
+		`version: "1.1"`,
+		"source: analytics.main.fct_orders",
+		`"on":`, // a quoted join key
+	} {
+		if !strings.Contains(orders, want) {
+			t.Errorf("fct_orders.yaml missing %q\n--- got ---\n%s", want, orders)
+		}
+	}
+	// dim_customer is a pure dimension — it now gets its own view with a
+	// synthesised row-count measure, so every IR table is emitted (parity with
+	// the sibling targets, which all emit one file per table).
+	dimCustomer, ok := files["dim_customer.yaml"]
+	if !ok {
+		t.Fatal("expected dim_customer.yaml (dimension-only tables must still get a view with a synthesised row count)")
+	}
+	if !strings.Contains(dimCustomer, "expr: count(1)") || !strings.Contains(dimCustomer, "name: row_count") {
+		t.Errorf("dim_customer.yaml missing synthesised row-count measure\n--- got ---\n%s", dimCustomer)
+	}
+}
+
+func keysOf(m map[string]string) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
+}
+
+// databricksGoldenDir is the pinned databricks-metric-view output, one yaml per
+// fact table. Regenerate with UPDATE_GOLDEN=1 and eyeball for valid YAML.
+const databricksGoldenDir = "models/ecommerce/dbt/databricks-metric-view"
+
+func TestDatabricksMetricViewGolden(t *testing.T) {
+	files := emitDatabricks(t)
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		_ = os.MkdirAll(databricksGoldenDir, 0o755)
+	}
+	for name, got := range files {
+		gpath := filepath.Join(databricksGoldenDir, name)
+		if os.Getenv("UPDATE_GOLDEN") == "1" {
+			if err := os.WriteFile(gpath, []byte(got), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(gpath)
+		if err != nil {
+			t.Fatalf("read golden %s (UPDATE_GOLDEN=1 to create): %v", gpath, err)
+		}
+		if got != string(want) {
+			t.Fatalf("%s != golden:\n--- got ---\n%s", name, got)
+		}
+	}
+	// Reverse: every golden must still be produced (catch a dropped file).
+	if os.Getenv("UPDATE_GOLDEN") != "1" {
+		goldens, err := os.ReadDir(databricksGoldenDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range goldens {
+			if _, ok := files[g.Name()]; !ok {
+				t.Errorf("golden %s was not produced by emit", g.Name())
 			}
 		}
 	}

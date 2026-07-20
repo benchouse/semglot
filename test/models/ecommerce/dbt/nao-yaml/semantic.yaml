@@ -11,6 +11,9 @@ dimensions:
   - name: channel_id
     type: categorical
     description: Sales channel the order came through.
+  - name: aov
+    type: categorical
+    description: Precomputed average order value; superseded by the computed aov metric.
   - name: order_date
     type: date
     description: Date the order was placed.
