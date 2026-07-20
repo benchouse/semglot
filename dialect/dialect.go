@@ -36,6 +36,10 @@ type Options struct {
 	ViewSchema  string // schema where the emitted view OBJECT is created (Snowflake semantic view); falls back to Schema when empty
 	Name        string
 	Description string
+	// Timestamp is an ISO 8601 instant stamped onto emitted documents by targets
+	// that require one (okf). It is supplied by the caller rather than read from
+	// a clock, so the same input always produces the same output.
+	Timestamp string
 }
 
 // Configurable is an Emitter that accepts model/view identity options.

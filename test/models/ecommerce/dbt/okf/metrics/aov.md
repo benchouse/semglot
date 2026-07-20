@@ -4,16 +4,17 @@ title: Average order value
 description: Average order value (net revenue / orders).
 tags:
   - metric
+timestamp: "2026-07-20T00:00:00+00:00"
 ---
 
-# Average order value
+# Overview
 
 Average order value (net revenue / orders).
 
-## Definition
+# Definition
 
 ```sql
 sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)
 ```
 
-Defined on [fct_orders](/tables/fct_orders.md).
+Defined on [fct_orders](../tables/fct_orders.md).

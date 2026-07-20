@@ -28,7 +28,7 @@ Each emitter writes:
 | `supersimple` | one `<TABLE>.yaml` per model, plus `NOTES.md` for anything deferred |
 | `nao-yaml` | `semantic.yaml` |
 | `nao-context-rules` | `RULES.md` (prose) |
-| `okf` | a bundle directory: `index.md`, `tables/<model>.md`, `metrics/<metric>.md`, `notes.md` |
+| `okf` | a bundle directory: `tables/<model>.md`, `metrics/<metric>.md`, `notes.md`, plus the reserved `index.md` in every directory |
 
 ## Mapping
 
@@ -43,7 +43,7 @@ description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)
 | Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | "Time dimensions" section |
 | Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | parenthesized after the column name |
 | Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | "Primary key" section |
-| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | "Joins", as a link to the other concept |
+| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | "Joins", as a relative link to the other concept |
 | Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | frontmatter `description` + body prose |
 | Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `text` (into the bullet) |
 | Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | "Allowed values" section |
@@ -87,14 +87,54 @@ and nao dimensions carry a structured `values:` list
   free prose, so reading a bundle back into the IR would be a heuristic markdown
   scraper rather than a parser.
 
-Two `okf` choices worth knowing before you extend it:
+### `okf`: the spec and the reference implementation disagree
 
-- **No `timestamp`.** The spec only recommends the field, and writing a clock into
-  every concept would make two builds of the same input differ byte-for-byte,
-  which the golden fixtures rely on.
+`okf/SPEC.md` says exactly one frontmatter field is required, `type`. The
+reference implementation is stricter: `OKFDocument.validate()` in
+`okf/src/reference_agent/bundle/document.py` requires **type, title, description
+and timestamp** to all be non-empty. The reference implementation is what
+actually reads bundles, so semglot satisfies the stricter of the two. What that
+means in practice:
+
+- **Descriptions are synthesized when the IR has none.** A metric falls back to
+  its rendered definition, a table to "The `<name>` table." Neither is guaranteed
+  by the IR, and an empty one fails validation.
+- **`timestamp` is caller-supplied, never a clock.** It comes from `Options`
+  (profile `timestamp` field, else the source's last commit date). A clock would
+  make two builds of the same checkout differ byte-for-byte, which the goldens
+  rely on. With no timestamp available the field is omitted, and the bundle is
+  spec-conformant but fails the reference validator.
+- **`index.md` matches `regenerate_indexes` byte-for-byte.** index.md is reserved
+  and machine-generated upstream: one `#` section per concept type, sections
+  sorted by type and entries by title, links relative to the directory,
+  subdirectories under a "Subdirectories" section. Matching it means their
+  tooling is a no-op on our bundles instead of rewriting them.
+- **Links are directory-relative**, as in the published reference bundles
+  (`../metrics/aov.md`), not bundle-absolute. The spec recommends absolute for
+  stability, but stability is moot for a generated bundle, and relative is what
+  the reference viewer resolves.
 - **`resource` reuses the profile's `database`/`schema`** and renders as
   `table://DATABASE/SCHEMA/TABLE`. Without a `database` the field is dropped
   rather than emitted half-qualified.
+
+### Testing `okf` against upstream
+
+Three layers, in the order they catch things:
+
+1. `test/okf_conformance_test.go` re-implements the reference rules in Go
+   (frontmatter parses, required keys non-empty, every link resolves). Runs in CI
+   with no extra toolchain.
+2. `test/okf_contract_test.py` runs the *real* `OKFDocument.validate()` and
+   `regenerate_indexes()` over the golden bundle. Not in CI (it needs a Python
+   3.11+ venv and a clone of upstream); run it by hand when touching the emitter
+   or when upstream moves. Setup instructions are in the file's docstring.
+3. `python -m reference_agent visualize --bundle <dir>` renders the bundle as the
+   reference viewer draws it. The edge count is the useful signal: it is how many
+   of our links the viewer actually resolved.
+
+Last verified against `knowledge-catalog @ main` on 2026-07-20: all concepts
+validate, `regenerate_indexes` is a no-op, and the viewer renders 13 concepts
+with 24 edges.
 
 ## Adding or changing a mapping
 

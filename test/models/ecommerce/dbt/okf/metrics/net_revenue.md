@@ -4,16 +4,17 @@ title: Net revenue
 description: Net booked revenue.
 tags:
   - metric
+timestamp: "2026-07-20T00:00:00+00:00"
 ---
 
-# Net revenue
+# Overview
 
 Net booked revenue.
 
-## Definition
+# Definition
 
 ```sql
 sum(fct_orders.order_net_booked)
 ```
 
-Defined on [fct_orders](/tables/fct_orders.md).
+Defined on [fct_orders](../tables/fct_orders.md).

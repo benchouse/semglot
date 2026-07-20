@@ -135,6 +135,7 @@ profiles:
     view-schema: SEM_VIEWS        # optional. schema for the emitted semantic-view object; defaults to schema
     model-name: catalog           # optional. default: source dir name
     description: Curated view.     # optional
+    timestamp: "2026-07-20T00:00:00+00:00"  # optional. stamped on okf concepts
 ```
 
 - Each profile is independent: there is no shared or inherited config. Staging and
@@ -182,8 +183,9 @@ drops it:
   description or synonyms.
 - **`okf`** is markdown, so everything is prose under a per-concept heading; the
   structure is the bundle itself (one concept per table and per metric, joins as
-  links between them). It never emits the spec's optional `timestamp`, so the
-  same input always produces a byte-identical bundle.
+  links between them). Concepts need a `timestamp`, which comes from the
+  profile's `timestamp` field or the source's last commit date, never from a
+  clock, so the same checkout always produces a byte-identical bundle.
 
 ## License
 

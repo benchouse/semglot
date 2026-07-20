@@ -11,6 +11,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/benchouse/semglot/dialect"
 )
@@ -35,6 +37,25 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: semglot build --profile <name> [--config <file>]")
 	fmt.Fprintln(os.Stderr, "profiles are defined in semglot.yaml (override the path with --config)")
+}
+
+// resolveTimestamp returns the ISO 8601 instant to stamp on emitted documents
+// (okf requires one). It prefers the profile's pinned value, then the source's
+// last commit date. It deliberately never falls back to the current time: two
+// builds of the same checkout must produce the same bytes.
+func resolveTimestamp(spec buildSpec) string {
+	if spec.Timestamp != "" {
+		return spec.Timestamp
+	}
+	if len(spec.Sources) == 0 {
+		return ""
+	}
+	cmd := exec.Command("git", "-C", spec.Sources[0], "log", "-1", "--format=%cI")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func buildCmd(args []string) int {
@@ -71,6 +92,7 @@ func buildCmd(args []string) int {
 			ViewSchema:  spec.ViewSchema,
 			Name:        spec.ModelName,
 			Description: spec.Description,
+			Timestamp:   resolveTimestamp(spec),
 		})
 	}
 

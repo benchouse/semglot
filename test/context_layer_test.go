@@ -201,16 +201,23 @@ func TestContextRulesGolden(t *testing.T) {
 	}
 }
 
-// emitBundle emits a multi-file target and returns it as a slash-separated
-// path -> content map (okf writes a directory of concepts, not one file).
-func emitBundle(t *testing.T, target string) map[string]string {
+// okfTimestamp is the fixed instant the okf emitter stamps on every concept.
+// The emitter never reads a clock, so the caller pins this and the bundle stays
+// byte-identical across runs.
+const okfTimestamp = "2026-07-20T00:00:00+00:00"
+
+// emitBundleTo emits a target into dir. okf writes a directory of concepts
+// rather than a single file, so tests walk the result.
+func emitBundleTo(t *testing.T, target, dir string) {
 	t.Helper()
 	e, err := dialect.AsEmitter(target)
 	if err != nil {
 		t.Fatalf("AsEmitter(%s): %v", target, err)
 	}
 	if c, ok := e.(dialect.Configurable); ok {
-		e = c.WithOptions(dialect.Options{Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce"})
+		e = c.WithOptions(dialect.Options{
+			Database: "ANALYTICS", Schema: "MAIN", Name: "ecommerce", Timestamp: okfTimestamp,
+		})
 	}
 	p, err := dialect.AsParser("dbt")
 	if err != nil {
@@ -220,12 +227,19 @@ func emitBundle(t *testing.T, target string) map[string]string {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	out := t.TempDir()
-	if err := e.Emit(m, out); err != nil {
+	if err := e.Emit(m, dir); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
+}
+
+// emitBundle emits a multi-file target and returns it as a slash-separated
+// path -> content map.
+func emitBundle(t *testing.T, target string) map[string]string {
+	t.Helper()
+	out := t.TempDir()
+	emitBundleTo(t, target, out)
 	files := map[string]string{}
-	err = filepath.WalkDir(out, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(out, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -257,7 +271,7 @@ func TestOKFBundleStructure(t *testing.T) {
 		"type: Table",
 		"resource: table://ANALYTICS/MAIN/FCT_ORDERS",
 		"- `order_id` (number): Order surrogate key.",
-		"[dim_customer](/tables/dim_customer.md): `fct_orders.customer_sk` = `dim_customer.customer_sk`",
+		"[dim_customer](dim_customer.md): `fct_orders.customer_sk` = `dim_customer.customer_sk`",
 	} {
 		if !strings.Contains(orders, want) {
 			t.Errorf("tables/fct_orders.md missing %q", want)
@@ -272,7 +286,7 @@ func TestOKFBundleStructure(t *testing.T) {
 		"type: Metric",
 		"title: Average order value",
 		"sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)",
-		"Defined on [fct_orders](/tables/fct_orders.md).",
+		"Defined on [fct_orders](../tables/fct_orders.md).",
 	} {
 		if !strings.Contains(aov, want) {
 			t.Errorf("metrics/aov.md missing %q", want)
@@ -294,16 +308,17 @@ func TestOKFBundleStructure(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing index.md")
 	}
-	if !strings.Contains(idx, "# ecommerce") {
-		t.Errorf("index.md should be titled from the profile name:\n%s", idx)
-	}
 	for _, want := range []string{
-		"[fct_orders](/tables/fct_orders.md)",
-		"[Average order value](/metrics/aov.md)",
+		"# Subdirectories",
+		"* [tables](tables/index.md) - ",
+		"* [metrics](metrics/index.md) - ",
 	} {
 		if !strings.Contains(idx, want) {
-			t.Errorf("index.md missing %q", want)
+			t.Errorf("root index.md missing %q:\n%s", want, idx)
 		}
+	}
+	if !strings.Contains(files["metrics/index.md"], "* [Average order value](aov.md) - ") {
+		t.Errorf("metrics/index.md missing its entry:\n%s", files["metrics/index.md"])
 	}
 }
 
