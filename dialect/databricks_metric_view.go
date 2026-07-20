@@ -56,11 +56,10 @@ type dbxMetricView struct {
 }
 
 type dbxField struct {
-	Name        string   `yaml:"name"`
-	Expr        string   `yaml:"expr"`
-	Comment     string   `yaml:"comment,omitempty"`
-	DisplayName string   `yaml:"display_name,omitempty"`
-	Synonyms    []string `yaml:"synonyms,omitempty"`
+	Name     string   `yaml:"name"`
+	Expr     string   `yaml:"expr"`
+	Comment  string   `yaml:"comment,omitempty"`
+	Synonyms []string `yaml:"synonyms,omitempty"`
 }
 
 type dbxMeasure struct {
@@ -447,9 +446,9 @@ func dbxValidMeasureExpr(expr string) bool {
 func dbxDegrade(mt ir.Metric) (string, bool) {
 	switch mt.Def.(type) {
 	case ir.Window:
-		return "cumulative/windowed metric — no validated metric-view primitive (provisional)", true
+		return "cumulative/windowed metric, no validated metric-view primitive (provisional)", true
 	case ir.Conversion:
-		return "conversion/funnel metric — no metric-view primitive (provisional)", true
+		return "conversion/funnel metric, no metric-view primitive (provisional)", true
 	}
 	return "", false
 }

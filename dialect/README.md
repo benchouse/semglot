@@ -80,9 +80,17 @@ and nao dimensions carry a structured `values:` list
   notes. Verified against nao's own docs and the eval's real `semantic.yaml`, so
   there is nowhere structured to emit tables or relationships. (nao-context-rules,
   being prose, does emit joins.)
-- **Data types in `snowflake-semantic-view` and the nao dialects.** Omitted on
-  purpose: these formats lean on the synced source-table schema for types rather
-  than restating them in the semantic doc.
+- **Data types in `snowflake-semantic-view`, the nao dialects, and
+  `databricks-metric-view`.** Omitted on purpose: these formats lean on the
+  synced source-table schema for types rather than restating them in the
+  semantic doc. A metric view's `fields`/`measures` carry no `data_type` key at
+  all ([docs](https://docs.databricks.com/en/metric-views/index.html)).
+- **Primary keys in `nao-yaml`, `nao-context-rules`, and
+  `databricks-metric-view`.** None of these formats has a primary-key slot: the
+  nao dialects have no per-table construct to hang one on, and a Databricks
+  metric view declares `source`/`joins`/`fields`/`measures` only, no
+  primary-key key; Unity Catalog constraints on the underlying table are the
+  authority there instead.
 
 ## Adding or changing a mapping
 
