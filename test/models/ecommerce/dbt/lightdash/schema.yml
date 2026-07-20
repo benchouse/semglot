@@ -1,0 +1,152 @@
+# semglot: some source constructs could not be transpiled to Lightdash:
+# - metric refunded_orders not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
+# - metric refund_rate not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
+# - metric units_per_order not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
+version: 2
+models:
+  - name: fct_orders
+    description: Order-grain finance fact. One row per order.
+    meta:
+      primary_key: order_id
+      joins:
+        - join: dim_customer
+          sql_on: ${fct_orders.customer_sk} = ${dim_customer.customer_sk}
+          relationship: many-to-one
+        - join: dim_channel
+          sql_on: ${fct_orders.channel_id} = ${dim_channel.channel_id}
+          relationship: many-to-one
+      metrics:
+        aov:
+          type: number
+          sql: ${net_revenue} / ${orders}
+    columns:
+      - name: order_id
+        description: Order surrogate key.
+        meta:
+          dimension:
+            type: number
+          metrics:
+            orders:
+              type: count_distinct
+      - name: customer_sk
+        description: Customer the order belongs to.
+        meta:
+          dimension:
+            type: number
+      - name: is_refunded
+        description: Whether the order was refunded.
+        meta:
+          dimension:
+            type: boolean
+      - name: channel_id
+        description: Sales channel the order came through.
+        meta:
+          dimension:
+            type: number
+      - name: order_date
+        description: Date the order was placed.
+        meta:
+          dimension:
+            type: date
+      - name: order_gross
+        meta:
+          metrics:
+            gross_revenue:
+              type: sum
+      - name: order_net_booked
+        meta:
+          metrics:
+            net_revenue:
+              type: sum
+  - name: fct_order_lines
+    description: Order-line grain. One row per line item.
+    meta:
+      primary_key: order_line_id
+      joins:
+        - join: fct_orders
+          sql_on: ${fct_order_lines.order_id} = ${fct_orders.order_id}
+          relationship: many-to-one
+        - join: dim_product
+          sql_on: ${fct_order_lines.product_id} = ${dim_product.product_id}
+          relationship: many-to-one
+    columns:
+      - name: order_line_id
+        description: Line-item surrogate key.
+        meta:
+          dimension:
+            type: number
+      - name: order_id
+        description: Order the line belongs to.
+        meta:
+          dimension:
+            type: number
+      - name: product_id
+        description: Product sold on the line.
+        meta:
+          dimension:
+            type: number
+      - name: order_date
+        description: Date the parent order was placed.
+        meta:
+          dimension:
+            type: date
+      - name: quantity
+        meta:
+          metrics:
+            units_sold:
+              type: sum
+  - name: dim_customer
+    description: Customer dimension.
+    meta:
+      primary_key: customer_sk
+    columns:
+      - name: customer_sk
+        description: Customer surrogate key.
+        meta:
+          dimension:
+            type: number
+      - name: customer_segment
+        description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered. Synonyms: segment, customer_type.'
+        meta:
+          dimension:
+            type: string
+      - name: accepts_marketing
+        description: Whether the customer opted in to marketing.
+        meta:
+          dimension:
+            type: boolean
+  - name: dim_product
+    description: Product dimension.
+    meta:
+      primary_key: product_id
+    columns:
+      - name: product_id
+        description: Product surrogate key.
+        meta:
+          dimension:
+            type: number
+      - name: category
+        description: Product category.
+        meta:
+          dimension:
+            type: string
+      - name: title
+        description: Product title.
+        meta:
+          dimension:
+            type: string
+  - name: dim_channel
+    description: Sales channel dimension.
+    meta:
+      primary_key: channel_id
+    columns:
+      - name: channel_id
+        description: Channel surrogate key.
+        meta:
+          dimension:
+            type: number
+      - name: channel_name
+        description: Channel display name.
+        meta:
+          dimension:
+            type: string

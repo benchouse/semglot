@@ -200,3 +200,46 @@ func TestContextRulesGolden(t *testing.T) {
 		t.Fatalf("RULES.md output != golden:\n--- got ---\n%s", got)
 	}
 }
+
+func TestLightdashStructure(t *testing.T) {
+	got := emitTarget(t, "lightdash", "schema.yml")
+	for _, want := range []string{
+		"version: 2",
+		"- name: fct_orders",
+		"net_revenue:", // a column-level simple metric name
+		"type: sum",    // its aggregation
+		"aov:",         // a model-level derived metric
+		"${net_revenue} / ${orders}",
+		"joins:",
+		"${fct_order_lines.order_id} = ${fct_orders.order_id}",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("schema.yml missing %q", want)
+		}
+	}
+}
+
+// lightdashGoldenPath is the pinned lightdash schema.yml, generated with
+// UPDATE_GOLDEN=1 and eyeballed for a well-formed Lightdash dbt schema.
+const lightdashGoldenPath = "models/ecommerce/dbt/lightdash/schema.yml"
+
+// TestLightdashGolden pins the full emitted schema.yml, mirroring
+// TestNaoYamlGolden's shape.
+func TestLightdashGolden(t *testing.T) {
+	got := emitTarget(t, "lightdash", "schema.yml")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(lightdashGoldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(lightdashGoldenPath, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(lightdashGoldenPath)
+	if err != nil {
+		t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create it): %v", err)
+	}
+	if got != string(want) {
+		t.Fatalf("schema.yml output != golden:\n--- got ---\n%s", got)
+	}
+}
