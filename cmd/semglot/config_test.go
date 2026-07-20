@@ -158,6 +158,19 @@ func TestLoadProfileSnowflakeRequiresDatabase(t *testing.T) {
 	}
 }
 
+func TestLoadProfileDatabricksRequiresDatabase(t *testing.T) {
+	cfg := writeConfig(t, `profiles:
+  p:
+    source: /x
+    target-dialect: databricks-metric-view
+    output: ./out
+`)
+	_, err := loadProfile(cfg, "p")
+	if err == nil {
+		t.Fatal("want error: databricks-metric-view target with no database")
+	}
+}
+
 func TestDefaultModelName(t *testing.T) {
 	for in, want := range map[string]string{
 		"/a/b/ecommerce": "ecommerce",

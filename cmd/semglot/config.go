@@ -57,9 +57,10 @@ type buildSpec struct {
 	Description   string
 }
 
-// snowflakeTargets emit into a physical Snowflake database and therefore require
-// a database; without one they'd emit invalid, unqualified DDL.
-var snowflakeTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true}
+// warehouseTargets emit into a physical warehouse (Snowflake, or a Databricks
+// Unity Catalog) and therefore require a resolved database/catalog; without one
+// they'd emit invalid, unqualified DDL.
+var warehouseTargets = map[string]bool{"cortex": true, "snowflake-semantic-view": true, "databricks-metric-view": true}
 
 // loadProfile reads configPath, selects the named profile, applies defaults, and
 // validates it into a buildSpec.
@@ -105,7 +106,7 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 	if spec.ModelName == "" {
 		spec.ModelName = defaultModelName(spec.Sources)
 	}
-	if snowflakeTargets[spec.TargetDialect] && spec.Database == "" {
+	if warehouseTargets[spec.TargetDialect] && spec.Database == "" {
 		return buildSpec{}, fmt.Errorf("profile %q: target-dialect %s requires a database", name, spec.TargetDialect)
 	}
 	return spec, nil
