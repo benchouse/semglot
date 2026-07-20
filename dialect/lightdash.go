@@ -2,6 +2,7 @@ package dialect
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -324,6 +325,16 @@ func derivedModelMetric(mt ir.Metric, simple map[string]bool) (ldMetric, bool) {
 	return ldMetric{Type: "number", SQL: sql}, true
 }
 
+// joinSQLOn renders a relationship's equi-join columns as a Lightdash sql_on
+// expression: ${left.col} = ${right.col}, ANDed for a composite key.
+func joinSQLOn(r ir.Relationship) string {
+	parts := make([]string, len(r.Columns))
+	for i, cp := range r.Columns {
+		parts[i] = "${" + r.Left + "." + cp.Left + "} = ${" + r.Right + "." + cp.Right + "}"
+	}
+	return strings.Join(parts, " and ")
+}
+
 // Emit writes the IR as one dbt schema.yml carrying Lightdash annotations. It
 // does not mutate m: passthrough notes and degrade notes accumulate in a local
 // slice and render as a leading # semglot: comment block.
@@ -352,6 +363,21 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 		}
 
 		mm := &ldModelMeta{}
+		if len(t.PrimaryKey) == 1 {
+			mm.PrimaryKey = t.PrimaryKey[0]
+		} else if len(t.PrimaryKey) > 1 {
+			notes = append(notes, fmt.Sprintf(
+				"table %s: composite primary key %v not emitted (Lightdash primary_key is a single column)",
+				t.Name, t.PrimaryKey))
+		}
+		for _, r := range m.Relationships {
+			if r.Left != t.Name {
+				continue
+			}
+			mm.Joins = append(mm.Joins, ldJoin{
+				Join: r.Right, SQLOn: joinSQLOn(r), Relationship: "many-to-one",
+			})
+		}
 		for _, mt := range t.Metrics {
 			if col, met, ok := simpleColumnMetric(mt); ok {
 				cols.metric(col, mt.Name, met)

@@ -201,3 +201,56 @@ func TestLightdashDimensions(t *testing.T) {
 		t.Errorf("status type = %q, want empty (omitted)", cols["status"].typ)
 	}
 }
+
+func TestLightdashJoinsAndPrimaryKey(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{Name: "order_lines", PrimaryKey: []string{"order_line_id"}},
+			{Name: "orders", PrimaryKey: []string{"order_id", "tenant_id"}}, // composite -> note
+		},
+		Relationships: []ir.Relationship{
+			{Left: "order_lines", Right: "orders", Columns: []ir.ColumnPair{{Left: "order_id", Right: "order_id"}}},
+		},
+	}
+	got := emitLightdash(t, m, Options{Name: "ecommerce"})
+
+	var doc struct {
+		Models []struct {
+			Name string `yaml:"name"`
+			Meta struct {
+				PrimaryKey string `yaml:"primary_key"`
+				Joins      []struct {
+					Join         string `yaml:"join"`
+					SQLOn        string `yaml:"sql_on"`
+					Relationship string `yaml:"relationship"`
+				} `yaml:"joins"`
+			} `yaml:"meta"`
+		} `yaml:"models"`
+	}
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, got)
+	}
+	byName := map[string]int{}
+	for i, mdl := range doc.Models {
+		byName[mdl.Name] = i
+	}
+	ol := doc.Models[byName["order_lines"]]
+	if ol.Meta.PrimaryKey != "order_line_id" {
+		t.Errorf("order_lines primary_key = %q, want order_line_id", ol.Meta.PrimaryKey)
+	}
+	if len(ol.Meta.Joins) != 1 {
+		t.Fatalf("order_lines joins = %d, want 1", len(ol.Meta.Joins))
+	}
+	j := ol.Meta.Joins[0]
+	if j.Join != "orders" || j.Relationship != "many-to-one" ||
+		j.SQLOn != "${order_lines.order_id} = ${orders.order_id}" {
+		t.Errorf("join = %+v", j)
+	}
+	// composite PK is not emitted and surfaces as a note.
+	if doc.Models[byName["orders"]].Meta.PrimaryKey != "" {
+		t.Errorf("composite PK must not be emitted")
+	}
+	if !strings.Contains(got, "composite primary key") {
+		t.Errorf("missing composite-PK note:\n%s", got)
+	}
+}
