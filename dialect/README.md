@@ -28,6 +28,7 @@ Each emitter writes:
 | `supersimple` | one `<TABLE>.yaml` per model, plus `NOTES.md` for anything deferred |
 | `nao-yaml` | `semantic.yaml` |
 | `nao-context-rules` | `RULES.md` (prose) |
+| `okf` | a bundle directory: `tables/<model>.md`, `metrics/<metric>.md`, `notes.md`, plus the reserved `index.md` in every directory |
 
 ## Mapping
 
@@ -35,19 +36,19 @@ Cells name the construct the IR concept becomes. Notation: `<->` dbt reads it
 back into the IR too; `text` the value survives only as prose folded into a
 description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)).
 
-| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` |
-|---|---|---|---|---|---|---|
-| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) |
-| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described |
-| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions |
-| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` |
-| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` |
-| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" |
-| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose |
-| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) |
-| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" |
-| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" |
-| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL |
+| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `okf` |
+|---|---|---|---|---|---|---|---|
+| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | one `type: Table` concept per model |
+| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | "Dimensions" bullet |
+| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | "Time dimensions" section |
+| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | parenthesized after the column name |
+| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | "Primary key" section |
+| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | "Joins", as a relative link to the other concept |
+| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | frontmatter `description` + body prose |
+| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `text` (into the bullet) |
+| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | "Allowed values" section |
+| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | one `type: Metric` concept |
+| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL | rendered SQL in a fenced block |
 
 ## Gaps vs. limits
 
@@ -82,6 +83,71 @@ and nao dimensions carry a structured `values:` list
 - **Data types in `snowflake-semantic-view` and the nao dialects.** Omitted on
   purpose: these formats lean on the synced source-table schema for types rather
   than restating them in the semantic doc.
+- **`okf` is emit-only.** The spec prescribes no type taxonomy and puts meaning in
+  free prose, so reading a bundle back into the IR would be a heuristic markdown
+  scraper rather than a parser.
+
+### `okf`: the spec and the reference implementation disagree
+
+`okf/SPEC.md` says exactly one frontmatter field is required, `type`. The
+reference implementation is stricter: `OKFDocument.validate()` in
+`okf/src/reference_agent/bundle/document.py` requires **type, title, description
+and timestamp** to all be non-empty. The reference implementation is what
+actually reads bundles, so semglot satisfies the stricter of the two. What that
+means in practice:
+
+- **Descriptions are synthesized when the IR has none.** A metric falls back to
+  its rendered definition, a table to "The `<name>` table." Neither is guaranteed
+  by the IR, and an empty one fails validation.
+- **`timestamp` is caller-supplied, never a clock.** It comes from `Options`
+  (profile `timestamp` field, else the source's last commit date). A clock would
+  make two builds of the same checkout differ byte-for-byte, which the goldens
+  rely on. With no timestamp available the field is omitted, and the bundle is
+  spec-conformant but fails the reference validator.
+- **`index.md` matches `regenerate_indexes` byte-for-byte.** index.md is reserved
+  and machine-generated upstream: one `#` section per concept type, sections
+  sorted by type and entries by title, links relative to the directory,
+  subdirectories under a "Subdirectories" section. Matching it means their
+  tooling is a no-op on our bundles instead of rewriting them.
+- **Links are directory-relative**, as in the published reference bundles
+  (`../metrics/aov.md`), not bundle-absolute. The spec recommends absolute for
+  stability, but stability is moot for a generated bundle, and relative is what
+  the reference viewer resolves.
+- **`resource` reuses the profile's `database`/`schema`** and renders as
+  `table://DATABASE/SCHEMA/TABLE`. Without a `database` the field is dropped
+  rather than emitted half-qualified.
+
+### Testing `okf` against upstream
+
+Three layers, in the order they catch things:
+
+1. `test/okf_conformance_test.go` re-implements the reference rules in Go
+   (frontmatter parses, required keys non-empty, every link resolves). Runs in CI
+   with no extra toolchain.
+2. `test/okf_contract_test.py` runs the *real* `OKFDocument.validate()` and
+   `regenerate_indexes()` over the golden bundle. `.github/workflows/okf-contract.yml`
+   runs it on any PR touching okf, pinned to the commit in
+   `test/OKF_UPSTREAM_REF`. The pin is what makes it safe to block on: it cannot
+   break because upstream moved.
+3. `python -m reference_agent visualize --bundle <dir>` renders the bundle as the
+   reference viewer draws it. The edge count is the useful signal: it is how many
+   of our links the viewer actually resolved. Manual.
+
+**Drift.** `.github/workflows/okf-upstream.yml` runs the contract test weekly
+against upstream `main` rather than the pin. It never blocks a merge, because a
+third party's commit must not turn an unrelated semglot PR red. When their format
+moves and our bundles stop validating, it opens an issue labelled `okf-drift`
+listing the commits that touched `okf/SPEC.md` or `bundle/`. Acting on that issue
+means reconciling `dialect/okf.go`, bumping `test/OKF_UPSTREAM_REF`, and
+regenerating the golden, all in one reviewed PR.
+
+Last verified against `knowledge-catalog@d44368c` on 2026-07-20: all concepts
+validate, `regenerate_indexes` is a no-op, and the viewer renders 13 concepts
+with 24 edges.
+
+This pattern only works because OKF ships a reference implementation. The other
+target dialects were built against vendor docs with nothing executable to check
+them, so they carry the same drift exposure with no way to detect it.
 
 ## Adding or changing a mapping
 

@@ -37,6 +37,7 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `supersimple`             |        |   ✓    |
 | `nao-yaml`                |        |   ✓    |
 | `nao-context-rules`       |        |   ✓    |
+| `okf`                     |        |   ✓    |
 
 Adding a dialect is small, self-contained work: implement the `Dialect` interface
 (`Parse`, `Emit`, or both) and register it, and every conversion to and from it
@@ -134,6 +135,7 @@ profiles:
     view-schema: SEM_VIEWS        # optional. schema for the emitted semantic-view object; defaults to schema
     model-name: catalog           # optional. default: source dir name
     description: Curated view.     # optional
+    timestamp: "2026-07-20T00:00:00+00:00"  # optional. stamped on okf concepts
 ```
 
 - Each profile is independent: there is no shared or inherited config. Staging and
@@ -150,19 +152,19 @@ Every dialect maps to the same neutral IR, but targets differ in how much of it
 they can express. This is what each **target** emits today (`dbt` is currently
 the only source).
 
-| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` |
-|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|
-| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |
-| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |
-| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |
-| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |
-| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |
-| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |
-| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |
-| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |
-| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |
-| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |
-| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |
+| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `okf` |
+|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:-----:|
+| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |   ✓   |
+| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |   ✓   |
+| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |   ✓   |
+| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |   ✓   |
+| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |   ✓   |
+| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |   ✓   |
+| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |   ✓   |
+| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |   ✓   |
+| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |   ✓   |
+| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |   ≈   |
+| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |   ✓   |
 
 `✓` structured · `≈` rolled up as text in a description or comment · `~` partial · blank not emitted.
 
@@ -179,6 +181,11 @@ drops it:
 - **`nao-yaml`** is a flat, model-global document, so it has no table grouping.
 - **`nao-context-rules`** is prose, so it lists only elements that carry a
   description or synonyms.
+- **`okf`** is markdown, so everything is prose under a per-concept heading; the
+  structure is the bundle itself (one concept per table and per metric, joins as
+  links between them). Concepts need a `timestamp`, which comes from the
+  profile's `timestamp` field or the source's last commit date, never from a
+  clock, so the same checkout always produces a byte-identical bundle.
 
 ## License
 

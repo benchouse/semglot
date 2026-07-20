@@ -1,0 +1,68 @@
+name: OKF contract
+
+# Validates the committed okf golden bundle with the OKF reference
+# implementation, pinned to the commit in test/OKF_UPSTREAM_REF.
+#
+# The pin is what makes this safe to block a PR on: it cannot break because
+# upstream moved. Detecting that upstream moved is okf-upstream.yml's job, and
+# that one never blocks.
+#
+# This validates the COMMITTED golden rather than re-emitting, because ci.yml
+# already fails on a stale golden. So this job needs no Go toolchain.
+
+on:
+  pull_request:
+    paths:
+      - 'dialect/okf.go'
+      - 'test/okf_*'
+      - 'test/OKF_UPSTREAM_REF'
+      - 'test/models/**/okf/**'
+      - '.github/workflows/okf-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'dialect/okf.go'
+      - 'test/okf_*'
+      - 'test/OKF_UPSTREAM_REF'
+      - 'test/models/**/okf/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned upstream ref
+        id: pin
+        run: |
+          ref="$(grep -v '^#' test/OKF_UPSTREAM_REF | tr -d '[:space:]')"
+          if [ -z "$ref" ]; then
+            echo "test/OKF_UPSTREAM_REF has no commit in it"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Pinned to knowledge-catalog @ $ref"
+
+      - uses: actions/setup-python@v5
+        with:
+          # The reference implementation requires >=3.11.
+          python-version: '3.13'
+
+      - name: Clone the reference implementation at the pinned commit
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/GoogleCloudPlatform/knowledge-catalog /tmp/kc
+          git -C /tmp/kc checkout --quiet "${{ steps.pin.outputs.ref }}"
+
+      - name: Install the reference implementation
+        run: |
+          python -m venv /tmp/okf-venv
+          /tmp/okf-venv/bin/pip install --quiet --upgrade pip
+          /tmp/okf-venv/bin/pip install --quiet -e /tmp/kc/okf
+
+      - name: Validate the golden bundle
+        run: /tmp/okf-venv/bin/python test/okf_contract_test.py test/models/ecommerce/dbt/okf

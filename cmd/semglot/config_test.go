@@ -170,3 +170,40 @@ func TestDefaultModelName(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadProfileTimestamp verifies the profile can pin the timestamp that okf
+// stamps on every concept, so a bundle is reproducible from config alone.
+func TestLoadProfileTimestamp(t *testing.T) {
+	cfg := writeConfig(t, `profiles:
+  p:
+    source: /x/ecommerce
+    target-dialect: okf
+    output: ./out
+    timestamp: "2026-07-20T00:00:00+00:00"
+`)
+	got, err := loadProfile(cfg, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timestamp != "2026-07-20T00:00:00+00:00" {
+		t.Errorf("timestamp = %q, want the pinned value", got.Timestamp)
+	}
+}
+
+// TestLoadProfileNoTimestamp verifies an absent timestamp stays empty here;
+// resolving a fallback is the build command's job, not the config's.
+func TestLoadProfileNoTimestamp(t *testing.T) {
+	cfg := writeConfig(t, `profiles:
+  p:
+    source: /x/ecommerce
+    target-dialect: okf
+    output: ./out
+`)
+	got, err := loadProfile(cfg, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timestamp != "" {
+		t.Errorf("timestamp = %q, want empty", got.Timestamp)
+	}
+}

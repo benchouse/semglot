@@ -37,6 +37,9 @@ type profile struct {
 	ViewSchema    string      `yaml:"view-schema"`
 	ModelName     string      `yaml:"model-name"`
 	Description   string      `yaml:"description"`
+	// Timestamp pins the ISO 8601 instant stamped on emitted documents (okf).
+	// Left empty, the build command derives one from the source's git history.
+	Timestamp string `yaml:"timestamp"`
 }
 
 // configFile is the top-level shape of semglot.yaml.
@@ -55,6 +58,7 @@ type buildSpec struct {
 	ViewSchema    string
 	ModelName     string
 	Description   string
+	Timestamp     string
 }
 
 // snowflakeTargets emit into a physical Snowflake database and therefore require
@@ -95,6 +99,7 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 		ViewSchema:    p.ViewSchema,
 		ModelName:     p.ModelName,
 		Description:   p.Description,
+		Timestamp:     p.Timestamp,
 	}
 	if spec.SourceDialect == "" {
 		spec.SourceDialect = "dbt"

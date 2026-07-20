@@ -11,6 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/benchouse/semglot/dialect"
 )
@@ -35,6 +38,32 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: semglot build --profile <name> [--config <file>]")
 	fmt.Fprintln(os.Stderr, "profiles are defined in semglot.yaml (override the path with --config)")
+}
+
+// resolveTimestamp returns the ISO 8601 instant to stamp on emitted documents
+// (okf requires one). It prefers the profile's pinned value, then the source's
+// last commit date. It deliberately never falls back to the current time: two
+// builds of the same checkout must produce the same bytes.
+func resolveTimestamp(spec buildSpec) string {
+	if spec.Timestamp != "" {
+		return spec.Timestamp
+	}
+	if len(spec.Sources) == 0 {
+		return ""
+	}
+	cmd := exec.Command("git", "-C", spec.Sources[0], "log", "-1", "--format=%cI")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// git renders %cI in the local timezone, so the same commit reads as
+	// "...T00:00:00Z" in UTC and "...T09:00:00+09:00" in Tokyo. Normalize to UTC
+	// or the bundle stops being reproducible across machines.
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(out)))
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func buildCmd(args []string) int {
@@ -71,6 +100,7 @@ func buildCmd(args []string) int {
 			ViewSchema:  spec.ViewSchema,
 			Name:        spec.ModelName,
 			Description: spec.Description,
+			Timestamp:   resolveTimestamp(spec),
 		})
 	}
 

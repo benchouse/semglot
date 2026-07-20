@@ -1,0 +1,12 @@
+# The GoogleCloudPlatform/knowledge-catalog commit semglot's okf emitter is
+# verified against. Both okf workflows read this file:
+#
+#   okf-contract.yml  clones upstream at THIS commit and runs the contract test.
+#                     Deterministic, so it is safe to block a PR on.
+#   okf-upstream.yml  weekly, clones upstream main and reports the drift from
+#                     this commit. Never blocks anything.
+#
+# Bumping this is a deliberate, reviewed change: update the SHA, re-run
+# test/okf_contract_test.py, regenerate the golden if the format moved, and the
+# PR diff shows exactly what changed.
+d44368c15e38e7c92481c5992e4f9b5b421a801d
