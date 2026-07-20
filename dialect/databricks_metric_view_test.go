@@ -117,8 +117,20 @@ func dbxTestModel() *ir.Model {
 			{Name: "region_norm", Expr: "coalesce(region, 'unknown')"},
 		},
 	}
+	// caseCollide: two metrics whose lowercased names collide (AOV vs aov). Fix
+	// E: usedNames must be checked/populated INSIDE the metric loop so the
+	// second metric is skipped and noted, rather than both emitting and
+	// Databricks rejecting the whole view for a duplicate name.
+	caseCollide := ir.Table{
+		Name:       "case_collide",
+		Dimensions: []ir.Field{{Name: "segment", Expr: "segment"}},
+		Metrics: []ir.Metric{
+			{Name: "AOV", Def: ir.Agg{Func: "sum", Table: "case_collide", Arg: ir.Col{Name: "amount"}}},
+			{Name: "aov", Def: ir.Agg{Func: "avg", Table: "case_collide", Arg: ir.Col{Name: "amount"}}},
+		},
+	}
 	return &ir.Model{
-		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase, caseDedup, orders2, dimCustomer2},
+		Tables: []ir.Table{orders, customers, lines, obtWide, mixedCase, caseDedup, orders2, dimCustomer2, caseCollide},
 		Relationships: []ir.Relationship{
 			{Left: "orders", Right: "customers", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
 			{Left: "orders2", Right: "dim_customer2", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
@@ -396,6 +408,23 @@ func TestDatabricksMetricViewJoinedCompoundExprSkipped(t *testing.T) {
 	}
 	if !strings.Contains(got, "expr: dim_customer2.tier") {
 		t.Errorf("bare-column joined dimension must still be emitted prefixed:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewMetricNameCaseCollision is Fix E: two metrics on the
+// same table whose lowercased names collide (AOV, aov) must not both emit —
+// Databricks rejects the whole view for a duplicate name, the very failure
+// mode the dedup logic exists to prevent. The second is skipped and noted.
+func TestDatabricksMetricViewMetricNameCaseCollision(t *testing.T) {
+	got, ok := emitDbx(t, dbxTestModel())["case_collide.yaml"]
+	if !ok {
+		t.Fatalf("expected case_collide.yaml")
+	}
+	if n := strings.Count(got, "name: aov"); n != 1 {
+		t.Errorf("expected exactly one measure named aov (AOV/aov case-insensitive collision), got %d:\n%s", n, got)
+	}
+	if !strings.Contains(strings.ToLower(got), "collide") {
+		t.Errorf("expected a note about the metric name collision:\n%s", got)
 	}
 }
 

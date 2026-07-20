@@ -191,6 +191,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// (sum(attributed_revenue)/sum(spend)). Mirrors the identical fix in
 	// snowflake-semantic-view (see its buildView), which resolves the same
 	// collision by treating the computed metric as canonical.
+	usedNames := map[string]bool{}
 	for _, mt := range t.Metrics {
 		if reason, degrade := dbxDegrade(mt); degrade {
 			notes = append(notes, "metric "+mt.Name+": "+reason)
@@ -200,15 +201,24 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			notes = append(notes, "metric "+mt.Name+": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
 			continue
 		}
+		name := strings.ToLower(mt.Name)
+		// Checked/populated HERE, inside the loop, not after it: two metrics on
+		// the same table whose lowercased names collide (e.g. AOV and aov) would
+		// otherwise both emit, and Databricks rejects the entire view for a
+		// duplicate name — the exact failure this dedup exists to prevent
+		// elsewhere (field/measure collisions). The first metric wins.
+		if usedNames[name] {
+			notes = append(notes, "metric "+mt.Name+": name collides with another metric on this table (case-insensitive) — skipped")
+			continue
+		}
+		usedNames[name] = true
 		mv.Measures = append(mv.Measures, dbxMeasure{
-			Name: strings.ToLower(mt.Name), Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
+			Name: name, Expr: dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name),
 			Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
 		})
 	}
-	usedNames := map[string]bool{}
 	usedExprs := map[string]bool{}
 	for _, ms := range mv.Measures {
-		usedNames[strings.ToLower(ms.Name)] = true
 		// Compared lowercased: renderSQL preserves the source column's original
 		// case (e.g. "count(distinct ORDER_ID)" for an uppercase dbt column),
 		// while the raw side below always lowercases its column via aggExpr. A
