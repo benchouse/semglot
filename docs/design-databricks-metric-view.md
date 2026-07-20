@@ -65,17 +65,16 @@ Key facts driving the design:
 
 ## Mapping N IR tables → metric views (one per fact table)
 
-**Fact selection.** A table is a *fact* (gets its own `<table>.yaml`) iff it has ≥1 measure or metric. Pure dimension tables (no measures/metrics) surface only as joins on the facts that reference them; a dimension-only table referenced by nothing is skipped with a `model.Notes`-style note.
+**Fact selection.** A table is a *fact* (gets its own `<table>.yaml`) iff it has ≥1 **Metric**. Databricks `measures` are sourced from IR **Metrics** only — they carry a `Def` AST (rendered cleanly via `renderSQL`) plus label/synonyms/description, exactly as `snowflake_semantic_view.go` does; raw IR **Measures** are the lower-level dbt building blocks that metrics inline, and are not emitted separately (avoids near-duplicate `orders_count` measure vs `ORDERS` metric and any Measure→SQL reconstruction). Pure dimension tables (no metrics) surface only as joins on the facts that reference them; a dimension-only table referenced by nothing is skipped with a `model.Notes`-style note.
 
 For each fact table `F`:
 
 1. **`source`**: `<catalog>.<schema>.<F>` (lowercased table name; catalog/schema as configured).
 2. **`joins`**: for each `Relationship` where `F` is the `Left` side, emit `{name: <Right>, source: <catalog>.<schema>.<Right>, "on": "source.<lcol> = <Right>.<rcol>"}`. Multiple `ColumnPair`s join with ` AND `. Only direct relationships from `F`; `F` as a `Right` side (i.e. F being referenced) does not pull in a join.
 3. **`fields`**: `F`'s `Dimensions` + `TimeDimensions` as `{name, expr, comment}` with bare `expr`. Then, for each joined dimension table, its `Dimensions` + `TimeDimensions` with `expr: <join>.<col>`. Field **names must be unique within a view** — dedup with a `seen` set (mirroring `snowflake_semantic_view.go`): a joined field whose bare name collides is prefixed with the join name (`dim_customer_region`). Enum values fold into `comment` (metric views have no per-value enum), reusing the existing `enumClause`/`appendClause` helpers.
-4. **`measures`**:
-   - Each `Measure` → `{name, expr: "<AGG>(<expr>)"}` from `Measure.Agg` + `Measure.Field.Expr` (uppercased aggregate).
-   - Each `Metric` → lower `Def` with `renderSQL(mt.Def, resolve)` where `resolve` is `metricResolver(m)` (inlines same-model measure/metric refs to aggregates — `AOV → SUM(net_revenue)/COUNT(DISTINCT order_id)`).
-   - `display_name` ← `Metric.Label`; `synonyms` ← `Synonyms` (capped at 10); `comment` ← `Description`.
+4. **`measures`** (from `F`'s `Metrics`; raw `Measures` are not emitted):
+   - Each `Metric` → `{name, expr}` where `expr = renderSQL(mt.Def, resolve)` and `resolve` is `metricResolver(m)` (inlines same-model measure/metric refs to aggregates — `AOV → SUM(net_revenue) / COUNT(DISTINCT order_id)`).
+   - `display_name` ← `Metric.Label` (omit if empty); `synonyms` ← `Synonyms` (capped at 10); `comment` ← `Description`.
 
 **Degrade to a note** (folded into that view's `comment` as a trailing "Note: …"), never emitting SQL we cannot stand behind:
 - `ir.Window` (cumulative) and `ir.Conversion` (funnel) metrics — no validated metric-view primitive (same posture as `cortexDegrade`).
@@ -89,7 +88,7 @@ One `<facttable>.yaml` per fact table, written with `yaml.v3` at the same encode
 
 ## Testing
 
-- **Unit** — `layer/databricks_metric_view_test.go`: a small in-memory `ir.Model` (a fact with a dimension join, a simple measure, a same-grain derived metric, and a cross-grain derived metric) asserting: `source` three-part name; a quoted `"on":` join line with `source.`/join-name prefixes; a joined dimension rendered `expr: <join>.<col>`; an inlined derived measure; the cross-grain metric absent from `measures` and present as a `comment` note; `version: "1.1"`.
+- **Unit** — `layer/databricks_metric_view_test.go`: a small in-memory `ir.Model` (a fact with a dimension join, a simple aggregate metric, a same-grain derived metric, and a cross-grain derived metric) asserting: `source` three-part name; a quoted `"on":` join line with `source.`/join-name prefixes; a joined dimension rendered `expr: <join>.<col>`; an inlined derived measure (`SUM(...) / COUNT(...)`); the cross-grain metric absent from `measures` and present as a `comment` note; `version: "1.1"`.
 - **Golden** — `test/models/ecommerce/dbt/databricks-metric-view/` with one yaml per fact (`fct_orders.yaml`, `fct_order_lines.yaml`), pinned via `UPDATE_GOLDEN=1` and eyeballed for valid metric-view YAML. Add a `databricks-metric-view` case to `test/integration_test.go`; since this target emits **multiple** files, extend the harness to read a named file from the output dir (the existing `emitTarget` already takes a `file` arg — pass `fct_orders.yaml`) and add a golden-dir comparison over all emitted files.
 - CLI: building the fixture with `--target-type databricks-metric-view --database ANALYTICS` succeeds; omitting `--database` fails with the required-catalog error.
 
