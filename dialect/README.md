@@ -28,6 +28,7 @@ Each emitter writes:
 | `supersimple` | one `<TABLE>.yaml` per model, plus `NOTES.md` for anything deferred |
 | `nao-yaml` | `semantic.yaml` |
 | `nao-context-rules` | `RULES.md` (prose) |
+| `okf` | a bundle directory: `index.md`, `tables/<model>.md`, `metrics/<metric>.md`, `notes.md` |
 
 ## Mapping
 
@@ -35,19 +36,19 @@ Cells name the construct the IR concept becomes. Notation: `<->` dbt reads it
 back into the IR too; `text` the value survives only as prose folded into a
 description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)).
 
-| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` |
-|---|---|---|---|---|---|---|
-| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) |
-| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described |
-| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions |
-| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` |
-| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` |
-| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" |
-| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose |
-| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) |
-| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" |
-| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" |
-| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL |
+| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `okf` |
+|---|---|---|---|---|---|---|---|
+| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | one `type: Table` concept per model |
+| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | "Dimensions" bullet |
+| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | "Time dimensions" section |
+| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | parenthesized after the column name |
+| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | "Primary key" section |
+| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | "Joins", as a link to the other concept |
+| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | frontmatter `description` + body prose |
+| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `text` (into the bullet) |
+| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | "Allowed values" section |
+| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | one `type: Metric` concept |
+| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL | rendered SQL in a fenced block |
 
 ## Gaps vs. limits
 
@@ -82,6 +83,18 @@ and nao dimensions carry a structured `values:` list
 - **Data types in `snowflake-semantic-view` and the nao dialects.** Omitted on
   purpose: these formats lean on the synced source-table schema for types rather
   than restating them in the semantic doc.
+- **`okf` is emit-only.** The spec prescribes no type taxonomy and puts meaning in
+  free prose, so reading a bundle back into the IR would be a heuristic markdown
+  scraper rather than a parser.
+
+Two `okf` choices worth knowing before you extend it:
+
+- **No `timestamp`.** The spec only recommends the field, and writing a clock into
+  every concept would make two builds of the same input differ byte-for-byte,
+  which the golden fixtures rely on.
+- **`resource` reuses the profile's `database`/`schema`** and renders as
+  `table://DATABASE/SCHEMA/TABLE`. Without a `database` the field is dropped
+  rather than emitted half-qualified.
 
 ## Adding or changing a mapping
 
