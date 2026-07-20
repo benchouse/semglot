@@ -2,9 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `databricks-metric-view` target that transpiles a dbt semantic layer into Unity Catalog Metric View YAML — the semantic layer Databricks AI/BI Genie grounds on — one `<fact>.yaml` per fact table.
+> **Erratum (2026-07-20):** This plan's fact-selection rule, one metric view per *fact* table (`len(t.Metrics) >= 1`), skipping pure-dimension tables, was superseded during implementation and is not what shipped.
+> It emitted only 6 of 38 views on the real dataset.
+> The shipped rule is one metric view per IR table (skipping only a table left with zero fields), with measures sourced from metrics plus any raw measure not already covered by name or expression.
+> See `docs/design-databricks-metric-view.md` for the current, accurate description.
+> This document is left otherwise unedited as a historical record of the plan as executed; lines below that describe the superseded rule are marked `[SUPERSEDED, see erratum above]` rather than rewritten.
 
-**Architecture:** A new `Emitter`/`Configurable` in `dialect/`, parallel to `snowflake_semantic_view.go`. It walks the IR: each table with ≥1 metric becomes a metric view rooted at that table (`source`), with direct IR relationships as `joins`, dimensions (own + joined) as `fields`, and metrics (lowered via the existing `renderSQL`) as `measures`. Cross-grain and window/conversion metrics degrade to a `comment` note. Output is raw YAML via `yaml.v3`.
+**Goal:** Add a `databricks-metric-view` target that transpiles a dbt semantic layer into Unity Catalog Metric View YAML — the semantic layer Databricks AI/BI Genie grounds on — one `<fact>.yaml` per fact table. `[SUPERSEDED, see erratum above: ships one view per IR table, not per fact table]`
+
+**Architecture:** A new `Emitter`/`Configurable` in `dialect/`, parallel to `snowflake_semantic_view.go`. It walks the IR: each table with ≥1 metric becomes a metric view rooted at that table (`source`), with direct IR relationships as `joins`, dimensions (own + joined) as `fields`, and metrics (lowered via the existing `renderSQL`) as `measures`. Cross-grain and window/conversion metrics degrade to a `comment` note. Output is raw YAML via `yaml.v3`. `[SUPERSEDED, see erratum above: every table gets a view, not only ones with a metric; measures also include uncovered raw ir.Measures]`
 
 **Tech Stack:** Go, `gopkg.in/yaml.v3`, existing `ir` + `dialect` packages.
 
@@ -14,7 +20,7 @@
 - Target-dialect name is exactly `databricks-metric-view`.
 - Reuse existing helpers — do NOT reimplement: `metricResolver(m)`, `renderSQL(e, resolve)`, `enumClause([]ir.EnumValue) string`, `appendClause(desc, clause string) string`. Signature of resolve is `func(name string) (ir.Expr, bool)`.
 - `Options` fields: `Database` → Unity Catalog **catalog**; `Schema` → source-table schema (default `main`); `Name`/`ViewSchema` unused here; `Description` folded into each view `comment`.
-- Metric-view `measures` come from IR **Metrics only** (not raw `Measures`).
+- Metric-view `measures` come from IR **Metrics only** (not raw `Measures`). `[SUPERSEDED, see erratum above: raw Measures not already covered by name or expression are also emitted]`
 - `on` join keys MUST be emitted double-quoted (`"on":`) — Databricks parses YAML 1.1 where bare `on` is boolean.
 - `version` value is the string `"1.1"`.
 - Table/column identifiers are lowercased in output (Unity Catalog convention); IR table names are already lowercase (e.g. `fct_orders`).
@@ -32,7 +38,7 @@
 
 **Interfaces:**
 - Consumes: `ir.Model`, `ir.Table`, `ir.Field`, `ir.Measure`, `ir.Metric`, `ir.Relationship`, `ir.Expr` (and AST nodes `ir.Ref`, `ir.Binary`, `ir.Agg`, `ir.Window`, `ir.Conversion`); `metricResolver`, `renderSQL`, `enumClause`, `appendClause`; `dialect.Register`, `dialect.Options`, `dialect.Emitter`, `dialect.Configurable`.
-- Produces: a registered dialect named `databricks-metric-view` implementing `Emitter` + `Configurable`. Emits `<lowercased-table-name>.yaml` per fact table into the output dir.
+- Produces: a registered dialect named `databricks-metric-view` implementing `Emitter` + `Configurable`. Emits `<lowercased-table-name>.yaml` per fact table into the output dir. `[SUPERSEDED, see erratum above: per IR table left with >=1 field, not per fact table]`
 
 - [ ] **Step 1: Write the failing unit test**
 
@@ -724,7 +730,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 Read `README.md`, find where targets/dialects are listed (the intro paragraph names "dbt semantic models, Snowflake Cortex, and more", and the Status line mentions transpile targets). Add a concise mention that `databricks-metric-view` emits Unity Catalog Metric View YAML for Databricks AI/BI Genie. Keep the existing prose style; no em-dashes are required but the repo uses them — match surrounding text. Example addition to the intro list: change "Snowflake Cortex, and more" context so Databricks metric views appear among supported targets, and if there is a per-target list, add:
 
 ```
-- `databricks-metric-view` — Unity Catalog Metric View YAML (the semantic layer Databricks AI/BI Genie grounds on); one file per fact table.
+- `databricks-metric-view` — Unity Catalog Metric View YAML (the semantic layer Databricks AI/BI Genie grounds on); one file per fact table. `[SUPERSEDED, see erratum above: one file per IR table]`
 ```
 
 - [ ] **Step 2: Run the entire test suite**
@@ -774,7 +780,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Spec coverage:**
 - New emitter file + registration → Task 1. ✓
 - Identity mapping (Database→catalog, Schema→schema, default `main`) → Task 1 (`Emit`) + Task 2 (required catalog). ✓
-- One view per fact table; pure-dimension tables skipped → Task 1 (`len(t.Metrics)==0` skip) + tests. ✓
+- One view per fact table; pure-dimension tables skipped → Task 1 (`len(t.Metrics)==0` skip) + tests. ✓ `[SUPERSEDED, see erratum above: this rule shipped a fact-only view set (6 of 38 on the real dataset) and was replaced with one view per IR table before merge]`
 - Joins from IR relationships, quoted `on`, `source.`/join-name prefixes, multi-col `AND` → Task 1 (`dbxJoin.MarshalYAML`, join loop). ✓
 - Fields: own + joined dims, dedup with prefix, enum fold → Task 1 (field loops, `dbxFieldComment`). ✓
 - Measures from Metrics via `renderSQL`; display_name/synonyms(cap 10)/comment → Task 1 (measure loop, `dbxCapSyn`). ✓
