@@ -17,10 +17,12 @@ semglot build --source ./semantic --target ./cortex/ --target-type cortex --data
 semglot score --source ./semantic --target ./cortex/ --target-type cortex
 ```
 
-Status: early. v1 transpiles dbt → Cortex and scores any dialect against a
-reference. The `Layer` interface (`Parse` dialect→IR, `Emit` IR→dialect) is the
-seam for adding dialects; because every dialect is bidirectional, many→many
-transpilation is a matter of registering more layers, not writing converters.
+Status: early. v1 transpiles dbt → Cortex, plus dbt → Databricks Metric View
+YAML (the semantic layer Databricks AI/BI Genie grounds on, one file per fact
+table), and scores any dialect against a reference. The `Layer` interface
+(`Parse` dialect→IR, `Emit` IR→dialect) is the seam for adding dialects;
+because every dialect is bidirectional, many→many transpilation is a matter of
+registering more layers, not writing converters.
 
 ## Testing
 
