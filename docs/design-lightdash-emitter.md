@@ -99,11 +99,11 @@ Filtered aggregates degrade to notes in v1 rather than attempting to translate a
 
 dbt moved where Lightdash's `meta` lives. dbt 1.9 and earlier nest under `meta:`; dbt 1.10+ and Fusion nest under `config.meta:`. The emitter defaults to `meta:` and exposes a toggle to `config.meta:`.
 
-Plumbing mirrors `ViewSchema` exactly (the existing per-target option carried through shared config):
+Plumbing mirrors `ViewSchema` exactly (the existing per-target option carried through the profile config):
 
 - `dialect.Options` gains `MetaStyle string` (`""`/`meta` default, `config.meta` alternate).
-- `configFile` gains `meta_style:` and `identity` gains `MetaStyle`, layered defaults < config < flag in `resolveIdentity`.
-- `cmd/semglot` adds a `--lightdash-meta-style` flag.
+- The `semglot.yaml` `profile` struct gains `meta-style:` and `buildSpec` gains `MetaStyle`, copied through in `loadProfile`.
+- `cmd/semglot` passes `spec.MetaStyle` into `dialect.Options` when configuring the emitter.
 - Under `config.meta`, each `meta:` block on a model and a column is nested one level under a `config:` key. The `meta` content is identical; only its parent wrapper differs.
 
 Lightdash is not a Snowflake target, so it is absent from `snowflakeTargets` and does not require `--database`.
