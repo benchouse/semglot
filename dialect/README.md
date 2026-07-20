@@ -28,7 +28,7 @@ Each emitter writes:
 | `supersimple` | one `<TABLE>.yaml` per model, plus `NOTES.md` for anything deferred |
 | `nao-yaml` | `semantic.yaml` |
 | `nao-context-rules` | `RULES.md` (prose) |
-| `databricks-metric-view` | one `<table>.yaml` metric view per model table, with direct joins to referenced tables |
+| `databricks-metric-view` | one `<table>.yaml` metric view per model table, with direct joins to referenced tables (requires Databricks Runtime 17.2+; `display_name`/`synonyms` require 17.3+) |
 
 ## Mapping
 

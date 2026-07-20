@@ -40,6 +40,7 @@ Key facts driving the design:
 - `on` must be quoted (`"on":`) — a YAML 1.1 parser reads bare `on` as boolean.
 - `fields` = dimensions; `measures` = aggregate expressions. Databricks **allows** inlined aggregate arithmetic in a measure (`SUM(x)/SUM(y)`), unlike Snowflake semantic views.
 - Agent metadata for Genie: `comment`, `display_name` (≤255 chars), `synonyms` (≤10). `format` exists but has no IR signal — skipped in v1.
+- **Runtime floor:** the base metric-view YAML shape (`version: "1.1"`) requires Databricks Runtime 17.2+. `display_name` and `synonyms` require Runtime 17.3+; both are emitted unconditionally when the IR carries a label or synonyms, so a view containing them is rejected on an older warehouse. semglot does not gate these keys behind an option in v1 (documenting the floor is enough); a warehouse below 17.3 either upgrades or drops the fields by hand from the generated YAML before applying it.
 
 ## Scope
 

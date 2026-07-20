@@ -180,6 +180,10 @@ drops it:
 - **`nao-yaml`** is a flat, model-global document, so it has no table grouping.
 - **`nao-context-rules`** is prose, so it lists only elements that carry a
   description or synonyms.
+- **`databricks-metric-view`** requires Databricks Runtime 17.2+ for the base
+  metric-view YAML shape; `display_name` and `synonyms` are emitted whenever
+  the IR carries a label or synonyms and require Runtime 17.3+. On an older
+  warehouse, a view containing them is rejected.
 
 ## License
 
