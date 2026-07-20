@@ -64,6 +64,77 @@ func TestLightdashRegisteredAndSkeleton(t *testing.T) {
 	}
 }
 
+func TestLightdashMetrics(t *testing.T) {
+	// net_revenue = sum(amount)           -> column metric on amount
+	// orders      = count_distinct(order_id) -> column metric on order_id
+	// aov         = net_revenue / orders   -> model metric ${net_revenue}/${orders}
+	// refunded    = sum(case ...) (Raw arg) -> degrades to a note
+	// refund_rate = refunded / orders      -> degrades (ref to degraded metric)
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "orders",
+		Metrics: []ir.Metric{
+			{Name: "net_revenue", Def: ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Name: "amount"}}},
+			{Name: "orders", Def: ir.Agg{Func: "count_distinct", Table: "orders", Arg: ir.Col{Name: "order_id"}}},
+			{Name: "aov", Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "orders"}}},
+			{Name: "refunded", Def: ir.Agg{Func: "sum", Table: "orders",
+				Arg: ir.Raw{SQL: "case when is_refunded then 1 else 0 end", Columns: []string{"is_refunded"}}}},
+			{Name: "refund_rate", Def: ir.Binary{Op: "/", Left: ir.Ref{Metric: "refunded"}, Right: ir.Ref{Metric: "orders"}}},
+		},
+	}}}
+	got := emitLightdash(t, m, Options{Name: "ecommerce"})
+
+	var doc struct {
+		Models []struct {
+			Meta struct {
+				Metrics map[string]struct {
+					Type string `yaml:"type"`
+					SQL  string `yaml:"sql"`
+				} `yaml:"metrics"`
+			} `yaml:"meta"`
+			Columns []struct {
+				Name string `yaml:"name"`
+				Meta struct {
+					Metrics map[string]struct {
+						Type string `yaml:"type"`
+					} `yaml:"metrics"`
+				} `yaml:"meta"`
+			} `yaml:"columns"`
+		} `yaml:"models"`
+	}
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, got)
+	}
+	colMetric := func(col, name string) (string, bool) {
+		for _, c := range doc.Models[0].Columns {
+			if c.Name == col {
+				mm, ok := c.Meta.Metrics[name]
+				return mm.Type, ok
+			}
+		}
+		return "", false
+	}
+	if typ, ok := colMetric("amount", "net_revenue"); !ok || typ != "sum" {
+		t.Errorf("net_revenue on amount: type=%q ok=%v, want sum true", typ, ok)
+	}
+	if typ, ok := colMetric("order_id", "orders"); !ok || typ != "count_distinct" {
+		t.Errorf("orders on order_id: type=%q ok=%v, want count_distinct true", typ, ok)
+	}
+	aov, ok := doc.Models[0].Meta.Metrics["aov"]
+	if !ok || aov.Type != "number" || aov.SQL != "${net_revenue} / ${orders}" {
+		t.Errorf("aov = %+v, want type number sql ${net_revenue} / ${orders}", aov)
+	}
+	if _, ok := doc.Models[0].Meta.Metrics["refund_rate"]; ok {
+		t.Errorf("refund_rate must NOT be emitted (references degraded metric)")
+	}
+	// both degraded metrics surface as notes.
+	if !strings.Contains(got, "# - metric refunded not emitted") {
+		t.Errorf("missing degrade note for refunded:\n%s", got)
+	}
+	if !strings.Contains(got, "# - metric refund_rate not emitted") {
+		t.Errorf("missing degrade note for refund_rate:\n%s", got)
+	}
+}
+
 func TestLightdashDimensions(t *testing.T) {
 	m := &ir.Model{Tables: []ir.Table{{
 		Name: "orders",

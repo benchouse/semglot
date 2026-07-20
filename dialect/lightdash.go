@@ -193,6 +193,137 @@ func ldMapType(t string) string {
 	}
 }
 
+// metric records a column-level Lightdash metric on col.
+func (s *ldColumnSet) metric(col, name string, met ldMetric) {
+	c := s.get(col)
+	if c.Meta == nil {
+		c.Meta = &ldColMeta{}
+	}
+	if c.Meta.Metrics == nil {
+		c.Meta.Metrics = map[string]ldMetric{}
+	}
+	c.Meta.Metrics[name] = met
+}
+
+// simpleColumnMetric reports whether mt is a plain, unfiltered aggregate over a
+// single column, and if so returns the backing column and the column-level
+// Lightdash metric. A filtered agg, a count(*) (nil arg), a Raw arg, or an
+// unmapped aggregate returns ok=false (the caller degrades it).
+func simpleColumnMetric(mt ir.Metric) (string, ldMetric, bool) {
+	agg, ok := mt.Def.(ir.Agg)
+	if !ok || agg.Filter != nil {
+		return "", ldMetric{}, false
+	}
+	typ, ok := ldAggType(agg.Func)
+	if !ok {
+		return "", ldMetric{}, false
+	}
+	col, ok := agg.Arg.(ir.Col)
+	if !ok {
+		return "", ldMetric{}, false
+	}
+	return col.Name, ldMetric{Type: typ}, true
+}
+
+// ldAggType maps an IR aggregation function to a Lightdash column-metric type.
+func ldAggType(fn string) (string, bool) {
+	switch strings.ToLower(fn) {
+	case "sum":
+		return "sum", true
+	case "avg", "average":
+		return "average", true
+	case "count":
+		return "count", true
+	case "count_distinct":
+		return "count_distinct", true
+	case "min":
+		return "min", true
+	case "max":
+		return "max", true
+	case "median":
+		return "median", true
+	}
+	return "", false
+}
+
+// renderLightdash renders a reference-only derived tree to Lightdash ${metric}
+// syntax. Lightdash type: number metrics may reference only other metrics (and
+// literals), so any node that is not a Ref/Lit/Binary makes the whole metric
+// non-representable (ok=false) and the caller degrades it. Kept separate from
+// renderSQL and renderDerived: each target has its own reference discipline
+// (Cortex inlines SQL, dbt keeps bare measure refs, Lightdash uses ${...}).
+func renderLightdash(e ir.Expr) (string, bool) {
+	switch n := e.(type) {
+	case ir.Ref:
+		return "${" + n.Metric + "}", true
+	case ir.Lit:
+		return n.Value, true
+	case ir.Binary:
+		l, lok := renderLightdashOperand(n.Left)
+		r, rok := renderLightdashOperand(n.Right)
+		if !lok || !rok {
+			return "", false
+		}
+		return l + " " + n.Op + " " + r, true
+	default:
+		return "", false
+	}
+}
+
+// renderLightdashOperand renders a Binary operand, parenthesizing a nested
+// Binary so operator grouping in the emitted SQL matches the AST.
+func renderLightdashOperand(e ir.Expr) (string, bool) {
+	s, ok := renderLightdash(e)
+	if !ok {
+		return "", false
+	}
+	if _, isBin := e.(ir.Binary); isBin {
+		return "(" + s + ")", true
+	}
+	return s, true
+}
+
+// metricRefs returns the metric names a reference-only tree references.
+func metricRefs(e ir.Expr) []string {
+	switch n := e.(type) {
+	case ir.Ref:
+		return []string{n.Metric}
+	case ir.Binary:
+		return append(metricRefs(n.Left), metricRefs(n.Right)...)
+	}
+	return nil
+}
+
+// degradeNote explains why a metric was not emitted to Lightdash. Window and
+// conversion metrics reuse cortexDegrade's wording; other misses are filtered
+// or compound aggregates, or references that did not resolve to emitted
+// same-table simple metrics.
+func degradeNote(mt ir.Metric) string {
+	if reason, ok := cortexDegrade(mt.Def); ok {
+		return "metric " + mt.Name + " not emitted to Lightdash: " + reason
+	}
+	return "metric " + mt.Name + " not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)"
+}
+
+// derivedModelMetric reports whether mt is a reference-only ratio/derived metric
+// whose every referenced metric is an emitted same-table simple metric, and if
+// so returns its model-level Lightdash form (type: number, ${...} sql).
+func derivedModelMetric(mt ir.Metric, simple map[string]bool) (ldMetric, bool) {
+	if _, ok := mt.Def.(ir.Binary); !ok {
+		return ldMetric{}, false
+	}
+	sql, ok := renderLightdash(mt.Def)
+	if !ok {
+		return ldMetric{}, false
+	}
+	for _, r := range metricRefs(mt.Def) {
+		if !simple[r] {
+			return ldMetric{}, false
+		}
+	}
+	return ldMetric{Type: "number", SQL: sql}, true
+}
+
 // Emit writes the IR as one dbt schema.yml carrying Lightdash annotations. It
 // does not mutate m: passthrough notes and degrade notes accumulate in a local
 // slice and render as a leading # semglot: comment block.
@@ -209,9 +340,38 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 		for _, d := range t.TimeDimensions {
 			cols.dimension(d, ldDimensionType(d, true))
 		}
-		f.Models = append(f.Models, ldModel{
-			Name: t.Name, Description: t.Description, Columns: cols.list(),
-		})
+
+		// Pass 1: which metrics become column-level simple metrics. Their names
+		// are the only references a derived metric may use, so a ratio over a
+		// degraded or cross-table metric degrades rather than dangling.
+		simple := map[string]bool{}
+		for _, mt := range t.Metrics {
+			if _, _, ok := simpleColumnMetric(mt); ok {
+				simple[mt.Name] = true
+			}
+		}
+
+		mm := &ldModelMeta{}
+		for _, mt := range t.Metrics {
+			if col, met, ok := simpleColumnMetric(mt); ok {
+				cols.metric(col, mt.Name, met)
+				continue
+			}
+			if met, ok := derivedModelMetric(mt, simple); ok {
+				if mm.Metrics == nil {
+					mm.Metrics = map[string]ldMetric{}
+				}
+				mm.Metrics[mt.Name] = met
+				continue
+			}
+			notes = append(notes, degradeNote(mt))
+		}
+
+		model := ldModel{Name: t.Name, Description: t.Description, Columns: cols.list()}
+		if !mm.empty() {
+			model.Meta = mm
+		}
+		f.Models = append(f.Models, model)
 	}
 
 	var buf bytes.Buffer
