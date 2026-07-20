@@ -1,0 +1,144 @@
+name: OKF upstream drift
+
+# Weekly check of whether the OKF reference implementation has moved away from
+# what semglot emits. Runs against upstream main, NOT the pinned commit, so it
+# is the only place a third party's changes can turn this repo red.
+#
+# It therefore never blocks a merge. Its deliverable is an issue saying "their
+# format moved, someone look." Acting on that issue means bumping
+# test/OKF_UPSTREAM_REF in a reviewed PR.
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC. Wide on purpose: drift is news, not an alarm.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Clone upstream main
+        id: upstream
+        run: |
+          git clone --filter=blob:none --quiet \
+            https://github.com/GoogleCloudPlatform/knowledge-catalog /tmp/kc
+          head="$(git -C /tmp/kc rev-parse HEAD)"
+          pinned="$(grep -v '^#' test/OKF_UPSTREAM_REF | tr -d '[:space:]')"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          if [ "$head" = "$pinned" ]; then
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream is still at the pinned commit."
+          else
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream moved: $pinned -> $head"
+          fi
+
+      # What changed in the format itself, as opposed to their agent or samples.
+      # This is the part a human needs to read.
+      - name: Summarize spec and parser changes
+        if: steps.upstream.outputs.moved == 'true'
+        id: diff
+        run: |
+          {
+            echo 'summary<<DIFF_EOF'
+            git -C /tmp/kc log --oneline --no-decorate \
+              "${{ steps.upstream.outputs.pinned }}..${{ steps.upstream.outputs.head }}" \
+              -- okf/SPEC.md okf/src/reference_agent/bundle/ | head -40
+            echo DIFF_EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install upstream main
+        run: |
+          python -m venv /tmp/okf-venv
+          /tmp/okf-venv/bin/pip install --quiet --upgrade pip
+          /tmp/okf-venv/bin/pip install --quiet -e /tmp/kc/okf
+
+      - name: Validate the golden bundle against upstream main
+        id: validate
+        continue-on-error: true
+        run: |
+          {
+            echo 'output<<VALIDATE_EOF'
+            /tmp/okf-venv/bin/python test/okf_contract_test.py test/models/ecommerce/dbt/okf 2>&1 | head -60
+            echo VALIDATE_EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open a drift issue
+        if: steps.validate.outcome == 'failure'
+        uses: actions/github-script@v7
+        env:
+          PINNED: ${{ steps.upstream.outputs.pinned }}
+          HEAD_SHA: ${{ steps.upstream.outputs.head }}
+          COMMITS: ${{ steps.diff.outputs.summary }}
+          VALIDATION: ${{ steps.validate.outputs.output }}
+        with:
+          script: |
+            const title = 'okf: emitted bundles no longer validate against upstream';
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'okf-drift',
+            });
+            const body = [
+              'The weekly drift check emitted a bundle that the OKF reference implementation rejects.',
+              '',
+              `**Pinned:** \`${process.env.PINNED}\` (test/OKF_UPSTREAM_REF)`,
+              `**Upstream main:** \`${process.env.HEAD_SHA}\``,
+              '',
+              '### Format commits since the pin',
+              '```',
+              process.env.COMMITS || '(none touching okf/SPEC.md or bundle/)',
+              '```',
+              '',
+              '### Validation output',
+              '```',
+              process.env.VALIDATION || '(no output)',
+              '```',
+              '',
+              'To resolve: reconcile `dialect/okf.go` with the change, bump',
+              '`test/OKF_UPSTREAM_REF`, regenerate the golden',
+              '(`UPDATE_GOLDEN=1 go test ./test/ -run TestOKFGolden`), and update',
+              'the notes in `dialect/README.md`.',
+            ].join('\n');
+
+            if (existing.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing[0].number,
+                body: `Still drifting as of \`${process.env.HEAD_SHA}\`.\n\n${body}`,
+              });
+              core.notice(`Commented on existing drift issue #${existing[0].number}`);
+              return;
+            }
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['okf-drift'],
+            });
+            core.notice(`Opened drift issue #${issue.number}`);
+
+      - name: Report
+        run: |
+          if [ "${{ steps.validate.outcome }}" = "failure" ]; then
+            echo "Bundle no longer validates against upstream main; issue opened."
+          elif [ "${{ steps.upstream.outputs.moved }}" = "true" ]; then
+            echo "Upstream moved but the bundle still validates. Bump test/OKF_UPSTREAM_REF when convenient."
+          else
+            echo "No drift."
+          fi

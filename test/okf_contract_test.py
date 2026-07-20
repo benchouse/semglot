@@ -4,17 +4,23 @@
 in Go so CI always has a check. This runs the real thing, so it catches the case
 where our reading of those rules drifts from upstream.
 
-It is not wired into CI (that would put a Python toolchain and a network fetch on
-every build). Run it by hand when touching the okf emitter, and when upstream
-changes:
+CI runs this two ways (see .github/workflows/):
 
-    git clone --depth 1 https://github.com/GoogleCloudPlatform/knowledge-catalog /tmp/kc
-    python3 -m venv /tmp/okf-venv
-    /tmp/okf-venv/bin/pip install -e '/tmp/kc/okf[dev]'
+    okf-contract.yml  on PRs touching okf, against the commit pinned in
+                      test/OKF_UPSTREAM_REF. Deterministic, so it blocks.
+    okf-upstream.yml  weekly, against upstream main. Opens an issue on failure
+                      and never blocks: a third party's commit must not turn an
+                      unrelated PR red.
+
+To run it by hand:
+
+    ref=$(grep -v '^#' test/OKF_UPSTREAM_REF | tr -d '[:space:]')
+    git clone --no-checkout https://github.com/GoogleCloudPlatform/knowledge-catalog /tmp/kc
+    git -C /tmp/kc checkout "$ref"        # or omit, to test against main
+    python3 -m venv /tmp/okf-venv         # needs Python >= 3.11
+    /tmp/okf-venv/bin/pip install -e /tmp/kc/okf
     UPDATE_GOLDEN=1 go test ./test/ -run TestOKFGolden   # refresh the bundle
     /tmp/okf-venv/bin/python test/okf_contract_test.py test/models/ecommerce/dbt/okf
-
-Verified against knowledge-catalog @ main, 2026-07-20.
 
 Two checks:
 

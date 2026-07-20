@@ -125,16 +125,29 @@ Three layers, in the order they catch things:
    (frontmatter parses, required keys non-empty, every link resolves). Runs in CI
    with no extra toolchain.
 2. `test/okf_contract_test.py` runs the *real* `OKFDocument.validate()` and
-   `regenerate_indexes()` over the golden bundle. Not in CI (it needs a Python
-   3.11+ venv and a clone of upstream); run it by hand when touching the emitter
-   or when upstream moves. Setup instructions are in the file's docstring.
+   `regenerate_indexes()` over the golden bundle. `.github/workflows/okf-contract.yml`
+   runs it on any PR touching okf, pinned to the commit in
+   `test/OKF_UPSTREAM_REF`. The pin is what makes it safe to block on: it cannot
+   break because upstream moved.
 3. `python -m reference_agent visualize --bundle <dir>` renders the bundle as the
    reference viewer draws it. The edge count is the useful signal: it is how many
-   of our links the viewer actually resolved.
+   of our links the viewer actually resolved. Manual.
 
-Last verified against `knowledge-catalog @ main` on 2026-07-20: all concepts
+**Drift.** `.github/workflows/okf-upstream.yml` runs the contract test weekly
+against upstream `main` rather than the pin. It never blocks a merge, because a
+third party's commit must not turn an unrelated semglot PR red. When their format
+moves and our bundles stop validating, it opens an issue labelled `okf-drift`
+listing the commits that touched `okf/SPEC.md` or `bundle/`. Acting on that issue
+means reconciling `dialect/okf.go`, bumping `test/OKF_UPSTREAM_REF`, and
+regenerating the golden, all in one reviewed PR.
+
+Last verified against `knowledge-catalog@d44368c` on 2026-07-20: all concepts
 validate, `regenerate_indexes` is a no-op, and the viewer renders 13 concepts
 with 24 edges.
+
+This pattern only works because OKF ships a reference implementation. The other
+target dialects were built against vendor docs with nothing executable to check
+them, so they carry the same drift exposure with no way to detect it.
 
 ## Adding or changing a mapping
 
