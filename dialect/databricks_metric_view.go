@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/benchouse/semglot/ir"
@@ -149,7 +150,14 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) error {
 
 func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string) dbxMetricView {
 	mv := dbxMetricView{Version: "1.1", Source: dbxQualify(catalog, schema, t.Name)}
-	var notes []string
+	// Seeded with m.Notes (cloned; Emit is read-only over m), the same
+	// passthrough annotations every sibling target (cortex, supersimple,
+	// snowflake-semantic-view, nao-yaml, nao-context-rules) folds into its
+	// emitted artifact. Every emitted view carries them, rather than picking
+	// one view per note by table-name mention: simpler, and correct for the
+	// project's context-fairness index, which counts a note as "carried" per
+	// target, not per table.
+	notes := slices.Clone(m.Notes)
 
 	// Joins: relationships where this table is the LEFT (referencing) side.
 	seenJoin := map[string]bool{}

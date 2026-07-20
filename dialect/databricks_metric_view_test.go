@@ -536,6 +536,29 @@ func assertMeasureExprsAreSafe(t *testing.T, file, content string) {
 	}
 }
 
+// TestDatabricksMetricViewModelNotesReachEveryView is Fix 3: buildView reads
+// only m.Relationships from the model, dropping m.Notes entirely. Every
+// sibling target (cortex via custom_instructions, supersimple, snowflake-
+// semantic-view, nao-yaml, nao-context-rules) folds m.Notes into its emitted
+// artifact, so a model-level note semglot could not transpile must reach
+// Genie the same way it reaches Cortex Analyst. Every emitted view carries
+// every model-level note (rather than one view per note by table-name
+// mention): simpler, and it means a note is never silently absent from the
+// one view a user happens to open.
+func TestDatabricksMetricViewModelNotesReachEveryView(t *testing.T) {
+	m := dbxTestModel()
+	m.Notes = []string{`measure "bogus" not found in the parsed semantic models`}
+	files := emitDbx(t, m)
+	if len(files) == 0 {
+		t.Fatal("expected at least one emitted view")
+	}
+	for name, content := range files {
+		if !strings.Contains(content, "bogus") {
+			t.Errorf("%s: model-level note must be folded into the view comment, got:\n%s", name, content)
+		}
+	}
+}
+
 func keysOfDbx(m map[string]string) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
