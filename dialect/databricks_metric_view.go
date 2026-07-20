@@ -218,7 +218,14 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			continue
 		}
 		usedNames[name] = true
-		usedExprs[expr] = true
+		// Deliberately NOT usedExprs[expr] = true here: the expression dedup
+		// exists only to suppress a raw measure that near-duplicates a METRIC
+		// (same expr, different name — e.g. orders_count beside an orders
+		// metric). Extending it to raw-vs-raw would silently drop a second,
+		// equally legitimate raw measure that happens to share an agg+column
+		// with another (e.g. revenue and net_revenue both sum(amount)), even
+		// though the two carry distinct names, labels, and descriptions. Raw-vs-
+		// raw is deduped by name only; raw-vs-metric by name or expression.
 		mv.Measures = append(mv.Measures, dbxMeasure{
 			Name:     name,
 			Expr:     expr,

@@ -59,13 +59,19 @@ func dbxTestModel() *ir.Model {
 	}
 	// obt_wide: measures but zero metrics. It must still get its own view, with
 	// measures rendered directly from the raw ir.Measure (aggExpr), since there
-	// is no metric to source them from.
+	// is no metric to source them from. gross_revenue and adjusted_revenue are a
+	// pure raw-vs-raw pair: same agg+expr (sum(amount)), different names, no
+	// metric involved — both must survive (Fix B: the metric-vs-raw expression
+	// dedup must never apply raw-vs-raw, or distinct measures silently collapse
+	// to one).
 	obtWide := ir.Table{
 		Name:       "obt_wide",
 		Dimensions: []ir.Field{{Name: "segment", Expr: "segment"}},
 		Measures: []ir.Measure{
 			{Field: ir.Field{Name: "units_sold", Expr: "quantity", Description: "Units sold", Synonyms: []string{"qty"}}, Agg: "sum"},
 			{Field: ir.Field{Name: "net_revenue", Expr: "net_revenue"}, Agg: "sum"},
+			{Field: ir.Field{Name: "gross_revenue", Expr: "amount"}, Agg: "sum"},
+			{Field: ir.Field{Name: "adjusted_revenue", Expr: "amount"}, Agg: "sum"},
 		},
 	}
 	// mixedCase: a table name carrying original dbt-YAML casing, reproducing the
@@ -295,6 +301,25 @@ func TestDatabricksMetricViewMeasureNoExprDefaultsToName(t *testing.T) {
 	}
 	if !strings.Contains(got, "expr: sum(order_total)") {
 		t.Errorf("expected expr: sum(order_total), got:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewRawVsRawNotDeduped is Fix B: the expression dedup
+// exists only to suppress a raw measure that near-duplicates a METRIC. It
+// must never apply raw-vs-raw — two distinct raw measures sharing an
+// agg+expr (gross_revenue and adjusted_revenue, both sum(amount), no metric
+// involved) must both survive; collapsing them silently drops a named fact
+// with its own label/description/synonyms.
+func TestDatabricksMetricViewRawVsRawNotDeduped(t *testing.T) {
+	got := emitDbx(t, dbxTestModel())["obt_wide.yaml"]
+	if !strings.Contains(got, "name: gross_revenue") {
+		t.Errorf("distinct raw measure gross_revenue must be emitted:\n%s", got)
+	}
+	if !strings.Contains(got, "name: adjusted_revenue") {
+		t.Errorf("distinct raw measure adjusted_revenue must be emitted (same expr as gross_revenue, different name):\n%s", got)
+	}
+	if n := strings.Count(got, "sum(amount)"); n != 2 {
+		t.Errorf("expected sum(amount) to appear twice (once per distinct measure), got %d:\n%s", n, got)
 	}
 }
 
