@@ -22,6 +22,10 @@ tables:
         expr: IS_REFUNDED
         data_type: BOOLEAN
         description: Whether the order was refunded.
+      - name: billing_customer_sk
+        expr: BILLING_CUSTOMER_SK
+        data_type: NUMBER
+        description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
       - name: channel_id
         expr: CHANNEL_ID
         data_type: NUMBER
@@ -222,7 +226,7 @@ tables:
         data_type: TEXT
         description: Channel display name.
 relationships:
-  - name: fct_orders_to_dim_customer
+  - name: fct_orders_to_dim_customer_customer_sk
     left_table: fct_orders
     right_table: dim_customer
     relationship_columns:
@@ -246,6 +250,12 @@ relationships:
     relationship_columns:
       - left_column: ORDER_ID
         right_column: ORDER_ID
+  - name: fct_orders_to_dim_customer_billing_customer_sk
+    left_table: fct_orders
+    right_table: dim_customer
+    relationship_columns:
+      - left_column: BILLING_CUSTOMER_SK
+        right_column: CUSTOMER_SK
   - name: fct_orders_to_dim_channel
     left_table: fct_orders
     right_table: dim_channel

@@ -15,16 +15,18 @@ create or replace semantic view ANALYTICS.MAIN.ECOMMERCE
 		DIM_CHANNEL as ANALYTICS.MAIN.DIM_CHANNEL primary key (CHANNEL_ID) comment='Sales channel dimension.'
 	)
 	relationships (
-		FCT_ORDERS_DIM_CUSTOMER as FCT_ORDERS(CUSTOMER_SK) references DIM_CUSTOMER(CUSTOMER_SK),
+		FCT_ORDERS_DIM_CUSTOMER_CUSTOMER_SK as FCT_ORDERS(CUSTOMER_SK) references DIM_CUSTOMER(CUSTOMER_SK),
 		FCT_ORDER_LINES_FCT_ORDERS as FCT_ORDER_LINES(ORDER_ID) references FCT_ORDERS(ORDER_ID),
 		FCT_ORDER_LINES_DIM_PRODUCT as FCT_ORDER_LINES(PRODUCT_ID) references DIM_PRODUCT(PRODUCT_ID),
 		OBT_SALES_FCT_ORDERS as OBT_SALES(ORDER_ID) references FCT_ORDERS(ORDER_ID),
+		FCT_ORDERS_DIM_CUSTOMER_BILLING_CUSTOMER_SK as FCT_ORDERS(BILLING_CUSTOMER_SK) references DIM_CUSTOMER(CUSTOMER_SK),
 		FCT_ORDERS_DIM_CHANNEL as FCT_ORDERS(CHANNEL_ID) references DIM_CHANNEL(CHANNEL_ID)
 	)
 	dimensions (
 		FCT_ORDERS.ORDER_ID as fct_orders.ORDER_ID comment='Order surrogate key.',
 		FCT_ORDERS.CUSTOMER_SK as fct_orders.CUSTOMER_SK comment='Customer the order belongs to.',
 		FCT_ORDERS.IS_REFUNDED as fct_orders.IS_REFUNDED comment='Whether the order was refunded.',
+		FCT_ORDERS.BILLING_CUSTOMER_SK as fct_orders.BILLING_CUSTOMER_SK comment='Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account''s billing contact).',
 		FCT_ORDERS.CHANNEL_ID as fct_orders.CHANNEL_ID comment='Sales channel the order came through.',
 		FCT_ORDERS.ORDER_DATE as fct_orders.ORDER_DATE comment='Date the order was placed.',
 		FCT_ORDER_LINES.ORDER_LINE_ID as fct_order_lines.ORDER_LINE_ID comment='Line-item surrogate key.',

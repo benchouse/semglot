@@ -166,8 +166,16 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		for i, cp := range r.Columns {
 			cols[i] = cortexRelCol{LeftColumn: strings.ToUpper(cp.Left), RightColumn: strings.ToUpper(cp.Right)}
 		}
+		name := r.Left + "_to_" + r.Right
+		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
+		// ship-to vs bill-to customer) would otherwise collide on this same name
+		// for every relationship in the pair; disambiguate all of them by their
+		// own left column(s) so each survives with a distinct, deterministic name.
+		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+			name += "_" + suffix
+		}
 		cm.Relationships = append(cm.Relationships, cortexRel{
-			Name: r.Left + "_to_" + r.Right, LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
+			Name: name, LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
 		})
 	}
 

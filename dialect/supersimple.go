@@ -191,8 +191,18 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			if model.Relations == nil {
 				model.Relations = map[string]ssRelation{}
 			}
-			model.Relations[slug(child)] = ssRelation{
-				Name: prettify(child), Type: "hasMany", ModelID: strings.ToUpper(child),
+			// Relations is a map keyed by relation slug, so a role-playing
+			// dimension (two FKs from the same child, e.g. ship-to and bill-to
+			// customer) would collide on slug(child) and silently lose one.
+			// Disambiguate by the child's own left column(s), as the other
+			// emitters do, leaving single-relationship keys unchanged.
+			key, label := slug(child), prettify(child)
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				key += "_" + slug(suffix)
+				label += " (" + prettify(suffix) + ")"
+			}
+			model.Relations[key] = ssRelation{
+				Name: label, Type: "hasMany", ModelID: strings.ToUpper(child),
 				JoinStrategy: ssJoinStrategy{JoinKey: join},
 			}
 		}

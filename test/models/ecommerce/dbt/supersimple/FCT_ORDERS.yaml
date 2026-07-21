@@ -11,6 +11,10 @@ models:
         name: AOV
         type: Float
         description: Precomputed average order value; superseded by the computed aov metric.
+      BILLING_CUSTOMER_SK:
+        name: BILLING_CUSTOMER_SK
+        type: Number
+        description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
       CHANNEL_ID:
         name: CHANNEL_ID
         type: Number

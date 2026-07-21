@@ -133,8 +133,17 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 			leftCols = append(leftCols, strings.ToUpper(cp.Left))
 			rightCols = append(rightCols, strings.ToUpper(cp.Right))
 		}
-		rels = append(rels, fmt.Sprintf("%s_%s as %s(%s) references %s(%s)",
-			strings.ToUpper(r.Left), strings.ToUpper(r.Right),
+		relName := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
+		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
+		// ship-to vs bill-to customer) would otherwise collide on this same name —
+		// Snowflake requires relationship names to be unique in a semantic view.
+		// Disambiguate all of the pair's relationships by their own left column(s)
+		// so each gets a distinct, deterministic name.
+		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+			relName += "_" + strings.ToUpper(suffix)
+		}
+		rels = append(rels, fmt.Sprintf("%s as %s(%s) references %s(%s)",
+			relName,
 			strings.ToUpper(r.Left), strings.Join(leftCols, ","),
 			strings.ToUpper(r.Right), strings.Join(rightCols, ",")))
 	}

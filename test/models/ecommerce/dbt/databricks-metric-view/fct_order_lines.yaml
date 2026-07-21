@@ -30,6 +30,9 @@ fields:
   - name: is_refunded
     expr: fct_orders.is_refunded
     comment: Whether the order was refunded.
+  - name: billing_customer_sk
+    expr: fct_orders.billing_customer_sk
+    comment: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
   - name: channel_id
     expr: fct_orders.channel_id
     comment: Sales channel the order came through.

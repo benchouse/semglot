@@ -17,6 +17,13 @@ models:
       - name: is_refunded
         description: Whether the order was refunded.
         data_type: boolean
+      - name: billing_customer_sk
+        description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_sk
       - name: channel_id
         description: Sales channel the order came through.
         data_type: number

@@ -78,6 +78,11 @@ type dbxJoin struct {
 	Name   string
 	Source string
 	On     string
+	// RightTable is the joined table's actual (lowercased) name in the model —
+	// distinct from Name once a role-playing FK (two+ relationships to the same
+	// Right table) has disambiguated Name. Used only internally, to look up the
+	// joined table's dimensions; never marshaled.
+	RightTable string
 }
 
 func (j dbxJoin) MarshalYAML() (any, error) {
@@ -158,25 +163,30 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// target, not per table.
 	notes := slices.Clone(m.Notes)
 
-	// Joins: relationships where this table is the LEFT (referencing) side.
-	seenJoin := map[string]bool{}
+	// Joins: relationships where this table is the LEFT (referencing) side. A
+	// (Left, Right) pair with more than one relationship is a role-playing
+	// dimension (e.g. ship-to vs bill-to customer) — every relationship in the
+	// pair is kept and disambiguated by its own left column(s), rather than
+	// dropping the second FK on a right-table-name collision. A pair with
+	// exactly one relationship keeps today's plain lowercased-right-table-name
+	// join, unchanged.
 	for _, r := range m.Relationships {
 		if !strings.EqualFold(r.Left, t.Name) || len(r.Columns) == 0 {
 			continue
 		}
 		joinName := strings.ToLower(r.Right)
-		if seenJoin[joinName] {
-			continue
+		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+			joinName += "_" + strings.ToLower(suffix)
 		}
-		seenJoin[joinName] = true
 		var conds []string
 		for _, cp := range r.Columns {
 			conds = append(conds, "source."+strings.ToLower(cp.Left)+" = "+joinName+"."+strings.ToLower(cp.Right))
 		}
 		mv.Joins = append(mv.Joins, dbxJoin{
-			Name:   joinName,
-			Source: dbxQualify(catalog, schema, r.Right),
-			On:     strings.Join(conds, " and "),
+			Name:       joinName,
+			Source:     dbxQualify(catalog, schema, r.Right),
+			On:         strings.Join(conds, " and "),
+			RightTable: strings.ToLower(r.Right),
 		})
 	}
 
@@ -311,7 +321,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		})
 	}
 	for _, j := range mv.Joins {
-		jt := tableByName[j.Name]
+		jt := tableByName[j.RightTable]
 		for _, f := range append(append([]ir.Field{}, jt.Dimensions...), jt.TimeDimensions...) {
 			// A joined field is prefixed with the join name (<join>.<expr>) to
 			// qualify it against the source alias. That's only well-formed when

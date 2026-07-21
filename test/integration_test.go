@@ -247,10 +247,15 @@ func TestEcommerceCortexStructure(t *testing.T) {
 		rels = append(rels, r.Name)
 	}
 	assertEqual(t, "relationships", rels, []string{
-		"fct_orders_to_dim_customer",
+		// fct_orders references dim_customer twice (a role-playing dimension:
+		// ship-to via customer_sk, bill-to via billing_customer_sk), so BOTH are
+		// kept and disambiguated by their left column. Pairs with a single
+		// relationship keep the plain <left>_to_<right> name.
+		"fct_orders_to_dim_customer_customer_sk",
 		"fct_order_lines_to_fct_orders",
 		"fct_order_lines_to_dim_product",
-		"obt_sales_to_fct_orders",   // measures-only OBT, foreign entity to fct_orders
+		"obt_sales_to_fct_orders", // measures-only OBT, foreign entity to fct_orders
+		"fct_orders_to_dim_customer_billing_customer_sk",
 		"fct_orders_to_dim_channel", // classic-only target, PK via unique+not_null, arguments: rel form
 	})
 
@@ -593,4 +598,79 @@ func TestDatabricksMetricViewGolden(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRolePlayingDimensionAllTargets pins the role-playing dimension shape
+// across every target that names relationships. fct_orders references
+// dim_customer twice (ship-to via customer_sk, bill-to via
+// billing_customer_sk), which is ordinary star-schema modelling. Each target
+// keyed its relationships by the related table alone, so the second FK was
+// either silently dropped (databricks-metric-view, supersimple) or emitted
+// with a duplicate name that the consumer rejects (cortex,
+// snowflake-semantic-view). Both FKs must survive, under distinct names.
+func TestRolePlayingDimensionAllTargets(t *testing.T) {
+	t.Run("cortex", func(t *testing.T) {
+		got := string(emit(t))
+		for _, want := range []string{
+			"name: fct_orders_to_dim_customer_customer_sk",
+			"name: fct_orders_to_dim_customer_billing_customer_sk",
+			"left_column: CUSTOMER_SK",
+			"left_column: BILLING_CUSTOMER_SK",
+			// A pair with a single relationship keeps its plain name.
+			"name: fct_orders_to_dim_channel",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("cortex missing %q", want)
+			}
+		}
+	})
+
+	t.Run("snowflake-semantic-view", func(t *testing.T) {
+		got := emitTarget(t, "snowflake-semantic-view", "definition.md")
+		for _, want := range []string{
+			"FCT_ORDERS_DIM_CUSTOMER_CUSTOMER_SK as FCT_ORDERS(CUSTOMER_SK) references DIM_CUSTOMER(CUSTOMER_SK)",
+			"FCT_ORDERS_DIM_CUSTOMER_BILLING_CUSTOMER_SK as FCT_ORDERS(BILLING_CUSTOMER_SK) references DIM_CUSTOMER(CUSTOMER_SK)",
+			"FCT_ORDERS_DIM_CHANNEL as FCT_ORDERS(CHANNEL_ID) references DIM_CHANNEL(CHANNEL_ID)",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("snowflake-semantic-view missing %q", want)
+			}
+		}
+	})
+
+	t.Run("databricks-metric-view", func(t *testing.T) {
+		got := emitDatabricks(t)["fct_orders.yaml"]
+		for _, want := range []string{
+			"name: dim_customer_customer_sk",
+			`"on": source.customer_sk = dim_customer_customer_sk.customer_sk`,
+			"name: dim_customer_billing_customer_sk",
+			`"on": source.billing_customer_sk = dim_customer_billing_customer_sk.customer_sk`,
+			"name: dim_channel",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("databricks fct_orders.yaml missing %q\n--- got ---\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("supersimple", func(t *testing.T) {
+		got := emitTarget(t, "supersimple", "DIM_CUSTOMER.yaml")
+		for _, want := range []string{"orders_customer_sk:", "orders_billing_customer_sk:"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("supersimple DIM_CUSTOMER.yaml missing %q\n--- got ---\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("nao-context-rules", func(t *testing.T) {
+		got := emitTarget(t, "nao-context-rules", "RULES.md")
+		for _, want := range []string{
+			"`fct_orders.customer_sk → dim_customer.customer_sk`",
+			"`fct_orders.billing_customer_sk → dim_customer.customer_sk`",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("nao-context-rules RULES.md missing %q", want)
+			}
+		}
+	})
 }

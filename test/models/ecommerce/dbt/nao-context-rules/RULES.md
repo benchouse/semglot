@@ -16,6 +16,7 @@
 - `fct_orders.order_id`: Order surrogate key.
 - `fct_orders.customer_sk`: Customer the order belongs to.
 - `fct_orders.is_refunded`: Whether the order was refunded.
+- `fct_orders.billing_customer_sk`: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
 - `fct_orders.channel_id`: Sales channel the order came through.
 - `fct_orders.aov`: Precomputed average order value; superseded by the computed aov metric.
 - `fct_orders.order_date`: Date the order was placed.
@@ -47,6 +48,7 @@
 - `fct_order_lines.order_id → fct_orders.order_id`
 - `fct_order_lines.product_id → dim_product.product_id`
 - `obt_sales.order_id → fct_orders.order_id`
+- `fct_orders.billing_customer_sk → dim_customer.customer_sk`
 - `fct_orders.channel_id → dim_channel.channel_id`
 
 ## Table reference
