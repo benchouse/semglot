@@ -28,7 +28,7 @@ func metricDefsByName(m *ir.Model) (map[string]ir.Expr, func(string) (ir.Expr, b
 func cortexMetricExprs(t *testing.T, m *ir.Model) map[string]map[string]string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := (cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "x"}).Emit(m, dir); err != nil {
+	if _, err := (cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "x"}).Emit(m, dir); err != nil {
 		t.Fatalf("cortex emit: %v", err)
 	}
 	var cm struct {
@@ -96,7 +96,7 @@ func TestDBTDerivedSupersimpleDegrades(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	notes := readFile(t, filepath.Join(dir, "NOTES.md"))
@@ -153,7 +153,7 @@ func TestDBTFilteredSupersimpleDegrades(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	notes := readFile(t, filepath.Join(dir, "NOTES.md"))
@@ -178,7 +178,7 @@ func roundTripDefs(t *testing.T, fixtureDir string) (src, rt map[string]ir.Expr)
 		t.Fatalf("parse source: %v", err)
 	}
 	out := t.TempDir()
-	if err := (dbt{}).Emit(m1, out); err != nil {
+	if _, err := (dbt{}).Emit(m1, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	m2, err := dbt{}.Parse(out)
@@ -238,7 +238,7 @@ func TestCumulativeConversionCortexDegrades(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	dir := t.TempDir()
-	if err := (cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "x"}).Emit(m, dir); err != nil {
+	if _, err := (cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "x"}).Emit(m, dir); err != nil {
 		t.Fatalf("cortex emit: %v", err)
 	}
 	out := readFile(t, filepath.Join(dir, "semantic_model.yaml"))
@@ -264,7 +264,7 @@ func TestCumulativeConversionSupersimpleDegrades(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	notes := readFile(t, filepath.Join(dir, "NOTES.md"))

@@ -87,7 +87,7 @@ func TestDBTRoundTrip(t *testing.T) {
 		t.Fatalf("dbt is not an Emitter: %v", err)
 	}
 	out := t.TempDir()
-	if err := e.Emit(m1, out); err != nil {
+	if _, err := e.Emit(m1, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	m2, err := p.Parse(out)
@@ -117,7 +117,7 @@ func TestDBTEmitGolden(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	out := t.TempDir()
-	if err := e.Emit(m, out); err != nil {
+	if _, err := e.Emit(m, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(out, "ecommerce.yml"))
@@ -161,7 +161,7 @@ func emit(t *testing.T) []byte {
 		t.Fatalf("parse: %v", err)
 	}
 	out := t.TempDir()
-	if err := e.Emit(m, out); err != nil {
+	if _, err := e.Emit(m, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(out, "semantic_model.yaml"))
@@ -426,7 +426,7 @@ func TestEcommerceSupersimpleGolden(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	out := t.TempDir()
-	if err := e.Emit(model, out); err != nil {
+	if _, err := e.Emit(model, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 
@@ -498,7 +498,7 @@ func emitDatabricks(t *testing.T) map[string]string {
 		t.Fatalf("parse: %v", err)
 	}
 	out := t.TempDir()
-	if err := e.Emit(m, out); err != nil {
+	if _, err := e.Emit(m, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	files := map[string]string{}
