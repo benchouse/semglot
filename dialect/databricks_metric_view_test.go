@@ -142,9 +142,18 @@ func dbxTestModel() *ir.Model {
 
 func emitDbx(t *testing.T, m *ir.Model) map[string]string {
 	t.Helper()
+	files, _ := emitDbxW(t, m)
+	return files
+}
+
+// emitDbxW is emitDbx plus the returned warnings, for tests that need to
+// assert on what the emitter reports rather than just what it writes.
+func emitDbxW(t *testing.T, m *ir.Model) (map[string]string, []string) {
+	t.Helper()
 	e := databricksMetricView{}.WithOptions(Options{Database: "ANALYTICS", Schema: "MAIN"})
 	dir := t.TempDir()
-	if err := e.Emit(m, dir); err != nil {
+	warnings, err := e.Emit(m, dir)
+	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	out := map[string]string{}
@@ -159,7 +168,7 @@ func emitDbx(t *testing.T, m *ir.Model) map[string]string {
 		}
 		out[ent.Name()] = string(b)
 	}
-	return out
+	return out, warnings
 }
 
 func TestDatabricksMetricViewOrders(t *testing.T) {
@@ -574,9 +583,9 @@ func keysOfDbx(m map[string]string) []string {
 // way ends up with no fields, and a metric view requires at least one
 // dimension, so no view can be formed and no file is written.
 //
-// The drop is currently silent: notes reach a view's `comment`, and here there
-// is no view to carry one. That is a deliberate, tested behaviour rather than
-// an accident, and this test is what makes it visible if it ever changes.
+// The drop used to be silent: notes reach a view's `comment`, and here there
+// is no view to carry one. It is now surfaced as an Emit warning instead —
+// this test pins both the missing file and the warning naming the table.
 func TestDatabricksMetricViewZeroFieldsSkipped(t *testing.T) {
 	// pings: its only dimension collides with its only measure, so the view
 	// cannot be formed. orders: an ordinary table, emitted as usual, proving
@@ -597,12 +606,22 @@ func TestDatabricksMetricViewZeroFieldsSkipped(t *testing.T) {
 			},
 		},
 	}}
-	files := emitDbx(t, m)
+	files, warnings := emitDbxW(t, m)
 	if _, ok := files["pings.yaml"]; ok {
 		t.Errorf("pings has no emittable dimension, so no valid metric view exists; got:\n%s", files["pings.yaml"])
 	}
 	if _, ok := files["orders.yaml"]; !ok {
 		t.Errorf("the skip must be scoped to the offending table; orders.yaml missing, got %v", keysOfDbx(files))
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "pings") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning naming the skipped table %q, got: %v", "pings", warnings)
 	}
 }
 
