@@ -129,8 +129,9 @@ type dbtEmitConversionParams struct {
 	Window            string `yaml:"window,omitempty"`
 }
 
-// Emit writes the IR as a single dbt YAML file, <dir>/ecommerce.yml.
-func (dbt) Emit(m *ir.Model, dir string) error {
+// Emit writes the IR as a single dbt YAML file, <dir>/ecommerce.yml. dbt
+// generates no degrade notes of its own; it always returns nil warnings.
+func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 	var f dbtEmitFile
 	for _, t := range m.Tables {
 		pk := stringSet(t.PrimaryKey)
@@ -145,15 +146,15 @@ func (dbt) Emit(m *ir.Model, dir string) error {
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(f); err != nil {
-		return err
+		return nil, err
 	}
 	if err := enc.Close(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(filepath.Join(dir, "ecommerce.yml"), buf.Bytes(), 0o644)
+	return nil, os.WriteFile(filepath.Join(dir, "ecommerce.yml"), buf.Bytes(), 0o644)
 }
 
 // emitModel builds the classic model-properties block: one column per field that

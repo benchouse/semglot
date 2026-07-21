@@ -105,8 +105,10 @@ type cortexRelCol struct {
 }
 
 // Emit does not mutate m; it reads m.Notes and accumulates its own degrade
-// notes locally before writing the combined text to custom_instructions.
-func (c cortex) Emit(m *ir.Model, dir string) error {
+// notes locally before writing the combined text to custom_instructions. The
+// returned warnings are cortex's own degrade notes plus cortexTypeGaps(m) —
+// never m.Notes, which the CLI already prints separately.
+func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 	name := c.ModelName
 	if name == "" {
 		name = "semantic_model"
@@ -190,19 +192,21 @@ func (c cortex) Emit(m *ir.Model, dir string) error {
 		cm.CustomInstructions = sb.String()
 	}
 
+	warnings := append(slices.Clone(degradeNotes), cortexTypeGaps(m)...)
+
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(cm); err != nil {
-		return err
+		return warnings, err
 	}
 	if err := enc.Close(); err != nil {
-		return err
+		return warnings, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return warnings, err
 	}
-	return os.WriteFile(filepath.Join(dir, "semantic_model.yaml"), buf.Bytes(), 0o644)
+	return warnings, os.WriteFile(filepath.Join(dir, "semantic_model.yaml"), buf.Bytes(), 0o644)
 }
 
 func upperAll(ss []string) []string {
@@ -258,14 +262,14 @@ func inferDataType(name string) string {
 	}
 }
 
-// CortexTypeGaps returns, in table/column order, the columns whose Cortex
+// cortexTypeGaps returns, in table/column order, the columns whose Cortex
 // data_type had to be inferred because the source model declared no data_type.
 // Cortex requires a data_type per column, so a wrong guess (classically a
 // numeric amount inferred as TEXT, which makes Cortex emit string-concatenating
 // SQL) silently corrupts answers. Each entry names the column and the type that
-// was inferred, so the source dbt model can be backfilled with real types. The
-// CLI prints these for the cortex target.
-func CortexTypeGaps(m *ir.Model) []string {
+// was inferred, so the source dbt model can be backfilled with real types.
+// Folded into Emit's returned warnings so the CLI surfaces them.
+func cortexTypeGaps(m *ir.Model) []string {
 	var gaps []string
 	add := func(table, col, inferred string, dt string) {
 		if strings.TrimSpace(dt) == "" {

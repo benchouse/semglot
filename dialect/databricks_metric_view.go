@@ -2,6 +2,7 @@ package dialect
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -106,7 +107,7 @@ func (j dbxJoin) MarshalYAML() (any, error) {
 	return n, nil
 }
 
-func (d databricksMetricView) Emit(m *ir.Model, dir string) error {
+func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
 	catalog := strings.ToLower(d.Database)
 	schema := strings.ToLower(d.Schema)
 	if schema == "" {
@@ -128,31 +129,43 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) error {
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
+	var warnings []string
 	for _, t := range m.Tables {
-		mv := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
+		mv, own := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
 		if len(mv.Fields) == 0 {
-			continue // no dimensions: cannot form a valid metric view
+			// no dimensions: cannot form a valid metric view. Every dimension was
+			// suppressed by colliding with a measure name (see the seen-seeding in
+			// buildView); a metric view requires at least one dimension, so the
+			// whole table is dropped rather than emitted invalid or dimension-less.
+			warnings = append(warnings, fmt.Sprintf(
+				"table %q skipped: all its dimensions collided with measure names, leaving none for a metric view (which requires at least one dimension)", t.Name))
+			continue
 		}
+		warnings = append(warnings, own...)
 		var buf bytes.Buffer
 		enc := yaml.NewEncoder(&buf)
 		enc.SetIndent(2)
 		if err := enc.Encode(mv); err != nil {
-			return err
+			return warnings, err
 		}
 		if err := enc.Close(); err != nil {
-			return err
+			return warnings, err
 		}
 		fname := strings.ToLower(t.Name) + ".yaml"
 		if err := os.WriteFile(filepath.Join(dir, fname), buf.Bytes(), 0o644); err != nil {
-			return err
+			return warnings, err
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
-func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string) dbxMetricView {
+// buildView returns the constructed view and this table's OWN degrade notes
+// (not m.Notes, which is folded into mv.Comment but never returned as a
+// warning — the CLI already prints m.Notes separately, and double-printing it
+// per emitted view would be wrong).
+func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string) (dbxMetricView, []string) {
 	mv := dbxMetricView{Version: "1.1", Source: dbxQualify(catalog, schema, t.Name)}
 	// Seeded with m.Notes (cloned; Emit is read-only over m), the same
 	// passthrough annotations every sibling target (cortex, supersimple,
@@ -162,6 +175,14 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// project's context-fairness index, which counts a note as "carried" per
 	// target, not per table.
 	notes := slices.Clone(m.Notes)
+	var own []string
+	// addNote records a degrade note both in the artifact's comment text
+	// (notes) and in this table's own returned warnings (own), keeping the two
+	// in lockstep without duplicating every call site.
+	addNote := func(n string) {
+		notes = append(notes, n)
+		own = append(own, n)
+	}
 
 	// Joins: relationships where this table is the LEFT (referencing) side. A
 	// (Left, Right) pair with more than one relationship is a role-playing
@@ -211,11 +232,11 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	usedNames := map[string]bool{}
 	for _, mt := range t.Metrics {
 		if reason, degrade := dbxDegrade(mt); degrade {
-			notes = append(notes, "metric "+mt.Name+": "+reason)
+			addNote("metric " + mt.Name + ": " + reason)
 			continue
 		}
 		if dbxCrossGrain(mt.Def, metricOwner, t.Name) {
-			notes = append(notes, "metric "+mt.Name+": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
+			addNote("metric " + mt.Name + ": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
 			continue
 		}
 		name := strings.ToLower(mt.Name)
@@ -225,7 +246,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		// duplicate name — the exact failure this dedup exists to prevent
 		// elsewhere (field/measure collisions). The first metric wins.
 		if usedNames[name] {
-			notes = append(notes, "metric "+mt.Name+": skipped, its name collides with another metric on this table (case-insensitive)")
+			addNote("metric " + mt.Name + ": skipped, its name collides with another metric on this table (case-insensitive)")
 			continue
 		}
 		expr := dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name)
@@ -234,7 +255,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		// aggExpr can render safely produces SQL Databricks rejects, taking the
 		// whole view down with it. Skip and note rather than emit it.
 		if !dbxValidMeasureExpr(expr) {
-			notes = append(notes, "metric "+mt.Name+": aggregation cannot be rendered as valid Databricks SQL ("+expr+"), skipped")
+			addNote("metric " + mt.Name + ": aggregation cannot be rendered as valid Databricks SQL (" + expr + "), skipped")
 			continue
 		}
 		usedNames[name] = true
@@ -264,7 +285,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		// dbxValidMeasureExpr's doc comment for why that must never reach the
 		// YAML.
 		if !dbxValidMeasureExpr(expr) {
-			notes = append(notes, "measure "+ms.Name+": aggregation "+ms.Agg+" cannot be rendered as valid Databricks SQL, skipped")
+			addNote("measure " + ms.Name + ": aggregation " + ms.Agg + " cannot be rendered as valid Databricks SQL, skipped")
 			continue
 		}
 		usedNames[name] = true
@@ -331,7 +352,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			// the entire view for it. Skip it and note it instead of guessing how to
 			// qualify a compound expression.
 			if !isIdent(f.Expr) {
-				notes = append(notes, "joined dimension "+j.Name+"."+f.Name+" (expr "+f.Expr+"): skipped, a compound expression cannot be safely qualified with the join name")
+				addNote("joined dimension " + j.Name + "." + f.Name + " (expr " + f.Expr + "): skipped, a compound expression cannot be safely qualified with the join name")
 				continue
 			}
 			name := strings.ToLower(f.Name)
@@ -360,7 +381,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		parts = append(parts, "Note: "+n)
 	}
 	mv.Comment = strings.Join(parts, " ")
-	return mv
+	return mv, own
 }
 
 // dbxStripSourceQualifier removes the source table's own name qualifier from a

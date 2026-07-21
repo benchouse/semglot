@@ -24,10 +24,15 @@ type Parser interface {
 	Parse(sources ...string) (*ir.Model, error)
 }
 
-// Emitter writes the neutral IR out as a dialect's files under dir.
+// Emitter writes the neutral IR out as a dialect's files under dir. warnings
+// are non-fatal: source constructs the target could not represent and had to
+// degrade or drop. They are returned rather than appended to ir.Model.Notes so
+// Emit stays read-only over the model, and returned rather than accumulated on
+// the emitter so it stays stateless, which matters because Register stores one
+// shared instance per dialect.
 type Emitter interface {
 	Dialect
-	Emit(m *ir.Model, dir string) error
+	Emit(m *ir.Model, dir string) (warnings []string, err error)
 }
 
 // Options carries the model/view identity a Configurable emitter needs.
