@@ -13,8 +13,8 @@ func (fakeParser) Parse(...string) (*ir.Model, error) { return &ir.Model{}, nil 
 
 type fakeEmitter struct{}
 
-func (fakeEmitter) Name() string                 { return "fake-emitter" }
-func (fakeEmitter) Emit(*ir.Model, string) error { return nil }
+func (fakeEmitter) Name() string                             { return "fake-emitter" }
+func (fakeEmitter) Emit(*ir.Model, string) ([]string, error) { return nil, nil }
 
 func TestRegistryCapabilities(t *testing.T) {
 	Register(fakeParser{})

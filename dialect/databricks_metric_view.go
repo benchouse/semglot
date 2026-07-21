@@ -1,0 +1,518 @@
+package dialect
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/benchouse/semglot/ir"
+	"gopkg.in/yaml.v3"
+)
+
+func init() { Register(databricksMetricView{}) }
+
+// databricksMetricView emits Unity Catalog metric views — the YAML semantic
+// layer Databricks AI/BI Genie grounds its answers on. It writes one
+// <table>.yaml per IR table, rooted at that table with direct joins to the
+// dimension tables it references — parity with sibling targets (cortex,
+// snowflake-semantic-view, supersimple), which all emit every table. Measures
+// come from the table's metrics first, then any raw ir.Measure not already
+// represented — by lowercased name or by rendered expression — so a table
+// with metrics still surfaces raw measures no metric covers, while a raw
+// measure that would just near-duplicate a metric (same expr, different name,
+// e.g. orders_count beside an orders metric) is suppressed. A table left with
+// zero measures either way (a pure dimension table, or one whose metrics all
+// degraded) gets a synthesised row-count measure, since a metric view
+// requires at least one. A table with zero dimensions is skipped entirely —
+// a metric view also requires at least one, and there is no way to
+// synthesise a meaningful one. Zero value is usable; the build command sets
+// identity from flags. Emit does not mutate m. Database is the Unity Catalog
+// catalog; Schema is the source-table schema.
+type databricksMetricView struct{ Database, Schema, ModelName, Description string }
+
+func (databricksMetricView) Name() string { return "databricks-metric-view" }
+
+func (databricksMetricView) WithOptions(o Options) Emitter {
+	return databricksMetricView{
+		Database:    o.Database,
+		Schema:      o.Schema,
+		ModelName:   o.Name,
+		Description: o.Description,
+	}
+}
+
+// ---- metric-view YAML shapes ----
+
+type dbxMetricView struct {
+	Version  string       `yaml:"version"`
+	Comment  string       `yaml:"comment,omitempty"`
+	Source   string       `yaml:"source"`
+	Joins    []dbxJoin    `yaml:"joins,omitempty"`
+	Fields   []dbxField   `yaml:"fields,omitempty"`
+	Measures []dbxMeasure `yaml:"measures,omitempty"`
+}
+
+type dbxField struct {
+	Name     string   `yaml:"name"`
+	Expr     string   `yaml:"expr"`
+	Comment  string   `yaml:"comment,omitempty"`
+	Synonyms []string `yaml:"synonyms,omitempty"`
+}
+
+type dbxMeasure struct {
+	Name        string   `yaml:"name"`
+	Expr        string   `yaml:"expr"`
+	Comment     string   `yaml:"comment,omitempty"`
+	DisplayName string   `yaml:"display_name,omitempty"`
+	Synonyms    []string `yaml:"synonyms,omitempty"`
+}
+
+// dbxJoin marshals with a QUOTED "on" key. Databricks parses metric-view YAML
+// as YAML 1.1, where a bare `on` key is the boolean true — which corrupts the
+// join. yaml.v3 (YAML 1.2, where `on` is a plain string) would emit it bare, so
+// build the mapping node explicitly and force the key's quote style.
+type dbxJoin struct {
+	Name   string
+	Source string
+	On     string
+	// RightTable is the joined table's actual (lowercased) name in the model —
+	// distinct from Name once a role-playing FK (two+ relationships to the same
+	// Right table) has disambiguated Name. Used only internally, to look up the
+	// joined table's dimensions; never marshaled.
+	RightTable string
+}
+
+func (j dbxJoin) MarshalYAML() (any, error) {
+	n := &yaml.Node{Kind: yaml.MappingNode}
+	pairs := []struct {
+		key, val string
+		style    yaml.Style
+	}{
+		{"name", j.Name, 0},
+		{"source", j.Source, 0},
+		{"on", j.On, yaml.DoubleQuotedStyle},
+	}
+	for _, p := range pairs {
+		kn := &yaml.Node{Kind: yaml.ScalarNode, Value: p.key, Style: p.style}
+		vn := &yaml.Node{}
+		if err := vn.Encode(p.val); err != nil {
+			return nil, err
+		}
+		n.Content = append(n.Content, kn, vn)
+	}
+	return n, nil
+}
+
+func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
+	catalog := strings.ToLower(d.Database)
+	schema := strings.ToLower(d.Schema)
+	if schema == "" {
+		schema = "main"
+	}
+	resolve := metricResolver(m)
+
+	// metricOwner maps each metric name to its owning table, so a derived metric
+	// that references a metric on ANOTHER table (cross-grain) is detected and
+	// degraded rather than inlined — inlining another grain's aggregate into this
+	// view (over a fan-out join) would miscount.
+	metricOwner := map[string]string{}
+	tableByName := map[string]ir.Table{}
+	for _, t := range m.Tables {
+		tableByName[strings.ToLower(t.Name)] = t
+		for _, mt := range t.Metrics {
+			metricOwner[mt.Name] = t.Name
+		}
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	var warnings []string
+	for _, t := range m.Tables {
+		mv, own := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
+		if len(mv.Fields) == 0 {
+			// no dimensions: cannot form a valid metric view. Every dimension was
+			// suppressed by colliding with a measure name (see the seen-seeding in
+			// buildView); a metric view requires at least one dimension, so the
+			// whole table is dropped rather than emitted invalid or dimension-less.
+			warnings = append(warnings, fmt.Sprintf(
+				"table %q skipped: all its dimensions collided with measure names, leaving none for a metric view (which requires at least one dimension)", t.Name))
+			continue
+		}
+		warnings = append(warnings, own...)
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(mv); err != nil {
+			return warnings, err
+		}
+		if err := enc.Close(); err != nil {
+			return warnings, err
+		}
+		fname := strings.ToLower(t.Name) + ".yaml"
+		if err := os.WriteFile(filepath.Join(dir, fname), buf.Bytes(), 0o644); err != nil {
+			return warnings, err
+		}
+	}
+	return warnings, nil
+}
+
+// buildView returns the constructed view and this table's OWN degrade notes
+// (not m.Notes, which is folded into mv.Comment but never returned as a
+// warning — the CLI already prints m.Notes separately, and double-printing it
+// per emitted view would be wrong).
+func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string) (dbxMetricView, []string) {
+	mv := dbxMetricView{Version: "1.1", Source: dbxQualify(catalog, schema, t.Name)}
+	// Seeded with m.Notes (cloned; Emit is read-only over m), the same
+	// passthrough annotations every sibling target (cortex, supersimple,
+	// snowflake-semantic-view, nao-yaml, nao-context-rules) folds into its
+	// emitted artifact. Every emitted view carries them, rather than picking
+	// one view per note by table-name mention: simpler, and correct for the
+	// project's context-fairness index, which counts a note as "carried" per
+	// target, not per table.
+	notes := slices.Clone(m.Notes)
+	var own []string
+	// addNote records a degrade note both in the artifact's comment text
+	// (notes) and in this table's own returned warnings (own), keeping the two
+	// in lockstep without duplicating every call site.
+	addNote := func(n string) {
+		notes = append(notes, n)
+		own = append(own, n)
+	}
+
+	// Joins: relationships where this table is the LEFT (referencing) side. A
+	// (Left, Right) pair with more than one relationship is a role-playing
+	// dimension (e.g. ship-to vs bill-to customer) — every relationship in the
+	// pair is kept and disambiguated by its own left column(s), rather than
+	// dropping the second FK on a right-table-name collision. A pair with
+	// exactly one relationship keeps today's plain lowercased-right-table-name
+	// join, unchanged.
+	for _, r := range m.Relationships {
+		if !strings.EqualFold(r.Left, t.Name) || len(r.Columns) == 0 {
+			continue
+		}
+		joinName := strings.ToLower(r.Right)
+		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+			joinName += "_" + strings.ToLower(suffix)
+		}
+		var conds []string
+		for _, cp := range r.Columns {
+			conds = append(conds, "source."+strings.ToLower(cp.Left)+" = "+joinName+"."+strings.ToLower(cp.Right))
+		}
+		mv.Joins = append(mv.Joins, dbxJoin{
+			Name:       joinName,
+			Source:     dbxQualify(catalog, schema, r.Right),
+			On:         strings.Join(conds, " and "),
+			RightTable: strings.ToLower(r.Right),
+		})
+	}
+
+	// Measures: metric-derived measures first (avoids emitting a near-duplicate
+	// raw measure alongside its owning metric, e.g. orders_count next to the
+	// orders metric — same expr, different name). Degrade window/conversion and
+	// cross-grain derived metrics to a note rather than emit SQL we cannot stand
+	// behind. Then append raw ir.Measures not already represented — by lowercased
+	// name OR by rendered expression — so a table with >=1 metric still surfaces
+	// measures no metric covers (e.g. a fact with one metric and a second raw
+	// measure the model never turned into a metric), instead of silently
+	// dropping every raw measure just because the table also has metrics.
+	//
+	// Built before fields (see the `seen` seeding below): Databricks requires
+	// measure and dimension names to be unique across a metric view, and rejects
+	// the view outright if they collide (METRIC_VIEW_INVALID_VIEW_DEFINITION:
+	// "Measure and dimension names must be unique") — e.g. a source table with
+	// both a precomputed `roas` column and a computed `roas` metric
+	// (sum(attributed_revenue)/sum(spend)). Mirrors the identical fix in
+	// snowflake-semantic-view (see its buildView), which resolves the same
+	// collision by treating the computed metric as canonical.
+	usedNames := map[string]bool{}
+	for _, mt := range t.Metrics {
+		if reason, degrade := dbxDegrade(mt); degrade {
+			addNote("metric " + mt.Name + ": " + reason)
+			continue
+		}
+		if dbxCrossGrain(mt.Def, metricOwner, t.Name) {
+			addNote("metric " + mt.Name + ": references a measure on another table (cross-grain), not expressible as a single-grain metric-view measure")
+			continue
+		}
+		name := strings.ToLower(mt.Name)
+		// Checked/populated HERE, inside the loop, not after it: two metrics on
+		// the same table whose lowercased names collide (e.g. AOV and aov) would
+		// otherwise both emit, and Databricks rejects the entire view for a
+		// duplicate name — the exact failure this dedup exists to prevent
+		// elsewhere (field/measure collisions). The first metric wins.
+		if usedNames[name] {
+			addNote("metric " + mt.Name + ": skipped, its name collides with another metric on this table (case-insensitive)")
+			continue
+		}
+		expr := dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name)
+		// A simple metric renders through aggExpr exactly like a raw measure
+		// (see dbxValidMeasureExpr's doc comment): an agg outside the set
+		// aggExpr can render safely produces SQL Databricks rejects, taking the
+		// whole view down with it. Skip and note rather than emit it.
+		if !dbxValidMeasureExpr(expr) {
+			addNote("metric " + mt.Name + ": aggregation cannot be rendered as valid Databricks SQL (" + expr + "), skipped")
+			continue
+		}
+		usedNames[name] = true
+		mv.Measures = append(mv.Measures, dbxMeasure{
+			Name: name, Expr: expr,
+			Comment: mt.Description, DisplayName: mt.Label, Synonyms: dbxCapSyn(mt.Synonyms),
+		})
+	}
+	usedExprs := map[string]bool{}
+	for _, ms := range mv.Measures {
+		// Compared lowercased: renderSQL preserves the source column's original
+		// case (e.g. "count(distinct ORDER_ID)" for an uppercase dbt column),
+		// while the raw side below always lowercases its column via aggExpr. A
+		// case-sensitive comparison would let a near-duplicate through purely
+		// because of casing. This normalises the LOOKUP key only — the expr
+		// actually emitted to YAML (ms.Expr) keeps its original case.
+		usedExprs[strings.ToLower(ms.Expr)] = true
+	}
+	for _, ms := range t.Measures {
+		name := strings.ToLower(ms.Name)
+		expr := aggExpr(ms.Agg, strings.ToLower(ms.Expr))
+		if usedNames[name] || usedExprs[strings.ToLower(expr)] {
+			continue
+		}
+		// A raw measure whose Agg is empty, unknown to aggExpr, or missing an
+		// argument (no Expr) renders SQL Databricks rejects. See
+		// dbxValidMeasureExpr's doc comment for why that must never reach the
+		// YAML.
+		if !dbxValidMeasureExpr(expr) {
+			addNote("measure " + ms.Name + ": aggregation " + ms.Agg + " cannot be rendered as valid Databricks SQL, skipped")
+			continue
+		}
+		usedNames[name] = true
+		// Deliberately NOT usedExprs[expr] = true here: the expression dedup
+		// exists only to suppress a raw measure that near-duplicates a METRIC
+		// (same expr, different name — e.g. orders_count beside an orders
+		// metric). Extending it to raw-vs-raw would silently drop a second,
+		// equally legitimate raw measure that happens to share an agg+column
+		// with another (e.g. revenue and net_revenue both sum(amount)), even
+		// though the two carry distinct names, labels, and descriptions. Raw-vs-
+		// raw is deduped by name only; raw-vs-metric by name or expression.
+		mv.Measures = append(mv.Measures, dbxMeasure{
+			Name:     name,
+			Expr:     expr,
+			Comment:  ms.Description,
+			Synonyms: dbxCapSyn(ms.Synonyms),
+		})
+	}
+
+	// A metric view must declare at least one measure. A table whose source
+	// declares none (a pure dimension table), or whose metrics all degraded,
+	// still carries useful dimensions, so give it a row count. count(1) asserts
+	// no business semantics — synthesising SUM/AVG over a column would invent
+	// meaning the source never declared. Run before the fields loop below so
+	// row_count is also protected by the seen-seeding, in the unlikely case a
+	// dimension is itself named row_count.
+	if len(mv.Measures) == 0 {
+		mv.Measures = append(mv.Measures, dbxMeasure{
+			Name:    "row_count",
+			Expr:    "count(1)",
+			Comment: "Row count. Synthesised: the source declares no measures for this table.",
+		})
+	}
+
+	// Fields: own dimensions (bare expr), then joined tables' dimensions
+	// (prefixed expr). Names must be unique within a view; seed `seen` with the
+	// measure names already emitted above so a dimension colliding with a
+	// measure is dropped (the computed measure wins — see the comment on the
+	// measures block). A joined field whose bare name collides is prefixed with
+	// the join name, mirroring the snowflake-semantic-view dedup.
+	seen := map[string]bool{}
+	for _, ms := range mv.Measures {
+		seen[strings.ToLower(ms.Name)] = true
+	}
+	for _, f := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
+		name := strings.ToLower(f.Name)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		mv.Fields = append(mv.Fields, dbxField{
+			Name: name, Expr: strings.ToLower(f.Expr),
+			Comment: dbxFieldComment(f), Synonyms: dbxCapSyn(f.Synonyms),
+		})
+	}
+	for _, j := range mv.Joins {
+		jt := tableByName[j.RightTable]
+		for _, f := range append(append([]ir.Field{}, jt.Dimensions...), jt.TimeDimensions...) {
+			// A joined field is prefixed with the join name (<join>.<expr>) to
+			// qualify it against the source alias. That's only well-formed when
+			// Expr is a bare column — a compound expression (e.g. coalesce(region,
+			// 'unknown'), date_trunc('month', ordered_at)) would become invalid SQL
+			// like "dim_customer.coalesce(region, 'unknown')" and Databricks rejects
+			// the entire view for it. Skip it and note it instead of guessing how to
+			// qualify a compound expression.
+			if !isIdent(f.Expr) {
+				addNote("joined dimension " + j.Name + "." + f.Name + " (expr " + f.Expr + "): skipped, a compound expression cannot be safely qualified with the join name")
+				continue
+			}
+			name := strings.ToLower(f.Name)
+			if seen[name] {
+				name = j.Name + "_" + name
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			mv.Fields = append(mv.Fields, dbxField{
+				Name: name, Expr: j.Name + "." + strings.ToLower(f.Expr),
+				Comment: dbxFieldComment(f), Synonyms: dbxCapSyn(f.Synonyms),
+			})
+		}
+	}
+
+	var parts []string
+	if t.Description != "" {
+		parts = append(parts, t.Description)
+	}
+	if d.Description != "" {
+		parts = append(parts, d.Description)
+	}
+	for _, n := range notes {
+		parts = append(parts, "Note: "+n)
+	}
+	mv.Comment = strings.Join(parts, " ")
+	return mv, own
+}
+
+// dbxStripSourceQualifier removes the source table's own name qualifier from a
+// rendered measure expression. renderSQL qualifies a metric's columns with its
+// owning table exactly as the IR carries it (e.g. "sum(FCT_Orders.order_gross)"
+// when the dbt YAML named the semantic model FCT_Orders), but in a metric view
+// the source relation is the alias `source`, not its physical name — source
+// columns are referenced bare, matching how fields are emitted. Cross-grain
+// metrics (which reference another table) are degraded before rendering, so
+// only the source qualifier can appear in a measure expr here.
+//
+// The match is case-insensitive because renderSQL preserves the table's
+// original case while callers here (buildView) pass table names that may
+// differ only in case from what's embedded in the expr — matching case-
+// sensitively would silently leave the qualifier in place for any
+// mixed-/upper-case semantic-model name, which Databricks then cannot resolve
+// (the source relation is aliased `source`), rejecting the entire view. The
+// leading word boundary avoids stripping a partial match inside a longer
+// identifier (e.g. "my_fct_orders."); it does not protect a string literal
+// containing "<table>." verbatim — a known, accepted, deferred weakness that
+// would need a full SQL tokeniser to close, out of scope here.
+func dbxStripSourceQualifier(expr, table string) string {
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\.`)
+	return re.ReplaceAllString(expr, "")
+}
+
+// dbxQualify builds a Unity Catalog table reference, three-part when a catalog
+// is set, else two-part (keeps zero-value output well-formed).
+func dbxQualify(catalog, schema, table string) string {
+	t := strings.ToLower(table)
+	if catalog == "" {
+		return schema + "." + t
+	}
+	return catalog + "." + schema + "." + t
+}
+
+// dbxFieldComment folds a field's enum into its description, since a metric-view
+// field has no per-value enum slot.
+func dbxFieldComment(f ir.Field) string { return appendClause(f.Description, enumClause(f.Enum)) }
+
+// dbxCapSyn caps synonyms at the metric-view limit of 10 per field/measure.
+func dbxCapSyn(syn []string) []string {
+	if len(syn) > 10 {
+		return syn[:10]
+	}
+	return syn
+}
+
+// dbxKnownAggs are the aggregate function names aggExpr renders explicitly:
+// sum, count/count_distinct, avg/average, min, max, median, sum_boolean.
+// count_distinct and sum_boolean both lower to a call whose own function name
+// is "count"/"sum" respectively, so they need no separate entry here. Any
+// other agg falls through aggExpr's default passthrough, which other targets
+// rely on but which dbxValidMeasureExpr below must reject.
+var dbxKnownAggs = map[string]bool{
+	"sum": true, "count": true, "avg": true, "min": true, "max": true, "median": true,
+}
+
+// dbxValidMeasureExpr is the single choke point every rendered measure
+// expression (metric-derived, via renderSQL, and raw, via aggExpr) passes
+// through before being written to a view's `measures`. It reports whether
+// expr is composed only of known-safe aggregate calls (dbxKnownAggs) with a
+// non-empty argument, joined by arithmetic, literals and parens: the shape a
+// simple or same-grain-derived metric-view measure can legally take.
+//
+// This exists because Databricks rejects the ENTIRE metric view when a
+// single measure's expr is not valid SQL, not just that measure (verified
+// live: one measure with an unsupported agg like percentile, an agg with no
+// Databricks equivalent, or an aggregate call with no argument, e.g. sum()
+// from a measure with no expr, loses every other measure, dimension and join
+// of that view). An aggregation that cannot be rendered safely must
+// therefore never reach the YAML; it is skipped and noted instead.
+func dbxValidMeasureExpr(expr string) bool {
+	toks := sqlTokens(expr)
+	calls := 0
+	for i := 0; i+1 < len(toks); i++ {
+		if toks[i].typ != sqlIdent || toks[i+1].val != "(" {
+			continue // not a function call: a bare identifier, keyword, or operand
+		}
+		if !dbxKnownAggs[strings.ToLower(toks[i].val)] {
+			return false // unsupported aggregate (e.g. percentile, sum_boolean's old passthrough)
+		}
+		if i+2 >= len(toks) || toks[i+2].val == ")" {
+			return false // empty argument list, e.g. sum() from a measure with no expr
+		}
+		calls++
+	}
+	return calls > 0 // must contain at least one known aggregate call
+}
+
+// dbxDegrade reports metric kinds with no validated metric-view primitive
+// (cumulative/conversion), matching the cortex/snowflake-semantic-view posture.
+func dbxDegrade(mt ir.Metric) (string, bool) {
+	switch mt.Def.(type) {
+	case ir.Window:
+		return "cumulative/windowed metric, no validated metric-view primitive (provisional)", true
+	case ir.Conversion:
+		return "conversion/funnel metric, no metric-view primitive (provisional)", true
+	}
+	return "", false
+}
+
+// dbxCrossGrain reports whether def references (directly or nested) a metric
+// owned by a table other than self — i.e. a cross-grain derived metric that a
+// single-source metric view cannot express without fan-out.
+func dbxCrossGrain(def ir.Expr, owner map[string]string, self string) bool {
+	found := false
+	var walk func(ir.Expr)
+	walk = func(e ir.Expr) {
+		switch n := e.(type) {
+		case ir.Ref:
+			if o, ok := owner[n.Metric]; ok && !strings.EqualFold(o, self) {
+				found = true
+			}
+		case ir.Binary:
+			walk(n.Left)
+			walk(n.Right)
+		case ir.Agg:
+			if n.Arg != nil {
+				walk(n.Arg)
+			}
+			if n.Filter != nil {
+				walk(n.Filter)
+			}
+		case ir.Window:
+			walk(n.Base)
+		case ir.Conversion:
+			walk(n.Base)
+			walk(n.Conv)
+		}
+	}
+	walk(def)
+	return found
+}

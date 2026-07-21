@@ -122,7 +122,7 @@ type ssRelationRef struct {
 
 // Emit does not mutate m; it reads m.Notes and accumulates its own degrade
 // notes locally before writing the combined text to NOTES.md.
-func (s supersimple) Emit(m *ir.Model, dir string) error {
+func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 	schema := s.Schema
 	if schema == "" {
 		schema = "MAIN"
@@ -133,7 +133,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 		relsByParent[r.Right] = append(relsByParent[r.Right], r)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 
 	type tableState struct {
@@ -191,8 +191,18 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			if model.Relations == nil {
 				model.Relations = map[string]ssRelation{}
 			}
-			model.Relations[slug(child)] = ssRelation{
-				Name: prettify(child), Type: "hasMany", ModelID: strings.ToUpper(child),
+			// Relations is a map keyed by relation slug, so a role-playing
+			// dimension (two FKs from the same child, e.g. ship-to and bill-to
+			// customer) would collide on slug(child) and silently lose one.
+			// Disambiguate by the child's own left column(s), as the other
+			// emitters do, leaving single-relationship keys unchanged.
+			key, label := slug(child), prettify(child)
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				key += "_" + slug(suffix)
+				label += " (" + prettify(suffix) + ")"
+			}
+			model.Relations[key] = ssRelation{
+				Name: label, Type: "hasMany", ModelID: strings.ToUpper(child),
 				JoinStrategy: ssJoinStrategy{JoinKey: join},
 			}
 		}
@@ -302,13 +312,13 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 		enc := yaml.NewEncoder(&buf)
 		enc.SetIndent(2)
 		if err := enc.Encode(file); err != nil {
-			return err
+			return degradeNotes, err
 		}
 		if err := enc.Close(); err != nil {
-			return err
+			return degradeNotes, err
 		}
 		if err := os.WriteFile(filepath.Join(dir, st.id+".yaml"), buf.Bytes(), 0o644); err != nil {
-			return err
+			return degradeNotes, err
 		}
 	}
 	allNotes := append(slices.Clone(m.Notes), degradeNotes...)
@@ -319,10 +329,10 @@ func (s supersimple) Emit(m *ir.Model, dir string) error {
 			sb.WriteString("- " + n + "\n")
 		}
 		if err := os.WriteFile(filepath.Join(dir, "NOTES.md"), []byte(sb.String()), 0o644); err != nil {
-			return err
+			return degradeNotes, err
 		}
 	}
-	return nil
+	return degradeNotes, nil
 }
 
 // prettify turns a model name into a display label: strip fct_/dim_/obt_/stg_

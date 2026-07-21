@@ -79,7 +79,8 @@ func buildCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "build: parse:", err)
 		return 1
 	}
-	if err := emitter.Emit(model, spec.Output); err != nil {
+	warnings, err := emitter.Emit(model, spec.Output)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "build: emit:", err)
 		return 1
 	}
@@ -89,12 +90,10 @@ func buildCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "  - "+n)
 		}
 	}
-	if spec.TargetDialect == "cortex" {
-		if gaps := dialect.CortexTypeGaps(model); len(gaps) > 0 {
-			fmt.Fprintf(os.Stderr, "warning: %d Cortex column(s) had no source data_type; inferred a type (add data_type in dbt to fix):\n", len(gaps))
-			for _, g := range gaps {
-				fmt.Fprintln(os.Stderr, "  - "+g)
-			}
+	if len(warnings) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %d item(s) degraded or dropped by the %s target:\n", len(warnings), spec.TargetDialect)
+		for _, w := range warnings {
+			fmt.Fprintln(os.Stderr, "  - "+w)
 		}
 	}
 	fmt.Printf("wrote to %s (%s -> %s)\n", spec.Output, spec.SourceDialect, spec.TargetDialect)

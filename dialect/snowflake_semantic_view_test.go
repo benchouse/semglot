@@ -17,7 +17,7 @@ func emitSV(t *testing.T, e Emitter) string {
 		PrimaryKey: []string{"order_id"},
 		Dimensions: []ir.Field{{Name: "order_date", Expr: "order_date"}},
 	}}}
-	if err := e.Emit(m, dir); err != nil {
+	if _, err := e.Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
@@ -83,7 +83,7 @@ func TestSVEmitsSynonyms(t *testing.T) {
 		}},
 	}}}
 	e := snowflakeSemanticView{}.WithOptions(Options{Database: "DB", Schema: "MAIN", Name: "SV"})
-	if err := e.Emit(m, dir); err != nil {
+	if _, err := e.Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
@@ -119,7 +119,7 @@ func TestSVDedupsDimensionMetricNameCollision(t *testing.T) {
 		},
 	}}}
 	e := snowflakeSemanticView{}.WithOptions(Options{Database: "EVAL_MARTS", Schema: "MAIN", ViewSchema: "SEM", Name: "SV"})
-	if err := e.Emit(m, dir); err != nil {
+	if _, err := e.Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "definition.md"))

@@ -138,6 +138,32 @@ func TestDBTParseTimeDimEntityDedup(t *testing.T) {
 	}
 }
 
+// MetricFlow's `expr:` on a measure is optional and defaults to the measure
+// name — exactly like the entity and dimension loops just above it in
+// dbt.go. A measure with no expr must not produce an empty column reference
+// (that renders downstream as sum(), which every warehouse rejects).
+func TestDBTParseMeasureNoExprDefaultsToName(t *testing.T) {
+	got, err := dbt{}.Parse("testdata/dbt_measure_no_expr")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got.Tables) != 1 {
+		t.Fatalf("want 1 table, got %d", len(got.Tables))
+	}
+	var found bool
+	for _, m := range got.Tables[0].Measures {
+		if m.Name == "order_total" {
+			found = true
+			if m.Expr != "order_total" {
+				t.Errorf("order_total.Expr = %q, want %q (default to measure name)", m.Expr, "order_total")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("measure order_total not found in parsed table")
+	}
+}
+
 // A column's enum is the superset of its accepted_values list and its meta.enum
 // map: accepted_values order first, meta-only values appended, descriptions from
 // meta.enum. meta.synonyms is carried onto the field too.
@@ -348,6 +374,25 @@ func TestQualifyExpr(t *testing.T) {
 	got := qualifyExpr("fct_orders", cols, "case when status = 'status' then coalesce(x, 0) else 0 end")
 	if want := "case when fct_orders.status = 'status' then coalesce(x, 0) else 0 end"; got != want {
 		t.Fatalf("mixed: got %q, want %q", got, want)
+	}
+}
+
+// TestAggExprSumBooleanAndMedian: sum_boolean is MetricFlow's "sum a boolean
+// as 1/0" idiom, not a Databricks/Snowflake builtin, so it must lower to an
+// explicit CASE rather than fall through to the default passthrough
+// (sum_boolean(col), which no target SQL dialect defines). median is already
+// documented in ir.Agg's Func list and is valid SQL on both targets, so it
+// gets its own case rather than accidentally working via the same passthrough.
+func TestAggExprSumBooleanAndMedian(t *testing.T) {
+	cases := []struct{ agg, col, want string }{
+		{"sum", "amount", "sum(amount)"},
+		{"sum_boolean", "is_refunded", "sum(case when is_refunded then 1 else 0 end)"},
+		{"median", "order_total", "median(order_total)"},
+	}
+	for _, c := range cases {
+		if got := aggExpr(c.agg, c.col); got != c.want {
+			t.Errorf("aggExpr(%q, %q) = %q, want %q", c.agg, c.col, got, c.want)
+		}
 	}
 }
 

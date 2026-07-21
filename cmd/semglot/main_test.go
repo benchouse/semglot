@@ -46,6 +46,58 @@ func TestBuildCmdEndToEnd(t *testing.T) {
 	}
 }
 
+// TestBuildCmdSurfacesEmitterWarnings proves the CLI prints an emitter's
+// returned warnings (not just model.Notes): the shared dbt fixture declares no
+// data_type anywhere, so the cortex target must infer one for every column,
+// and cortex.Emit returns those as warnings (dialect/cortex.go's
+// cortexTypeGaps). This is what replaced the old hardcoded
+// `if spec.TargetDialect == "cortex" { ... CortexTypeGaps ... }` branch.
+func TestBuildCmdSurfacesEmitterWarnings(t *testing.T) {
+	out := t.TempDir()
+	src, err := filepath.Abs("../../dialect/testdata/dbt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(t.TempDir(), "semglot.yaml")
+	body := fmt.Sprintf(`profiles:
+  ecom:
+    source: %s
+    target-dialect: cortex
+    output: %s
+    database: ANALYTICS
+    schema: MAIN
+    model-name: eval_marts
+`, src, out)
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	code := buildCmd([]string{"--profile", "ecom", "--config", cfg})
+	w.Close()
+	os.Stderr = origStderr
+	stderr, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code != 0 {
+		t.Fatalf("buildCmd exit code = %d, want 0\nstderr:\n%s", code, stderr)
+	}
+	got := string(stderr)
+	if !strings.Contains(got, "degraded or dropped by the cortex target") {
+		t.Fatalf("stderr = %q, want a warning block naming the cortex target", got)
+	}
+	if !strings.Contains(got, "inferred") {
+		t.Fatalf("stderr = %q, want a type-gap warning (column had no source data_type, a type was inferred)", got)
+	}
+}
+
 func TestBuildCmdMissingProfile(t *testing.T) {
 	if code := buildCmd([]string{}); code != 2 {
 		t.Fatalf("missing --profile should exit 2, got %d", code)

@@ -14,6 +14,13 @@ models:
           - relationships:
               to: ref('dim_customer')
               field: customer_sk
+      - name: billing_customer_sk
+        description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_sk
       - name: is_refunded
         description: Whether the order was refunded.
         data_type: boolean
@@ -35,6 +42,9 @@ models:
               arguments:
                 to: ref('dim_channel')
                 field: channel_id
+      - name: aov
+        description: Precomputed average order value; superseded by the computed aov metric.
+        data_type: double
 
   - name: fct_order_lines
     description: Order-line grain. One row per line item.
@@ -108,6 +118,40 @@ models:
       - name: title
         description: Product title.
         data_type: varchar
+
+  # obt_sales: wide order-line OBT with measures but no metric referencing them
+  # (measures-only table, no metrics.yml entry). Exercises databricks-metric-view
+  # emitting raw measures from ir.Measure when a table has no metrics.
+  - name: obt_sales
+    description: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+    columns:
+      - name: order_line_id
+        description: Line-item surrogate key.
+        data_type: number
+        constraints:
+          - type: primary_key
+      - name: order_id
+        description: Order the line belongs to.
+        data_type: number
+        data_tests:
+          - relationships:
+              to: ref('fct_orders')
+              field: order_id
+      - name: order_date
+        description: Date the order was placed.
+        data_type: date
+      - name: customer_segment
+        description: Marketing segment.
+        data_type: varchar
+      - name: is_refunded
+        description: Whether the order line was refunded.
+        data_type: boolean
+      - name: quantity
+        description: Units sold on the line.
+        data_type: number
+      - name: net_revenue
+        description: Net revenue for the line.
+        data_type: number
 
   # A classic models:-only mart (no semantic_model): exercises a table whose PK
   # is declared the dbt-idiomatic way (unique + not_null), not a constraint.

@@ -1,0 +1,15 @@
+semantic_models:
+  - name: fct_orders
+    model: ref('fct_orders')
+    entities:
+      - {name: order, type: primary, expr: order_id}
+    dimensions:
+      - {name: status, type: categorical}
+    measures:
+      - {name: order_total, agg: sum}
+
+metrics:
+  - name: total_orders
+    type: simple
+    type_params:
+      measure: order_total

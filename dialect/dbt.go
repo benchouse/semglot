@@ -392,7 +392,11 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 			}
 		}
 		for _, m := range sm.Measures {
-			f := field(m.Name, m.Expr)
+			col := m.Expr
+			if col == "" {
+				col = m.Name
+			}
+			f := field(m.Name, col)
 			// A count aggregates cardinality, not the column's value, so the
 			// underlying column's description would mislabel the fact — drop it.
 			if a := strings.ToLower(m.Agg); a == "count" || a == "count_distinct" {
@@ -401,7 +405,7 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 			t.Measures = append(t.Measures, ir.Measure{Field: f, Agg: m.Agg})
 			measureTable[m.Name] = name
 			measureAgg[m.Name] = m.Agg
-			measureCol[m.Name] = m.Expr
+			measureCol[m.Name] = col
 		}
 		// Columns documented in models: but not surfaced by the semantic layer
 		// become plain dimensions (this is the whole model for models:-only projects).
@@ -865,6 +869,14 @@ func aggExpr(agg, col string) string {
 		return "min(" + col + ")"
 	case "max":
 		return "max(" + col + ")"
+	case "median":
+		return "median(" + col + ")"
+	case "sum_boolean":
+		// MetricFlow's semantics: sum a boolean column as 1/0. Not a Databricks/
+		// Snowflake builtin, so lower it to an explicit CASE rather than fall
+		// through to the default passthrough (sum_boolean(col), which no target
+		// SQL dialect defines).
+		return "sum(case when " + col + " then 1 else 0 end)"
 	default:
 		return strings.ToLower(agg) + "(" + col + ")"
 	}

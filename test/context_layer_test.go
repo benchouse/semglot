@@ -28,7 +28,7 @@ func emitTarget(t *testing.T, target, file string) string {
 		t.Fatalf("parse: %v", err)
 	}
 	out := t.TempDir()
-	if err := e.Emit(m, out); err != nil {
+	if _, err := e.Emit(m, out); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(out, file))

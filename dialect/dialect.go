@@ -5,6 +5,7 @@ package dialect
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/benchouse/semglot/ir"
 )
@@ -23,10 +24,15 @@ type Parser interface {
 	Parse(sources ...string) (*ir.Model, error)
 }
 
-// Emitter writes the neutral IR out as a dialect's files under dir.
+// Emitter writes the neutral IR out as a dialect's files under dir. warnings
+// are non-fatal: source constructs the target could not represent and had to
+// degrade or drop. They are returned rather than appended to ir.Model.Notes so
+// Emit stays read-only over the model, and returned rather than accumulated on
+// the emitter so it stays stateless, which matters because Register stores one
+// shared instance per dialect.
 type Emitter interface {
 	Dialect
-	Emit(m *ir.Model, dir string) error
+	Emit(m *ir.Model, dir string) (warnings []string, err error)
 }
 
 // Options carries the model/view identity a Configurable emitter needs.
@@ -90,4 +96,32 @@ func Names() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// relRoleSuffix returns the disambiguating suffix for r's relationship/join
+// name: "" when r is the only relationship between its (Left, Right) table
+// pair in all — so today's plain name is unchanged — otherwise r's left
+// column names joined with "_" (e.g. "customer_sk", or "region_start" for a
+// multi-column FK). Two or more relationships between the same table pair is
+// a role-playing dimension (e.g. ship-to vs bill-to customer, order_date vs
+// ship_date to a shared date dimension): each FK's own left columns make a
+// deterministic, source-order-independent disambiguator, unlike numbering by
+// encounter order. Every emitter that names relationships/joins (cortex,
+// snowflake-semantic-view, databricks-metric-view) calls this so all three
+// disambiguate identically; each applies its own casing/separator on top.
+func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
+	n := 0
+	for _, o := range all {
+		if o.Left == r.Left && o.Right == r.Right {
+			n++
+		}
+	}
+	if n <= 1 {
+		return ""
+	}
+	cols := make([]string, len(r.Columns))
+	for i, cp := range r.Columns {
+		cols[i] = cp.Left
+	}
+	return strings.Join(cols, "_")
 }

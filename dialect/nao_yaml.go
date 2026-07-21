@@ -66,7 +66,7 @@ func dimRichness(f ir.Field) int {
 	return r
 }
 
-func (n naoYaml) Emit(m *ir.Model, dir string) error {
+func (n naoYaml) Emit(m *ir.Model, dir string) ([]string, error) {
 	resolve := metricResolver(m)
 
 	var doc naoDoc
@@ -97,6 +97,7 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 		doc.Dimensions = append(doc.Dimensions, nd)
 	}
 	notes := slices.Clone(m.Notes)
+	var own []string
 	for _, t := range m.Tables {
 		for _, d := range t.Dimensions {
 			addDim(d, "categorical")
@@ -106,7 +107,9 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 		}
 		for _, mt := range t.Metrics {
 			if reason, degrade := cortexDegrade(mt.Def); degrade {
-				notes = append(notes, mt.Name+": "+reason)
+				note := mt.Name + ": " + reason
+				notes = append(notes, note)
+				own = append(own, note)
 				continue
 			}
 			nm := naoMetric{Name: mt.Name, Definition: mt.Description, Grain: mt.Grain}
@@ -132,13 +135,13 @@ func (n naoYaml) Emit(m *ir.Model, dir string) error {
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(doc); err != nil {
-		return err
+		return own, err
 	}
 	if err := enc.Close(); err != nil {
-		return err
+		return own, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return own, err
 	}
-	return os.WriteFile(filepath.Join(dir, "semantic.yaml"), buf.Bytes(), 0o644)
+	return own, os.WriteFile(filepath.Join(dir, "semantic.yaml"), buf.Bytes(), 0o644)
 }
