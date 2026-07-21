@@ -566,3 +566,65 @@ func keysOfDbx(m map[string]string) []string {
 	}
 	return ks
 }
+
+// TestDatabricksMetricViewZeroFieldsSkipped pins the one path that drops a
+// whole table. Measures are built before fields and their names seed the
+// field-dedup set, because Databricks rejects a view whose measure and
+// dimension names collide. A table whose every dimension is suppressed that
+// way ends up with no fields, and a metric view requires at least one
+// dimension, so no view can be formed and no file is written.
+//
+// The drop is currently silent: notes reach a view's `comment`, and here there
+// is no view to carry one. That is a deliberate, tested behaviour rather than
+// an accident, and this test is what makes it visible if it ever changes.
+func TestDatabricksMetricViewZeroFieldsSkipped(t *testing.T) {
+	// pings: its only dimension collides with its only measure, so the view
+	// cannot be formed. orders: an ordinary table, emitted as usual, proving
+	// the skip is scoped to the offending table and not the whole model.
+	m := &ir.Model{Tables: []ir.Table{
+		{
+			Name:       "pings",
+			Dimensions: []ir.Field{{Name: "pings", Expr: "pings"}},
+			Metrics: []ir.Metric{
+				{Name: "pings", Def: ir.Agg{Func: "count", Table: "pings", Arg: ir.Col{Name: "ping_id"}}},
+			},
+		},
+		{
+			Name:       "orders",
+			Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+			Metrics: []ir.Metric{
+				{Name: "orders", Def: ir.Agg{Func: "count", Table: "orders", Arg: ir.Col{Name: "order_id"}}},
+			},
+		},
+	}}
+	files := emitDbx(t, m)
+	if _, ok := files["pings.yaml"]; ok {
+		t.Errorf("pings has no emittable dimension, so no valid metric view exists; got:\n%s", files["pings.yaml"])
+	}
+	if _, ok := files["orders.yaml"]; !ok {
+		t.Errorf("the skip must be scoped to the offending table; orders.yaml missing, got %v", keysOfDbx(files))
+	}
+}
+
+// TestDatabricksMetricViewFieldSurvivesWhenNamesDiffer is the control for the
+// test above: the same shape, with the dimension renamed so it no longer
+// collides, must produce a view. Without this, that test would still pass if
+// the emitter started dropping every table for an unrelated reason.
+func TestDatabricksMetricViewFieldSurvivesWhenNamesDiffer(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "pings",
+		Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
+		Metrics: []ir.Metric{
+			{Name: "pings", Def: ir.Agg{Func: "count", Table: "pings", Arg: ir.Col{Name: "ping_id"}}},
+		},
+	}}}
+	got, ok := emitDbx(t, m)["pings.yaml"]
+	if !ok {
+		t.Fatal("pings.yaml should be emitted when the dimension does not collide with a measure")
+	}
+	for _, want := range []string{"name: region", "name: pings", "expr: count(ping_id)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pings.yaml missing %q\n--- got ---\n%s", want, got)
+		}
+	}
+}
