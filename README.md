@@ -39,9 +39,12 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `nao-context-rules`       |        |   ✓    |
 | `databricks-metric-view`  |        |   ✓    |
 
-Adding a dialect is small, self-contained work: implement the `Dialect` interface
-(`Parse`, `Emit`, or both) and register it, and every conversion to and from it
-comes for free. Missing one you need? Please
+Adding a dialect is small, self-contained work: implement a `Parser` (dialect
+files to IR), an `Emitter` (IR to dialect files), or both — the interfaces in
+[`dialect/dialect.go`](./dialect/dialect.go) — register it via `init()`, and
+every conversion to and from it comes for free. A target dialect is one method,
+`Emit`. See [CONTRIBUTING.md](./CONTRIBUTING.md#adding-a-dialect). Missing one
+you need? Please
 [open an issue or PR](https://github.com/benchouse/semglot/issues).
 
 ## Install
