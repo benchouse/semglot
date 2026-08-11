@@ -91,6 +91,18 @@ Following the repository's established rule (never emit a definition the target 
 2. Reference-only derived: a `Binary` tree whose leaves are all `Lit` or `Ref` to a same-table simple metric that is itself emitted (tier 1). Emits a model-level metric, `type: number`, `sql` rendered in Lightdash `${metric}` reference form by a new small `renderLightdash`. Requiring the refs to resolve to emitted same-table simple metrics is what prevents a dangling `${...}`: a derived metric whose operand degraded (for example a ratio over a filtered aggregate) degrades in turn rather than referencing a metric that was never written. Cross-table refs are out of scope for v1 and degrade.
 3. Everything else: filtered aggregates, `count(*)`, ratios referencing degraded or cross-table metrics, `Raw`, `Window`, `Conversion`. Not emitted as a metric. Degraded to a note. `Window`/`Conversion` reuse `cortexDegrade`.
 
+### Dimension/metric name collisions
+
+Lightdash gives dimensions and metrics a single namespace. Every entry in `columns[]` becomes a dimension, including a column the emitter created only to host a column-level metric, and when a metric carries the same name Lightdash keeps the dimension and skips the metric ("Skipped metric `roas` because a dimension with the same name exists. Dimensions take priority."). That skip is a line in the deploy log and nothing in the file, so downstream the metric simply appears never to have been defined.
+
+The emitter resolves it the way `snowflake-semantic-view` and `databricks-metric-view` do (the computed metric is canonical, the colliding field goes), so the same IR answers the same question the same way on every target:
+
+- The colliding column is not emitted, so no dimension of that name exists.
+- Metrics that column hosted are re-homed at model level with an explicit `sql: ${TABLE}.<col>`, the same aggregation spelled out rather than inferred from the column it hung on. This is the common shape: `sum(attributed_revenue)` named `attributed_revenue`, where the metric's own backing column is the collision. Re-homing moves a metric and never removes one, so a derived `${ref}` to it still resolves.
+- Exception: a column named by `meta.primary_key` or by a join's `sql_on` is resolved structurally, and Lightdash rejects the explore when that dimension is missing. There the dimension stays and the metric degrades to a note instead.
+
+Both branches emit a note, so a metric never disappears silently.
+
 Notes have no `custom_instructions` equivalent in a Lightdash schema file. They surface two ways: as a leading `# semglot:` comment block prepended to the emitted file, and through the existing CLI `warning:` output driven by `model.Notes`.
 
 Filtered aggregates degrade to notes in v1 rather than attempting to translate an arbitrary boolean `Expr` into Lightdash's `filters:` list (only trivial `dim = value` cases would be safe). Mapping simple equality/in filters is a possible follow-up.

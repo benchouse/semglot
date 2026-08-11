@@ -26,6 +26,57 @@ func emitLightdash(t *testing.T, m *ir.Model, opts Options) string {
 	return string(b)
 }
 
+// ldDoc is the slice of the emitted schema the name-collision tests read: the
+// column list plus both metric homes (column-level and model-level), which is
+// where a collision moves a metric between.
+type ldDoc struct {
+	Models []ldDocModel `yaml:"models"`
+}
+
+type ldDocModel struct {
+	Name string `yaml:"name"`
+	Meta struct {
+		PrimaryKey string              `yaml:"primary_key"`
+		Metrics    map[string]ldMetric `yaml:"metrics"`
+	} `yaml:"meta"`
+	Columns []struct {
+		Name string `yaml:"name"`
+		Meta struct {
+			Metrics map[string]ldMetric `yaml:"metrics"`
+		} `yaml:"meta"`
+	} `yaml:"columns"`
+}
+
+// column reports whether the model emits a column of that name (in Lightdash
+// every emitted column is a dimension, so this is also the dimension check).
+func (m ldDocModel) column(name string) (int, bool) {
+	for i, c := range m.Columns {
+		if c.Name == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// columnMetric returns the type of the column-level metric `name` on `col`.
+func (m ldDocModel) columnMetric(col, name string) (string, bool) {
+	i, ok := m.column(col)
+	if !ok {
+		return "", false
+	}
+	mm, ok := m.Columns[i].Meta.Metrics[name]
+	return mm.Type, ok
+}
+
+func parseLightdash(t *testing.T, s string) ldDoc {
+	t.Helper()
+	var doc ldDoc
+	if err := yaml.Unmarshal([]byte(s), &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, s)
+	}
+	return doc
+}
+
 func TestLightdashRegisteredAndSkeleton(t *testing.T) {
 	if _, err := AsEmitter("lightdash"); err != nil {
 		t.Fatalf("AsEmitter(lightdash): %v", err)
@@ -132,6 +183,131 @@ func TestLightdashMetrics(t *testing.T) {
 	}
 	if !strings.Contains(got, "# - metric refund_rate not emitted") {
 		t.Errorf("missing degrade note for refund_rate:\n%s", got)
+	}
+}
+
+// TestLightdashMetricNameCollidesWithColumn pins the fix for the single
+// namespace Lightdash gives dimensions and metrics. Every entry in columns[]
+// becomes a dimension, and when a metric carries the same name Lightdash keeps
+// the dimension and drops the metric ("Skipped metric X because a dimension
+// with the same name exists. Dimensions take priority."), visible only in
+// deploy warnings. Both shapes seen in the wild are covered:
+//
+//	attributed_revenue = sum(attributed_revenue) -> the metric's own backing
+//	    column is the colliding dimension (the column exists only to host it)
+//	roas = ${attributed_revenue}/${ad_spend}     -> a model-level derived metric
+//	    collides with a precomputed raw column that IS a declared dimension
+//
+// Both must survive as metrics; the colliding columns must be gone, and each
+// drop must be noted.
+func TestLightdashMetricNameCollidesWithColumn(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "obt_marketing_daily",
+		Dimensions: []ir.Field{
+			{Name: "platform", Expr: "platform", DataType: "varchar"},
+			{Name: "roas", Expr: "roas", DataType: "double", Description: "Precomputed daily ROAS."},
+		},
+		Metrics: []ir.Metric{
+			{Name: "attributed_revenue", Def: ir.Agg{Func: "sum", Table: "obt_marketing_daily",
+				Arg: ir.Col{Name: "attributed_revenue"}}},
+			{Name: "ad_spend", Def: ir.Agg{Func: "sum", Table: "obt_marketing_daily",
+				Arg: ir.Col{Name: "spend"}}},
+			{Name: "roas", Def: ir.Binary{Op: "/",
+				Left: ir.Ref{Metric: "attributed_revenue"}, Right: ir.Ref{Metric: "ad_spend"}}},
+		},
+	}}}
+	got := emitLightdash(t, m, Options{Name: "marketing"})
+	doc := parseLightdash(t, got)
+
+	// The two colliding columns are gone; the non-colliding ones stay.
+	for _, tc := range []struct {
+		col  string
+		want bool
+	}{
+		{"platform", true},            // plain dimension, no metric of that name
+		{"spend", true},               // hosts ad_spend, whose name differs
+		{"attributed_revenue", false}, // dropped: metric of the same name wins
+		{"roas", false},               // dropped: metric of the same name wins
+	} {
+		if _, ok := doc.Models[0].column(tc.col); ok != tc.want {
+			t.Errorf("column %q present = %v, want %v\n%s", tc.col, ok, tc.want, got)
+		}
+	}
+
+	// The metric a dropped column used to host is re-homed at model level with
+	// an explicit ${TABLE}.col sql: the same aggregation, just spelled out.
+	ar, ok := doc.Models[0].Meta.Metrics["attributed_revenue"]
+	if !ok || ar.Type != "sum" || ar.SQL != "${TABLE}.attributed_revenue" {
+		t.Errorf("attributed_revenue model metric = %+v ok=%v, want type sum sql ${TABLE}.attributed_revenue\n%s", ar, ok, got)
+	}
+	// The derived metric keeps its name and its references, which still resolve:
+	// re-homing moves a metric, it never removes one.
+	roas, ok := doc.Models[0].Meta.Metrics["roas"]
+	if !ok || roas.Type != "number" || roas.SQL != "${attributed_revenue} / ${ad_spend}" {
+		t.Errorf("roas model metric = %+v ok=%v, want type number sql ${attributed_revenue} / ${ad_spend}\n%s", roas, ok, got)
+	}
+	// ad_spend is untouched: no collision, so it stays column-level.
+	if typ, ok := doc.Models[0].columnMetric("spend", "ad_spend"); !ok || typ != "sum" {
+		t.Errorf("ad_spend on spend: type=%q ok=%v, want sum true\n%s", typ, ok, got)
+	}
+	// Neither drop is silent.
+	for _, want := range []string{
+		"# - table obt_marketing_daily: column attributed_revenue not emitted as a dimension",
+		"# - table obt_marketing_daily: column roas not emitted as a dimension",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing collision note %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestLightdashCollisionOnKeyColumnDegradesMetric pins the exception to the
+// metric-wins rule: a column named by meta.primary_key or by a join's sql_on is
+// resolved structurally, so dropping it would leave that reference pointing at a
+// dimension that no longer exists and Lightdash rejects the whole explore. There
+// the dimension stays and the metric degrades to a note instead.
+func TestLightdashCollisionOnKeyColumnDegradesMetric(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{{
+			Name:       "fct_orders",
+			PrimaryKey: []string{"order_id"},
+			Dimensions: []ir.Field{
+				{Name: "order_id", Expr: "order_id"},
+				{Name: "customer_id", Expr: "customer_id"},
+			},
+			Metrics: []ir.Metric{
+				// collides with the primary key column
+				{Name: "order_id", Def: ir.Agg{Func: "count_distinct", Table: "fct_orders",
+					Arg: ir.Col{Name: "order_id"}}},
+				// collides with a join key column
+				{Name: "customer_id", Def: ir.Agg{Func: "count_distinct", Table: "fct_orders",
+					Arg: ir.Col{Name: "customer_id"}}},
+			},
+		}},
+		Relationships: []ir.Relationship{
+			{Left: "fct_orders", Right: "dim_customer", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
+		},
+	}
+	got := emitLightdash(t, m, Options{Name: "ecommerce"})
+	doc := parseLightdash(t, got)
+
+	for _, col := range []string{"order_id", "customer_id"} {
+		if _, ok := doc.Models[0].column(col); !ok {
+			t.Errorf("column %q must be kept (primary/join key)\n%s", col, got)
+		}
+		if _, ok := doc.Models[0].Meta.Metrics[col]; ok {
+			t.Errorf("metric %q must NOT be emitted (collides with a key column)\n%s", col, got)
+		}
+		if _, ok := doc.Models[0].columnMetric(col, col); ok {
+			t.Errorf("metric %q must NOT be emitted column-level either\n%s", col, got)
+		}
+		if !strings.Contains(got, "# - metric "+col+" not emitted to Lightdash: its name collides with column "+col) {
+			t.Errorf("missing degrade note for metric %q:\n%s", col, got)
+		}
+	}
+	// The structural references still resolve.
+	if doc.Models[0].Meta.PrimaryKey != "order_id" {
+		t.Errorf("primary_key = %q, want order_id", doc.Models[0].Meta.PrimaryKey)
 	}
 }
 

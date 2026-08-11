@@ -194,6 +194,36 @@ func ldMapType(t string) string {
 	}
 }
 
+// drop removes col from the set and returns the column it removed, so a
+// dimension that cannot coexist with a same-named metric stops being emitted.
+func (s *ldColumnSet) drop(col string) (*ldColumn, bool) {
+	c, ok := s.byName[col]
+	if !ok {
+		return nil, false
+	}
+	delete(s.byName, col)
+	order := make([]string, 0, len(s.order)-1) // a fresh slice: callers may hold s.order
+	for _, n := range s.order {
+		if n != col {
+			order = append(order, n)
+		}
+	}
+	s.order = order
+	return c, true
+}
+
+// names returns the set of column names currently in the set. Lightdash turns
+// every entry in columns[] into a dimension, including one the emitter created
+// only to host a column-level metric, so this is exactly the set of dimension
+// names the model will publish.
+func (s *ldColumnSet) names() map[string]bool {
+	out := make(map[string]bool, len(s.order))
+	for _, n := range s.order {
+		out[n] = true
+	}
+	return out
+}
+
 // metric records a column-level Lightdash metric on col.
 func (s *ldColumnSet) metric(col, name string, met ldMetric) {
 	c := s.get(col)
@@ -325,6 +355,15 @@ func derivedModelMetric(mt ir.Metric, simple map[string]bool) (ldMetric, bool) {
 	return ldMetric{Type: "number", SQL: sql}, true
 }
 
+// derivedRepresentable reports whether mt would emit as a model-level derived
+// metric, separating a metric Lightdash could have carried (whose loss to a name
+// collision is worth its own note) from one that degrades on its own terms and
+// is already covered by degradeNote.
+func derivedRepresentable(mt ir.Metric, simple map[string]bool) bool {
+	_, ok := derivedModelMetric(mt, simple)
+	return ok
+}
+
 // joinSQLOn renders a relationship's equi-join columns as a Lightdash sql_on
 // expression: ${left.col} = ${right.col}, ANDed for a composite key.
 func joinSQLOn(r ir.Relationship) string {
@@ -333,6 +372,89 @@ func joinSQLOn(r ir.Relationship) string {
 		parts[i] = "${" + r.Left + "." + cp.Left + "} = ${" + r.Right + "." + cp.Right + "}"
 	}
 	return strings.Join(parts, " and ")
+}
+
+// ldKeyColumns returns the columns of t that Lightdash resolves structurally:
+// the single-column primary_key it emits, and every join key naming t on either
+// side of a relationship. These columns cannot be dropped to settle a name
+// collision: meta.primary_key and a join's sql_on both point at a dimension by
+// name, and Lightdash rejects the explore when that dimension is missing, so a
+// metric colliding with one of them degrades instead (see resolveNameCollisions).
+func ldKeyColumns(t ir.Table, rels []ir.Relationship) map[string]bool {
+	keys := map[string]bool{}
+	if len(t.PrimaryKey) == 1 { // a composite PK is not emitted, so it pins nothing
+		keys[t.PrimaryKey[0]] = true
+	}
+	for _, r := range rels {
+		for _, cp := range r.Columns {
+			if r.Left == t.Name {
+				keys[cp.Left] = true
+			}
+			if r.Right == t.Name {
+				keys[cp.Right] = true
+			}
+		}
+	}
+	return keys
+}
+
+// keyCollisionNote explains a metric dropped because its name is a key column.
+func keyCollisionNote(metric, table string) string {
+	return "metric " + metric + " not emitted to Lightdash: its name collides with column " + metric +
+		" on table " + table + ", which is a primary key or join key and must stay a dimension"
+}
+
+// resolveNameCollisions settles the single namespace Lightdash gives dimensions
+// and metrics. Every entry in columns[] becomes a dimension, and when a metric
+// carries the same name Lightdash keeps the dimension and silently skips the
+// metric ("Skipped metric X because a dimension with the same name exists.
+// Dimensions take priority."), a warning in the deploy log and nothing in the
+// emitted YAML, so downstream it just looks like the metric was never defined.
+//
+// The colliding column is dropped and the computed metric wins, matching how
+// snowflake-semantic-view and databricks-metric-view resolve the same clash
+// (both seed their dedup with measure names so a colliding field is the one that
+// goes). A dropped column may itself have hosted metrics. The common shape is
+// sum(attributed_revenue) named attributed_revenue, where the metric's own
+// backing column is the collision, so those are re-homed at model level with an
+// explicit ${TABLE}.col sql: the same aggregation, spelled out instead of
+// inferred from the column it hung on. Re-homing moves metrics and never removes
+// one, so a derived ${ref} to a re-homed metric still resolves.
+//
+// Key columns are handled by the caller and never reach here.
+func (s *ldColumnSet) resolveNameCollisions(mm *ldModelMeta, table string) []string {
+	metricNames := map[string]bool{}
+	for name := range mm.Metrics {
+		metricNames[name] = true
+	}
+	for _, c := range s.byName {
+		if c.Meta == nil {
+			continue
+		}
+		for name := range c.Meta.Metrics {
+			metricNames[name] = true
+		}
+	}
+	var notes []string
+	for _, col := range append([]string{}, s.order...) { // s.order is mutated by drop
+		if !metricNames[col] {
+			continue
+		}
+		c, _ := s.drop(col)
+		if c.Meta != nil {
+			for name, met := range c.Meta.Metrics {
+				if mm.Metrics == nil {
+					mm.Metrics = map[string]ldMetric{}
+				}
+				met.SQL = "${TABLE}." + col
+				mm.Metrics[name] = met
+			}
+		}
+		notes = append(notes, "table "+table+": column "+col+
+			" not emitted as a dimension: its name collides with metric "+col+
+			", and Lightdash resolves that clash in favour of the dimension, silently dropping the metric")
+	}
+	return notes
 }
 
 // Emit writes the IR as one dbt schema.yml carrying Lightdash annotations. It
@@ -356,9 +478,25 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 		// Pass 1: which metrics become column-level simple metrics. Their names
 		// are the only references a derived metric may use, so a ratio over a
 		// degraded or cross-table metric degrades rather than dangling.
+		//
+		// A metric whose name is a key column is excluded here as well as below:
+		// it will not be emitted (dropping the key column to make room for it
+		// would dangle meta.primary_key or a join's sql_on, see ldKeyColumns),
+		// and leaving it in `simple` would let a derived metric reference it.
+		keys := ldKeyColumns(t, m.Relationships)
+		// The dimension names this model will publish: the dimension columns
+		// above plus the backing column of every simple metric, since cols.metric
+		// creates an entry for a backing column that is not itself a dimension
+		// and Lightdash makes a dimension of that too.
+		emitted := cols.names()
+		for _, mt := range t.Metrics {
+			if col, _, ok := simpleColumnMetric(mt); ok {
+				emitted[col] = true
+			}
+		}
 		simple := map[string]bool{}
 		for _, mt := range t.Metrics {
-			if _, _, ok := simpleColumnMetric(mt); ok {
+			if _, _, ok := simpleColumnMetric(mt); ok && !(emitted[mt.Name] && keys[mt.Name]) {
 				simple[mt.Name] = true
 			}
 		}
@@ -380,7 +518,15 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 			})
 		}
 		for _, mt := range t.Metrics {
-			if col, met, ok := simpleColumnMetric(mt); ok {
+			col, met, isSimple := simpleColumnMetric(mt)
+			// A metric named after a key column cannot be emitted at all: the
+			// dimension has to stay, and Lightdash would drop the metric anyway.
+			// Noted rather than left to the deploy log.
+			if (isSimple || derivedRepresentable(mt, simple)) && emitted[mt.Name] && keys[mt.Name] {
+				notes = append(notes, keyCollisionNote(mt.Name, t.Name))
+				continue
+			}
+			if isSimple {
 				cols.metric(col, mt.Name, met)
 				continue
 			}
@@ -393,6 +539,11 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 			}
 			notes = append(notes, degradeNote(mt))
 		}
+
+		// Every emitted metric is placed by now, so the dimension/metric
+		// namespaces can be reconciled against each other in one pass: a
+		// remaining collision is over a droppable (non-key) column.
+		notes = append(notes, cols.resolveNameCollisions(mm, t.Name)...)
 
 		model := ldModel{Name: t.Name, Description: t.Description, Columns: cols.list()}
 		if !mm.empty() {
