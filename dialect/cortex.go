@@ -58,6 +58,7 @@ type cortexModel struct {
 type cortexTable struct {
 	Name           string          `yaml:"name"`
 	Description    string          `yaml:"description,omitempty"`
+	Synonyms       []string        `yaml:"synonyms,omitempty"`
 	BaseTable      cortexBaseTable `yaml:"base_table"`
 	PrimaryKey     *cortexPK       `yaml:"primary_key,omitempty"`
 	Dimensions     []cortexCol     `yaml:"dimensions,omitempty"`
@@ -125,6 +126,7 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 		ct := cortexTable{
 			Name:        t.Name,
 			Description: t.Description,
+			Synonyms:    t.Synonyms,
 			BaseTable:   cortexBaseTable{Database: c.Database, Schema: schema, Table: strings.ToUpper(t.Name)},
 		}
 		if len(t.PrimaryKey) > 0 {

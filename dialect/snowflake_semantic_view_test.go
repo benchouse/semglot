@@ -164,6 +164,33 @@ func TestRenderSVMetricDef(t *testing.T) {
 	}
 }
 
+// TestSemanticViewTableSynonyms emits table synonyms as a `with synonyms (...)`
+// clause. Snowflake accepts the clause on tables as well as columns; svSynonyms
+// already renders it.
+func TestSemanticViewTableSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:        "fct_orders",
+		Description: "Orders.",
+		Synonyms:    []string{"purchases", "sales"},
+		PrimaryKey:  []string{"order_id"},
+		Dimensions:  []ir.Field{{Name: "order_id", Expr: "order_id"}},
+	}}}
+	out := t.TempDir()
+	e := snowflakeSemanticView{}.WithOptions(Options{Database: "A", Schema: "M", Name: "v"})
+	if _, err := e.Emit(m, out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "definition.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	want := "FCT_ORDERS as A.M.FCT_ORDERS primary key (ORDER_ID) with synonyms ('purchases', 'sales') comment='Orders.'"
+	if !strings.Contains(got, want) {
+		t.Errorf("definition.md missing %q in:\n%s", want, got)
+	}
+}
+
 // TestSVUnqualifiedWithoutDatabase verifies that with no database the view name
 // stays unqualified (keeps zero-value output valid rather than emitting a
 // leading-dot name).

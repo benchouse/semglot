@@ -73,6 +73,9 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 		if len(t.PrimaryKey) > 0 {
 			line += fmt.Sprintf(" primary key (%s)", strings.Join(upperAll(t.PrimaryKey), ","))
 		}
+		if syn := svSynonyms(t.Synonyms); syn != "" {
+			line += " " + syn
+		}
 		if t.Description != "" {
 			line += fmt.Sprintf(" comment='%s'", sqlQuote(t.Description))
 		}

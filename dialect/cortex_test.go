@@ -182,6 +182,30 @@ func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
 	}
 }
 
+// TestCortexTableSynonyms emits table-level synonyms structurally.
+func TestCortexTableSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_orders",
+		Synonyms:   []string{"purchases", "sales"},
+		Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id"}},
+	}}}
+	out := t.TempDir()
+	e := cortex{}.WithOptions(Options{Database: "A", Schema: "M", Name: "ecommerce"})
+	if _, err := e.Emit(m, out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{"synonyms:", "purchases", "sales"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("semantic_model.yaml missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestCortexEmit(t *testing.T) {
 	dir := t.TempDir()
 	e := cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "eval_marts"}
