@@ -431,7 +431,7 @@ func TestLightdashJoinsAndPrimaryKey(t *testing.T) {
 	}
 }
 
-func TestLightdashConfigMetaStyle(t *testing.T) {
+func TestLightdashConfigDbtMetaKeyPath(t *testing.T) {
 	m := &ir.Model{Tables: []ir.Table{{
 		Name:       "orders",
 		PrimaryKey: []string{"order_id"},
@@ -451,7 +451,7 @@ func TestLightdashConfigMetaStyle(t *testing.T) {
 	}
 
 	// config.meta style: meta nested under config.
-	got := emitLightdash(t, m, Options{Name: "ecommerce", MetaStyle: "config.meta"})
+	got := emitLightdash(t, m, Options{Name: "ecommerce", DbtMetaKeyPath: "config.meta"})
 	var doc struct {
 		Models []struct {
 			Config struct {

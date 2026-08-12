@@ -29,7 +29,7 @@ Each emitter writes:
 | `nao-yaml` | `semantic.yaml` |
 | `nao-context-rules` | `RULES.md` (prose) |
 | `databricks-metric-view` | one `<table>.yaml` metric view per model table, with direct joins to referenced tables (requires Databricks Runtime 17.2+; `display_name`/`synonyms` require 17.3+) |
-| `lightdash` | `schema.yml` — a dbt schema file carrying Lightdash `meta:` blocks, so Lightdash compiles it into explores. A `meta-style` profile option switches `meta:` (dbt <= 1.9) to `config.meta:` (dbt >= 1.10) |
+| `lightdash` | `schema.yml` — a dbt schema file carrying Lightdash `meta:` blocks, so Lightdash compiles it into explores. A `dbt-meta-key-path` profile option switches `meta:` (dbt <= 1.9) to `config.meta:` (dbt >= 1.10) |
 
 ## Mapping
 

@@ -113,9 +113,9 @@ dbt moved where Lightdash's `meta` lives. dbt 1.9 and earlier nest under `meta:`
 
 Plumbing mirrors `ViewSchema` exactly (the existing per-target option carried through the profile config):
 
-- `dialect.Options` gains `MetaStyle string` (`""`/`meta` default, `config.meta` alternate).
-- The `semglot.yaml` `profile` struct gains `meta-style:` and `buildSpec` gains `MetaStyle`, copied through in `loadProfile`.
-- `cmd/semglot` passes `spec.MetaStyle` into `dialect.Options` when configuring the emitter.
+- `dialect.Options` gains `DbtMetaKeyPath string` (`""`/`meta` default, `config.meta` alternate).
+- The `semglot.yaml` `profile` struct gains `dbt-meta-key-path:` and `buildSpec` gains `DbtMetaKeyPath`, copied through in `loadProfile`.
+- `cmd/semglot` passes `spec.DbtMetaKeyPath` into `dialect.Options` when configuring the emitter.
 - Under `config.meta`, each `meta:` block on a model and a column is nested one level under a `config:` key. The `meta` content is identical; only its parent wrapper differs.
 
 Lightdash is not a Snowflake target, so it is absent from `snowflakeTargets` and does not require `--database`.
@@ -124,7 +124,7 @@ Lightdash is not a Snowflake target, so it is absent from `snowflakeTargets` and
 
 - `dialect/lightdash.go`: the emitter. Owns the Lightdash YAML shapes (`ldModel`, `ldColumn`, `ldDimension`, `ldMetric`, `ldJoin`), the IR-to-Lightdash lowering, and file writing. Reuses `metricResolver`, `enumValues`, `appendClause`, `synonymClause`, `fkColumns`, `dedupeStrs`, and the cortex data-type normalization.
 - `renderLightdash(e ir.Expr, resolve) (sql string, ok bool)`: renders a reference-only derived tree to `${metric}` form, returning ok=false for any node that is not a `Ref`/`Lit`/`Binary`. Kept separate from `renderSQL` and `renderDerived` for the same reason those two are separate: each target has a distinct reference discipline.
-- `WithOptions` carries `Name`, `Description`, and `MetaStyle`. Database/Schema are unused by Lightdash.
+- `WithOptions` carries `Name`, `Description`, and `DbtMetaKeyPath`. Database/Schema are unused by Lightdash.
 
 ## Testing
 

@@ -15,24 +15,33 @@ func init() { Register(lightdash{}) }
 
 // lightdash emits a dbt schema.yml annotated with Lightdash meta: blocks, the
 // form Lightdash Cloud ingests from a connected dbt project. Zero value is
-// usable; the build command sets Name/Description/MetaStyle from the profile.
+// usable; the build command sets Name/Description/DbtMetaKeyPath from the profile.
 // Emit does not mutate m.
 type lightdash struct {
 	ModelName   string
 	Description string
-	MetaStyle   string // "" or "meta" => meta:; "config.meta" => config.meta:
+	// DbtMetaKeyPath is the YAML key path the Lightdash meta block is written
+	// under: "" or "meta" for `meta:` (dbt 1.9 and earlier), "config.meta" for
+	// `config.meta:` (dbt 1.10 and later, where top-level meta is deprecated).
+	//
+	// This cannot be derived. semglot writes a file that someone else's dbt
+	// parses later, so the emitting process never sees the dbt that will read
+	// it. Top-level meta still parses without warning on dbt 1.11, so "" stays
+	// the default; when dbt removes it, flip the default to "config.meta" and
+	// this option becomes vestigial.
+	DbtMetaKeyPath string
 }
 
 func (lightdash) Name() string { return "lightdash" }
 func (lightdash) WithOptions(o Options) Emitter {
-	return lightdash{ModelName: o.Name, Description: o.Description, MetaStyle: o.MetaStyle}
+	return lightdash{ModelName: o.Name, Description: o.Description, DbtMetaKeyPath: o.DbtMetaKeyPath}
 }
 
 // ---- Lightdash YAML shapes ----
 //
 // Each meta payload can hang under either `meta:` (dbt <=1.9) or `config.meta:`
 // (dbt 1.10+/Fusion). The model/column structs carry BOTH a Meta and a Config
-// field; the emitter sets exactly one based on MetaStyle, so the struct tags
+// field; the emitter sets exactly one based on DbtMetaKeyPath, so the struct tags
 // stay static while placement varies.
 
 type ldFile struct {
@@ -471,7 +480,7 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	var notes []string
 	notes = append(notes, m.Notes...)
 
-	configMeta := l.MetaStyle == "config.meta"
+	configMeta := l.DbtMetaKeyPath == "config.meta"
 	f := ldFile{Version: 2}
 	for _, t := range m.Tables {
 		cols := newColumnSet()
