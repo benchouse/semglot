@@ -80,8 +80,10 @@ type dbxJoin struct {
 	On     string
 	// RightTable is the joined table's actual (lowercased) name in the model —
 	// distinct from Name once a role-playing FK (two+ relationships to the same
-	// Right table) has disambiguated Name. Used only internally, to look up the
-	// joined table's dimensions; never marshaled.
+	// Right table) has disambiguated Name. Never marshaled; it is the internal
+	// key of this view's join set, used both to look up the joined table's
+	// dimensions and, via dbxJoinAliases, to resolve an IR table qualifier in a
+	// measure expression to the alias its join carries here.
 	RightTable string
 }
 
@@ -145,8 +147,35 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
 		seenWarning[w] = true
 		warnings = append(warnings, w)
 	}
+
+	// A metric view is rooted at ONE table and carries only the joins that
+	// LEAVE it, so the joins loop in buildView is gated on r.Left == t.Name —
+	// and a relationship whose Left endpoint names no table in the model is
+	// consequently iterated by no view at all. Nothing in buildView can report
+	// it (it is the only place relationshipNames' warnings and
+	// relSynonymsWarning are consulted), so the relationship, its declared name
+	// and its synonyms would leave no trace anywhere: not a join, not a
+	// warning, not a comment. Detected here instead, once per build, and
+	// threaded into EVERY view's comment below so a reader of any artifact
+	// sees that the model declared a join this target could not place.
+	//
+	// A column-less relationship is a separate, deliberate skip (relHasColumns,
+	// the emits predicate) shared with ossie and snowflake-semantic-view, and
+	// is left exactly as it was.
+	var orphanRels []string
+	for _, r := range m.Relationships {
+		if _, ok := tableByName[strings.ToLower(r.Left)]; ok || !relHasColumns(r) {
+			continue
+		}
+		orphanRels = append(orphanRels, relNotEmittedWarning("databricks-metric-view", r,
+			relEndpointMissing(r.Left, "a metric view carries only the joins that leave the table it is rooted at")))
+	}
+	for _, w := range orphanRels {
+		addWarning(w)
+	}
+
 	for _, t := range m.Tables {
-		mv, own := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
+		mv, own := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema, orphanRels)
 		if len(mv.Fields) == 0 {
 			// no dimensions: cannot form a valid metric view. Every dimension was
 			// suppressed by colliding with a measure name (see the seen-seeding in
@@ -187,15 +216,20 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
 // (not m.Notes, which is folded into mv.Comment but never returned as a
 // warning — the CLI already prints m.Notes separately, and double-printing it
 // per emitted view would be wrong).
-func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string) (dbxMetricView, []string) {
+// modelNotes are build-level notes every view carries in its comment but which
+// no single view owns (Emit has already returned them as warnings, so they are
+// deliberately NOT added to own — see addNote).
+func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string, modelNotes []string) (dbxMetricView, []string) {
 	// Seeded with m.Notes (cloned; Emit is read-only over m), the same
 	// passthrough annotations every sibling target (cortex, supersimple,
 	// snowflake-semantic-view, nao-yaml, nao-context-rules) folds into its
 	// emitted artifact. Every emitted view carries them, rather than picking
 	// one view per note by table-name mention: simpler, and correct for the
 	// project's context-fairness index, which counts a note as "carried" per
-	// target, not per table.
-	notes := slices.Clone(m.Notes)
+	// target, not per table. modelNotes (build-level losses no one view owns,
+	// e.g. a relationship no view can root — see Emit) ride along for the same
+	// reason.
+	notes := append(slices.Clone(m.Notes), modelNotes...)
 	var own []string
 	// addNote records a degrade note both in the artifact's comment text
 	// (notes) and in this table's own returned warnings (own), keeping the two
@@ -233,7 +267,20 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// serve as the alias a metric view's join actually is — see dbxJoinName.
 	// Names are resolved against the WHOLE model, not just this view's joins, so
 	// two views cannot disagree about what one relationship is called.
-	relNames, relWarn := relationshipNames(m.Relationships, "databricks-metric-view", relHasColumns,
+	//
+	// The emits predicate also requires the LEFT table to exist: a relationship
+	// leaving a table this model does not declare is written by no view (Emit
+	// reports it), so it occupies no join name here and must not push a real
+	// relationship's declared name onto the fallback path over a clash with
+	// something never written — the same reasoning relHasColumns encodes.
+	relNames, relWarn := relationshipNames(m.Relationships, "databricks-metric-view",
+		func(r ir.Relationship) bool {
+			if !relHasColumns(r) {
+				return false
+			}
+			_, ok := tableByName[strings.ToLower(r.Left)]
+			return ok
+		},
 		func(r ir.Relationship) string {
 			name := strings.ToLower(r.Right)
 			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
@@ -241,6 +288,12 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			}
 			return name
 		}, dbxJoinName)
+	// THE ALIAS IS SETTLED HERE. joinName is not just the `name:` key of the
+	// join: it is the relation alias every ON condition and every joined
+	// dimension's expr is qualified with, and — via dbxJoinAliases, built from
+	// mv.Joins right after this loop — the alias a measure expression's IR
+	// table qualifier is rewritten to by dbxRewriteQualifiers. Nothing else may
+	// recompute it; see dbxJoinAliases for what broke when two sites did.
 	for i, r := range m.Relationships {
 		if !strings.EqualFold(r.Left, t.Name) || len(r.Columns) == 0 {
 			continue
@@ -265,6 +318,17 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		joinSource := dbxQualify(catalog, schema, r.Right)
 		if rt, ok := tableByName[strings.ToLower(r.Right)]; ok {
 			joinSource = dbxSourceFor(rt, catalog, schema, addNote)
+		} else {
+			// The model declares no such table, so there is no declared source
+			// to resolve and the profile reconstruction is a GUESS: a
+			// well-formed three-part address for a table this build has never
+			// seen. That is exactly the "plausible, wrong, unwarned" shape
+			// splitSource's doc comment forbids, so it is written (dropping
+			// the join would lose a relationship the source really declared)
+			// but never silently.
+			addNote(fmt.Sprintf(
+				"join %q: the model declares no table %q, so its source was reconstructed from the profile as %q, which may not be where that table lives",
+				joinName, r.Right, joinSource))
 		}
 		mv.Joins = append(mv.Joins, dbxJoin{
 			Name:       joinName,
@@ -303,7 +367,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// passes below: both write into the same `measures:` list, so both have to
 	// satisfy the same invariant.
 	measureExpr := func(kind, name, expr string) (string, bool) {
-		out, unresolved, ok := dbxRewriteQualifiers(expr, t.Name, aliases)
+		out, unresolved, ok := dbxRewriteQualifiers(expr, t.Name, aliases, tableByName)
 		if !ok {
 			addNote(kind + " " + name + ": expression references " + unresolved +
 				", which this view does not join exactly once (" + expr + "), skipped")
@@ -523,14 +587,28 @@ func dbxJoinAliases(joins []dbxJoin) map[string]string {
 // pulls it in (see dbxJoinAliases, which is where that alias comes from).
 //
 // ok is false, with unresolved naming the offending qualifier, when a
-// qualifier is neither self nor a table this view joins exactly once. The
-// caller must then DROP the measure with a note: emitting it would reference a
-// relation the view does not declare, and Databricks rejects the entire view
-// for that — every other measure, dimension and join of the file goes with it.
-// dbxCrossGrain does not catch this case; it looks at metric REFERENCES
-// (ir.Ref), not at bare column qualifiers, which is why a metric like
-// `SUM(store_sales.x) / COUNT(DISTINCT customer.y)` reaches this function at
-// all.
+// qualifier NAMES A TABLE OF THE MODEL (tables) that is neither self nor joined
+// by this view exactly once. The caller must then DROP the measure with a note:
+// emitting it would reference a relation the view does not declare, and
+// Databricks rejects the entire view for that — every other measure, dimension
+// and join of the file goes with it. dbxCrossGrain does not catch this case; it
+// looks at metric REFERENCES (ir.Ref), not at bare column qualifiers, which is
+// why a metric like `SUM(store_sales.x) / COUNT(DISTINCT customer.y)` reaches
+// this function at all.
+//
+// A qualifier that names NO table of the model is not a table qualifier at all
+// — it is a struct or map field access (`payload.amount`, `attributes['k'].v`),
+// which Databricks supports and which this view's `fields:` already emit
+// verbatim (`expr: payload.amount`). It is passed through untouched, and only
+// the model's own table names are treated as relations. Refusing every `a.b`
+// instead would drop a measure over a nested column that the same file's
+// dimensions carry happily. The residual ambiguity — a struct column sharing a
+// name with a table of the model — resolves in favour of the table, which is
+// the reading that can produce an INVALID view if guessed wrong. The converse
+// residue is accepted knowingly: a qualifier meant as a table that the model
+// never declares reads here as a nested column and goes out as written, the
+// same exposure the fields: pass has always had for a field expression naming
+// one, and the only reading available when nothing in the model names it.
 //
 // Tokenised rather than pattern-matched: the previous regex-based strip could
 // not tell a qualifier from the same text inside a string literal, and could
@@ -538,7 +616,7 @@ func dbxJoinAliases(joins []dbxJoin) map[string]string {
 // rebuilding from the token stream preserves the expression exactly apart from
 // the qualifiers rewritten here, and a literal containing "<table>." is a
 // sqlString token that is never inspected.
-func dbxRewriteQualifiers(expr, self string, aliases map[string]string) (out, unresolved string, ok bool) {
+func dbxRewriteQualifiers(expr, self string, aliases map[string]string, tables map[string]ir.Table) (out, unresolved string, ok bool) {
 	toks := sqlTokens(expr)
 	var b strings.Builder
 	for i := 0; i < len(toks); i++ {
@@ -557,11 +635,21 @@ func dbxRewriteQualifiers(expr, self string, aliases map[string]string) (out, un
 			i++ // skip the "."; the qualifier is dropped with it
 			continue
 		}
-		alias, joined := aliases[strings.ToLower(tk.val)]
-		if !joined || alias == "" {
-			return "", tk.val, false
+		key := strings.ToLower(tk.val)
+		if alias, joined := aliases[key]; joined {
+			if alias == "" {
+				return "", tk.val, false // role-playing: joined more than once, so ambiguous
+			}
+			b.WriteString(alias)
+			continue
 		}
-		b.WriteString(alias)
+		if _, isTable := tables[key]; isTable {
+			return "", tk.val, false // a table of the model this view does not join
+		}
+		// Not a relation of any kind: a struct/map field access. Written as
+		// it stands, with the "." and the field written by the next
+		// iterations, exactly as the fields: pass emits a nested column.
+		b.WriteString(tk.val)
 	}
 	return b.String(), "", true
 }

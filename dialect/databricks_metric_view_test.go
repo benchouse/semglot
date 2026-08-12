@@ -1018,3 +1018,74 @@ func TestDatabricksEveryEmittedViewResolvesItsQualifiers(t *testing.T) {
 		assertMeasureQualifiersResolve(t, name, file)
 	}
 }
+
+// TestDatabricksNestedColumnAccessSurvives: `payload.amount` inside a measure is
+// a struct/map field access, not a table qualifier. Treating every `a.b` as a
+// qualifier dropped the whole measure with a note, while the SAME view's
+// `fields:` emitted `expr: payload.amount` happily — the format supports it, so
+// refusing it in one half of the file and accepting it in the other was a
+// capability regression, not a format limit.
+//
+// dbxMeasureQualifiers/assertMeasureQualifiersResolve deliberately do not run
+// here: their regex reads any `ident.` as a relation, which a nested column is
+// not. TestDatabricksUnjoinableQualifierDegrades is the counterpart that keeps
+// this from becoming a licence to emit dangling RELATIONS.
+func TestDatabricksNestedColumnAccessSurvives(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "store_sales",
+		Dimensions: []ir.Field{{Name: "nested_amount", Expr: "payload.amount"}},
+		Measures: []ir.Measure{
+			{Field: ir.Field{Name: "struct_sum", Expr: "payload.amount"}, Agg: "sum"},
+		},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	if !strings.Contains(got, "expr: sum(payload.amount)") {
+		t.Errorf("want the nested-column measure emitted verbatim:\n%s", got)
+	}
+	if !strings.Contains(got, "expr: payload.amount") {
+		t.Errorf("the same nested column must still emit as a field:\n%s", got)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "struct_sum") {
+			t.Errorf("a nested column is not an unresolved relation; got %q", w)
+		}
+	}
+	if strings.Contains(got, "row_count") {
+		t.Errorf("the measure survived, so nothing should have been synthesised:\n%s", got)
+	}
+}
+
+// TestDatabricksJoinToAbsentTableIsWarned: when the joined table is not in the
+// model there is no declared source to resolve, so the profile reconstruction
+// is a guess — a well-formed address for a table this build has never seen.
+// splitSource's doc comment forbids exactly that shape going out unwarned.
+func TestDatabricksJoinToAbsentTableIsWarned(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{{
+			Name:       "store_sales",
+			Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+			Measures:   []ir.Measure{{Field: ir.Field{Name: "amount", Expr: "amount"}, Agg: "sum"}},
+		}},
+		Relationships: []ir.Relationship{{
+			Left: "store_sales", Right: "ghost_dim",
+			Columns: []ir.ColumnPair{{Left: "ss_customer_sk", Right: "g_id"}},
+		}},
+	}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	// The join is still written — dropping it would lose a relationship the
+	// source really declared — but the fabricated address is named.
+	if !strings.Contains(got, "source: analytics.main.ghost_dim") {
+		t.Errorf("want the join kept with a reconstructed source:\n%s", got)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "ghost_dim") && strings.Contains(w, "reconstructed from the profile") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the absent joined table; got %v", warnings)
+	}
+}
