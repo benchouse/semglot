@@ -161,7 +161,7 @@ func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
 // need, since Snowflake upper-cases its names and Databricks lower-cases its
 // join aliases, and two names differing only in case would collide there even
 // though they differ here. A declared name equal to its OWN generated name is
-// not a collision.
+// not a collision, and is kept SILENTLY: see the short-circuit below.
 //
 // emits reports whether a relationship reaches target's artifact at all; a nil
 // emits means every one does. Only emitted relationships take part in the
@@ -203,18 +203,28 @@ func relationshipNames(all []ir.Relationship, target string, emits func(ir.Relat
 			continue
 		}
 		key := strings.ToLower(n)
-		// Its own generated name does not count against it: preferring the
-		// declared name there changes nothing and collides with nothing.
-		otherGenerated := generatedCount[key]
+		// A declared name the target would have GENERATED anyway is kept, and
+		// kept silently. Every branch below falls back to generated[i], so
+		// here there is nothing to fall back TO: the warning would read
+		// "emitted as %q instead" naming the very name it claims to reject.
+		// This is the commonest star shape — two facts joining one dimension,
+		// one of them declaring the dimension's own name — so the false
+		// warning fires on conforming input, which is how readers learn to
+		// ignore warnings. Any duplication that survives here is a property of
+		// the FALLBACK generator: it would appear identically had the author
+		// declared nothing at all, which is silent today. (The check also
+		// subsumes the count adjustment it replaces — an own generated name
+		// can no longer be counted against its own declaration below.)
 		if strings.EqualFold(generated[i], n) {
-			otherGenerated--
+			names[i] = n
+			continue
 		}
 		switch {
 		case declaredCount[key] > 1:
 			warn[i] = fmt.Sprintf(
 				"%s: its declared name is used by more than one relationship, which %s requires to be unique; emitted as %q instead",
 				relLabel(n, r), target, generated[i])
-		case otherGenerated > 0:
+		case generatedCount[key] > 0:
 			warn[i] = fmt.Sprintf(
 				"%s: its declared name collides with another relationship's generated name, which %s requires to be unique; emitted as %q instead",
 				relLabel(n, r), target, generated[i])
@@ -293,13 +303,44 @@ func relSynonymsWarning(target, name string, r ir.Relationship) string {
 		relLabel(name, r), r.Synonyms, target)
 }
 
+// relNotEmittedWarning reports that r reaches target's artifact NOT AT ALL —
+// no join, and with it neither the join's declared name nor its synonyms.
+//
+// This is a different loss from the one relNameWarning and relSynonymsWarning
+// describe. Those say "the join is there, its name is not"; this says the join
+// itself is missing, so they must not be used in its place — they would tell a
+// reader the join was written when it was not.
+//
+// It exists because the targets that write joins per TABLE (databricks-metric-
+// view roots one view at each table and carries the joins leaving it; dbt hangs
+// a `relationships` test on a model's FK column; lightdash writes meta.joins on
+// the left model; supersimple writes a relation on the PARENT model) iterate
+// relationships from inside a table loop. A relationship whose relevant
+// endpoint names no ir.Table in the model is therefore never iterated by
+// anything, and vanishes without passing any of those emitters' warning sites.
+// reason states which endpoint was missing, in the target's own vocabulary.
+func relNotEmittedWarning(target string, r ir.Relationship, reason string) string {
+	w := fmt.Sprintf("%s: not emitted to %s at all: %s", relLabel(r.Name, r), target, reason)
+	if len(r.Synonyms) > 0 {
+		w += fmt.Sprintf("; its synonyms %v are lost with it", r.Synonyms)
+	}
+	return w
+}
+
+// relEndpointMissing reports the reason string for relNotEmittedWarning when
+// endpoint (one of r's two table names) is not an ir.Table in the model. role
+// names what the target would have needed that table for.
+func relEndpointMissing(endpoint, role string) string {
+	return fmt.Sprintf("the model declares no table %q, and %s", endpoint, role)
+}
+
 // relHasColumns reports whether r has at least one column pair, i.e. whether
 // it describes a join at all. It is the emits predicate (see
 // relationshipNames) of every target that skips a column-less relationship
 // rather than writing a join with no ON condition.
 func relHasColumns(r ir.Relationship) bool { return len(r.Columns) > 0 }
 
-// splitSource splits an ir.Table.Source into its three dot-separated parts into its three dot-separated parts
+// splitSource splits an ir.Table.Source into its three dot-separated parts
 // (database, schema, table). ok is false unless source has EXACTLY three
 // non-empty parts. This is cortex's OWN requirement, not a general one:
 // cortexBaseTable has separate Database/Schema/Table YAML fields, so only a
