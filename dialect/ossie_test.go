@@ -934,6 +934,20 @@ semantic_model:
 	}
 }
 
+// TestOssieIrToOSITypeNumber covers dbt/Snowflake's default numeric spelling,
+// "number", which is an exact synonym of "numeric" and must map to Decimal
+// the same way rather than falling through to no datatype at all.
+func TestOssieIrToOSITypeNumber(t *testing.T) {
+	if got := irToOSIType("number"); got != "Decimal" {
+		t.Errorf(`irToOSIType("number") = %q, want "Decimal"`, got)
+	}
+	// The reverse direction must stay untouched: Decimal still spells back to
+	// "decimal", never "number".
+	if got := osiToIRType("Decimal"); got != "decimal" {
+		t.Errorf(`osiToIRType("Decimal") = %q, want "decimal"`, got)
+	}
+}
+
 // tableByName fetches a table by name or fails the test.
 func tableByName(t *testing.T, m *ir.Model, name string) ir.Table {
 	t.Helper()

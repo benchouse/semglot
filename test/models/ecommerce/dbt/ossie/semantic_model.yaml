@@ -20,6 +20,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Order surrogate key.
+            datatype: Decimal
           - name: customer_sk
             expression:
               dialects:
@@ -28,6 +29,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Customer the order belongs to.
+            datatype: Decimal
           - name: is_refunded
             expression:
               dialects:
@@ -45,6 +47,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
+            datatype: Decimal
           - name: channel_id
             expression:
               dialects:
@@ -53,6 +56,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Sales channel the order came through.
+            datatype: Decimal
           - name: aov
             expression:
               dialects:
@@ -79,6 +83,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Gross order revenue before tax and refunds.
+            datatype: Decimal
           - name: order_net_booked_amount
             expression:
               dialects:
@@ -87,6 +92,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Net booked revenue (gross minus tax and refunds).
+            datatype: Decimal
           - name: orders_count
             expression:
               dialects:
@@ -94,6 +100,7 @@ semantic_model:
                   expression: order_id
             dimension:
               is_time: false
+            datatype: Decimal
           - name: refunded_orders_count
             expression:
               dialects:
@@ -115,6 +122,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Line-item surrogate key.
+            datatype: Decimal
           - name: order_id
             expression:
               dialects:
@@ -123,6 +131,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Order the line belongs to.
+            datatype: Decimal
           - name: product_id
             expression:
               dialects:
@@ -131,6 +140,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Product sold on the line.
+            datatype: Decimal
           - name: order_date
             expression:
               dialects:
@@ -148,6 +158,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Units sold on the line.
+            datatype: Decimal
           - name: net_line_revenue
             expression:
               dialects:
@@ -156,6 +167,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Net revenue for the line.
+            datatype: Decimal
       - name: dim_customer
         source: ANALYTICS.MAIN.dim_customer
         primary_key:
@@ -170,6 +182,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Customer surrogate key.
+            datatype: Decimal
           - name: customer_segment
             expression:
               dialects:
@@ -206,6 +219,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Product surrogate key.
+            datatype: Decimal
           - name: category
             expression:
               dialects:
@@ -238,6 +252,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Line-item surrogate key.
+            datatype: Decimal
           - name: order_id
             expression:
               dialects:
@@ -246,6 +261,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Order the line belongs to.
+            datatype: Decimal
           - name: customer_segment
             expression:
               dialects:
@@ -281,6 +297,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Units sold on the line.
+            datatype: Decimal
           - name: obt_net_revenue_line
             expression:
               dialects:
@@ -289,6 +306,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Net revenue for the line.
+            datatype: Decimal
       - name: dim_channel
         source: ANALYTICS.MAIN.dim_channel
         primary_key:
@@ -303,6 +321,7 @@ semantic_model:
             dimension:
               is_time: false
             description: Channel surrogate key.
+            datatype: Decimal
           - name: channel_name
             expression:
               dialects:
@@ -410,17 +429,20 @@ semantic_model:
             - dialect: ANSI_SQL
               expression: sum(fct_orders.order_gross)
         description: Gross order revenue before tax and refunds.
+        datatype: Decimal
       - name: order_net_booked_amount
         expression:
           dialects:
             - dialect: ANSI_SQL
               expression: sum(fct_orders.order_net_booked)
         description: Net booked revenue (gross minus tax and refunds).
+        datatype: Decimal
       - name: orders_count
         expression:
           dialects:
             - dialect: ANSI_SQL
               expression: count(distinct fct_orders.order_id)
+        datatype: Decimal
       - name: refunded_orders_count
         expression:
           dialects:
@@ -432,21 +454,25 @@ semantic_model:
             - dialect: ANSI_SQL
               expression: sum(fct_order_lines.quantity)
         description: Units sold on the line.
+        datatype: Decimal
       - name: net_line_revenue
         expression:
           dialects:
             - dialect: ANSI_SQL
               expression: sum(fct_order_lines.net_line_revenue)
         description: Net revenue for the line.
+        datatype: Decimal
       - name: obt_units_sold
         expression:
           dialects:
             - dialect: ANSI_SQL
               expression: sum(obt_sales.quantity)
         description: Units sold on the line.
+        datatype: Decimal
       - name: obt_net_revenue_line
         expression:
           dialects:
             - dialect: ANSI_SQL
               expression: sum(obt_sales.net_revenue)
         description: Net revenue for the line.
+        datatype: Decimal

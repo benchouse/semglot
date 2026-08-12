@@ -223,7 +223,11 @@ var osiTypes = map[string]string{
 var irTypes = map[string]string{
 	"varchar": "String", "char": "String", "text": "String", "string": "String",
 	"integer": "Integer", "int": "Integer", "bigint": "Integer", "smallint": "Integer",
-	"decimal": "Decimal", "numeric": "Decimal",
+	// "number" is Snowflake/dbt's default numeric spelling (an exact synonym of
+	// "numeric") and maps to Decimal rather than Integer. That slightly
+	// overshoots for surrogate-key columns typed "number" with no declared
+	// scale, but an imprecise logical type beats emitting none at all.
+	"decimal": "Decimal", "numeric": "Decimal", "number": "Decimal",
 	"float": "Float", "double": "Float", "real": "Float",
 	"boolean": "Boolean", "bool": "Boolean",
 	"date":      "Date",
