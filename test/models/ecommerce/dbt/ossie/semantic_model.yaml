@@ -1,0 +1,452 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: ecommerce
+    datasets:
+      - name: fct_orders
+        source: ANALYTICS.MAIN.fct_orders
+        primary_key:
+          - order_id
+        description: Order-grain finance fact. One row per order.
+        ai_context:
+          synonyms:
+            - purchases
+            - sales
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+            dimension:
+              is_time: false
+            description: Order surrogate key.
+          - name: customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_sk
+            dimension:
+              is_time: false
+            description: Customer the order belongs to.
+          - name: is_refunded
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: is_refunded
+            dimension:
+              is_time: false
+            description: Whether the order was refunded.
+            datatype: Boolean
+          - name: billing_customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: billing_customer_sk
+            dimension:
+              is_time: false
+            description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
+          - name: channel_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: channel_id
+            dimension:
+              is_time: false
+            description: Sales channel the order came through.
+          - name: aov
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: aov
+            dimension:
+              is_time: false
+            description: Precomputed average order value; superseded by the computed aov metric.
+            datatype: Float
+          - name: order_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_date
+            dimension:
+              is_time: true
+            description: Date the order was placed.
+            datatype: Date
+          - name: order_gross_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_gross
+            dimension:
+              is_time: false
+            description: Gross order revenue before tax and refunds.
+          - name: order_net_booked_amount
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_net_booked
+            dimension:
+              is_time: false
+            description: Net booked revenue (gross minus tax and refunds).
+          - name: orders_count
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+            dimension:
+              is_time: false
+          - name: refunded_orders_count
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: case when is_refunded then 1 else 0 end
+            dimension:
+              is_time: false
+      - name: fct_order_lines
+        source: ANALYTICS.MAIN.fct_order_lines
+        primary_key:
+          - order_line_id
+        description: Order-line grain. One row per line item.
+        fields:
+          - name: order_line_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_line_id
+            dimension:
+              is_time: false
+            description: Line-item surrogate key.
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+            dimension:
+              is_time: false
+            description: Order the line belongs to.
+          - name: product_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_id
+            dimension:
+              is_time: false
+            description: Product sold on the line.
+          - name: order_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_date
+            dimension:
+              is_time: true
+            description: Date the parent order was placed.
+            datatype: Date
+          - name: quantity
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: quantity
+            dimension:
+              is_time: false
+            description: Units sold on the line.
+          - name: net_line_revenue
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: net_line_revenue
+            dimension:
+              is_time: false
+            description: Net revenue for the line.
+      - name: dim_customer
+        source: ANALYTICS.MAIN.dim_customer
+        primary_key:
+          - customer_sk
+        description: Customer dimension.
+        fields:
+          - name: customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_sk
+            dimension:
+              is_time: false
+            description: Customer surrogate key.
+          - name: customer_segment
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_segment
+            dimension:
+              is_time: false
+            description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered.'
+            datatype: String
+            ai_context:
+              synonyms:
+                - segment
+                - customer_type
+          - name: accepts_marketing
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: accepts_marketing
+            dimension:
+              is_time: false
+            description: Whether the customer opted in to marketing.
+            datatype: Boolean
+      - name: dim_product
+        source: ANALYTICS.MAIN.dim_product
+        primary_key:
+          - product_id
+        description: Product dimension.
+        fields:
+          - name: product_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: product_id
+            dimension:
+              is_time: false
+            description: Product surrogate key.
+          - name: category
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: category
+            dimension:
+              is_time: false
+            description: Product category.
+            datatype: String
+          - name: title
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: title
+            dimension:
+              is_time: false
+            description: Product title.
+            datatype: String
+      - name: obt_sales
+        source: ANALYTICS.MAIN.obt_sales
+        primary_key:
+          - order_line_id
+        description: 'Wide sales table at order-line grain. One row per order line. Measures only, no metrics. Default time dimension: order_date.'
+        fields:
+          - name: order_line_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_line_id
+            dimension:
+              is_time: false
+            description: Line-item surrogate key.
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+            dimension:
+              is_time: false
+            description: Order the line belongs to.
+          - name: customer_segment
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: customer_segment
+            dimension:
+              is_time: false
+            description: Marketing segment.
+            datatype: String
+          - name: is_refunded
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: is_refunded
+            dimension:
+              is_time: false
+            description: Whether the order line was refunded.
+            datatype: Boolean
+          - name: order_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_date
+            dimension:
+              is_time: true
+            description: Date the order was placed.
+            datatype: Date
+          - name: obt_units_sold
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: quantity
+            dimension:
+              is_time: false
+            description: Units sold on the line.
+          - name: obt_net_revenue_line
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: net_revenue
+            dimension:
+              is_time: false
+            description: Net revenue for the line.
+      - name: dim_channel
+        source: ANALYTICS.MAIN.dim_channel
+        primary_key:
+          - channel_id
+        description: Sales channel dimension.
+        fields:
+          - name: channel_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: channel_id
+            dimension:
+              is_time: false
+            description: Channel surrogate key.
+          - name: channel_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: channel_name
+            dimension:
+              is_time: false
+            description: Channel display name.
+            datatype: String
+    relationships:
+      - name: fct_orders_to_dim_customer_customer_sk
+        from: fct_orders
+        to: dim_customer
+        from_columns:
+          - customer_sk
+        to_columns:
+          - customer_sk
+      - name: fct_order_lines_to_fct_orders
+        from: fct_order_lines
+        to: fct_orders
+        from_columns:
+          - order_id
+        to_columns:
+          - order_id
+      - name: fct_order_lines_to_dim_product
+        from: fct_order_lines
+        to: dim_product
+        from_columns:
+          - product_id
+        to_columns:
+          - product_id
+      - name: obt_sales_to_fct_orders
+        from: obt_sales
+        to: fct_orders
+        from_columns:
+          - order_id
+        to_columns:
+          - order_id
+      - name: fct_orders_to_dim_customer_billing_customer_sk
+        from: fct_orders
+        to: dim_customer
+        from_columns:
+          - billing_customer_sk
+        to_columns:
+          - customer_sk
+      - name: fct_orders_to_dim_channel
+        from: fct_orders
+        to: dim_channel
+        from_columns:
+          - channel_id
+        to_columns:
+          - channel_id
+    metrics:
+      - name: gross_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_orders.order_gross)
+        description: 'Gross order revenue. Display name: Gross revenue.'
+      - name: net_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_orders.order_net_booked)
+        description: 'Net booked revenue. Display name: Net revenue.'
+      - name: orders
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: count(distinct fct_orders.order_id)
+        description: 'Display name: Orders.'
+      - name: refunded_orders
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(case when fct_orders.is_refunded then 1 else 0 end)
+        description: 'Count of refunded orders. Display name: Refunded orders.'
+      - name: aov
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_orders.order_net_booked) / count(distinct fct_orders.order_id)
+        description: 'Average order value (net revenue / orders). Display name: Average order value.'
+      - name: refund_rate
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(case when fct_orders.is_refunded then 1 else 0 end) / count(distinct fct_orders.order_id)
+        description: 'Refunded orders / all orders. Display name: Refund rate.'
+      - name: units_sold
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_order_lines.quantity)
+        description: 'Units sold. Display name: Units sold.'
+      - name: units_per_order
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_order_lines.quantity) / count(distinct fct_orders.order_id)
+        description: 'Units per order (cross-table). Display name: Units per order.'
+      - name: order_gross_amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_orders.order_gross)
+        description: Gross order revenue before tax and refunds.
+      - name: order_net_booked_amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_orders.order_net_booked)
+        description: Net booked revenue (gross minus tax and refunds).
+      - name: orders_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: count(distinct fct_orders.order_id)
+      - name: refunded_orders_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(case when fct_orders.is_refunded then 1 else 0 end)
+      - name: quantity
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_order_lines.quantity)
+        description: Units sold on the line.
+      - name: net_line_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(fct_order_lines.net_line_revenue)
+        description: Net revenue for the line.
+      - name: obt_units_sold
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(obt_sales.quantity)
+        description: Units sold on the line.
+      - name: obt_net_revenue_line
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: sum(obt_sales.net_revenue)
+        description: Net revenue for the line.

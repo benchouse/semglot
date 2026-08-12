@@ -285,12 +285,18 @@ func TestDBTToOssieLoss(t *testing.T) {
 // for the one documented gap it does tolerate — only that nothing UNDOCUMENTED
 // leaks through, the same bar TestDBTToOssieLoss holds.
 //
-// Each fixture is parsed on its own, rather than merging vendorDir's whole
-// directory into one model the way TestOssieParsesUpstreamFixtures's single
-// wantRelationships/wantMeasures pass does: several fixtures declare datasets
-// under the same name (e.g. "orders", "customer", "store_sales", "date_dim"),
-// and merging them would let one fixture's table silently stand in for
-// another's in lossReport's by-name comparison, corrupting the result.
+// Each fixture is parsed on its own, rather than pointing Parse at vendorDir
+// as a whole. Same-named datasets across the fixtures no longer collide
+// silently — dialect/ossie.go's mergeTable unions them by name and notes every
+// disagreement — but merging them is still the wrong thing to MEASURE here.
+// Several fixtures declare a dataset under a name another fixture also uses
+// while modelling something else entirely (fixtureA's TPCH "customer", keyed
+// c_custkey, versus tpcds_semantic_model's TPC-DS "customer", keyed
+// c_customer_sk; likewise "orders", "store_sales", "date_dim"). Merging four
+// unrelated upstream documents produces one chimeric model, and a round-trip
+// of the chimera says nothing about whether any single upstream document
+// survives. Per-fixture subtests also attribute a failure to the file that
+// caused it.
 //
 // Separately, three of the four vendored fixtures (fixtureA_ossie.yaml,
 // fixtureB_ossie.yaml, tpcds_ossie.yaml) write their metrics' aggregate
