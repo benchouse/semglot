@@ -148,6 +148,19 @@ whole explore if the dimension is missing, so there the dimension wins and the
 metric degrades to a note instead. Either way a note is emitted; the one thing
 that must never happen is losing the metric silently.
 
+`agg_names.go` mints names into that same namespace and so is bound by the same
+rule. When a metric's arithmetic inlines an aggregate — `SUM(a) / SUM(b)`, which
+only the five SQL-expression targets can render — it synthesises a metric per
+leaf so the four name-referencing targets (dbt, snowflake-semantic-view,
+lightdash, supersimple) can express the metric at all. The name is
+`<column>_<agg>` when the aggregate is over one bare column and `<metric>_<agg>`
+otherwise, checked against that table's metric names AND every dimension and
+measure name *and physical column*, with a `_2`, `_3`, … fallback. Reserving the
+physical column spelling is the point: Lightdash's `columns[]` is keyed by
+column, so a carelessly minted name would collide there and delete the very
+metric it was minted to rescue. An aggregate the model already publishes under a
+name reuses it rather than minting a synonym beside it.
+
 `ossie` has the mirror-image problem on the way IN. OSI requires a dataset name
 to be unique within a model and a field name unique within its dataset, but a
 source directory can hold several files, and a file several `semantic_model[]`

@@ -57,17 +57,24 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	notes := slices.Clone(m.Notes)
 	var own []string
 
+	// A derived metric here must REFER to its components by name, so an
+	// aggregate inlined in the arithmetic is fatal to the whole metric. Naming
+	// those aggregates first turns a dropped metric into an emitted one plus the
+	// component metrics it now refers to; nothing below changes.
+	hoist := hoistInlineAggs(m)
+
 	// metricTableOf maps each metric name to its owning table (uppercased) so a
 	// derived metric can reference its component metrics by qualified name.
 	metricTableOf := map[string]string{}
 	for _, t := range m.Tables {
-		for _, mt := range t.Metrics {
+		for _, mt := range hoist.metricsFor(t) {
 			metricTableOf[mt.Name] = strings.ToUpper(t.Name)
 		}
 	}
 
 	var tables, rels, dims, metrics []string
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
 		u := strings.ToUpper(t.Name)
 		// Prefer the source dialect's own declared physical address. Unlike
 		// cortexBaseTable, the TABLES clause holds its reference as ONE

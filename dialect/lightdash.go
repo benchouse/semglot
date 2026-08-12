@@ -494,8 +494,16 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	// "meta" opts back into the legacy form, for a project pinned to dbt 1.9
 	// or earlier.
 	configMeta := l.DbtMetaKeyPath != "meta"
+	// A Lightdash type: number metric may reference only other metrics, so an
+	// aggregate inlined in the arithmetic makes the whole metric
+	// non-representable. Naming those aggregates lets derivedModelMetric run on
+	// the result unchanged. Its same-model restriction still applies and still
+	// degrades loudly: a component homed on another table is a Lightdash limit,
+	// not something this rewrite may paper over.
+	hoist := hoistInlineAggs(m)
 	f := ldFile{Version: 2}
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
 		cols := newColumnSet()
 		for _, d := range t.Dimensions {
 			cols.dimension(d, ldDimensionType(d, false))

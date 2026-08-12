@@ -151,9 +151,18 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 	global := map[string]simpleInfo{}
 	var degradeNotes []string
 
+	// A supersimple ratio resolves each operand through `global`, which only
+	// holds metrics it registered as simple aggregations, so an aggregate
+	// inlined in the arithmetic cannot be an operand. Naming those aggregates
+	// registers them like any other simple metric and the ratio path below runs
+	// unchanged. Its non-division restriction still applies and still degrades
+	// loudly: ssDegradeReason has no construct for a non-division Binary.
+	hoist := hoistInlineAggs(m)
+
 	// Phase 1: build each model (properties incl. synthesized compound property.sql,
 	// and relations) and register its simple metrics.
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
 		id := strings.ToUpper(t.Name)
 		// Prefer the source dialect's own declared physical address. `table:`
 		// holds ONE opaque string, unlike cortexBaseTable's separate
@@ -263,6 +272,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 		return mt.Name
 	}
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // as in phase 1; t is the range's own copy
 		for _, mt := range t.Metrics {
 			_, registered := global[mt.Name]
 			switch {
