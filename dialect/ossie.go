@@ -125,6 +125,17 @@ func (a *osiAIContext) synonyms() []string {
 	return a.Synonyms
 }
 
+// examplesNote returns a note reporting a's Examples, or "" when there are
+// none. The IR has no examples slot at any level (model, dataset, or field),
+// so this is the only way that data survives parsing. subject names what the
+// ai_context belongs to, e.g. `dataset "orders"`.
+func (a *osiAIContext) examplesNote(subject string) string {
+	if a == nil || len(a.Examples) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s ai_context.examples %v: no examples slot in the IR; dropped", subject, a.Examples)
+}
+
 // ---- data types ----
 
 // osiTypes maps OSI's logical DataType enum to the neutral SQL type string the
@@ -236,7 +247,7 @@ func (o ossie) Parse(sources ...string) (*ir.Model, error) {
 				continue // not an OSI document
 			}
 			for _, sm := range f.SemanticModel {
-				o.mergeModel(out, sm)
+				mergeModel(out, sm)
 			}
 		}
 	}
@@ -244,9 +255,19 @@ func (o ossie) Parse(sources ...string) (*ir.Model, error) {
 }
 
 // mergeModel folds one OSI semantic_model entry into out.
-func (o ossie) mergeModel(out *ir.Model, sm osiModel) {
+func mergeModel(out *ir.Model, sm osiModel) {
 	if sm.AIContext != nil && sm.AIContext.Instructions != "" {
 		out.Notes = append(out.Notes, sm.AIContext.Instructions)
+	}
+	// Model-level ai_context.synonyms has no home in the IR (unlike dataset-
+	// and field-level synonyms, which map onto ir.Table.Synonyms and
+	// ir.Field.Synonyms): note it rather than drop it silently.
+	if syn := sm.AIContext.synonyms(); len(syn) > 0 {
+		out.Notes = append(out.Notes,
+			fmt.Sprintf("model %q ai_context.synonyms %v: no model-level synonym slot in the IR; dropped", sm.Name, syn))
+	}
+	if note := sm.AIContext.examplesNote(fmt.Sprintf("model %q", sm.Name)); note != "" {
+		out.Notes = append(out.Notes, note)
 	}
 	for _, ds := range sm.Datasets {
 		t := ir.Table{
@@ -254,6 +275,14 @@ func (o ossie) mergeModel(out *ir.Model, sm osiModel) {
 			Description: ds.Description,
 			Synonyms:    ds.AIContext.synonyms(),
 			PrimaryKey:  ds.PrimaryKey,
+		}
+		// unique_keys has no IR slot; note it so it isn't dropped silently.
+		if len(ds.UniqueKeys) > 0 {
+			out.Notes = append(out.Notes,
+				fmt.Sprintf("dataset %q unique_keys %v: no unique-key slot in the IR; dropped", ds.Name, ds.UniqueKeys))
+		}
+		if note := ds.AIContext.examplesNote(fmt.Sprintf("dataset %q", ds.Name)); note != "" {
+			out.Notes = append(out.Notes, note)
 		}
 		for _, f := range ds.Fields {
 			expr, ok, note := pickExpression(f.Expression)
@@ -265,9 +294,18 @@ func (o ossie) mergeModel(out *ir.Model, sm osiModel) {
 			if note != "" {
 				out.Notes = append(out.Notes, fmt.Sprintf("field %q on dataset %q: %s", f.Name, ds.Name, note))
 			}
+			if note := f.AIContext.examplesNote(fmt.Sprintf("field %q on dataset %q", f.Name, ds.Name)); note != "" {
+				out.Notes = append(out.Notes, note)
+			}
+			// OSI's field-level label has no IR field-level slot, so it folds
+			// into the description as visible prose rather than vanishing.
+			desc := f.Description
+			if f.Label != "" {
+				desc = appendClause(desc, "Display name: "+f.Label+".")
+			}
 			fld := ir.Field{
 				Name:        f.Name,
-				Description: f.Description,
+				Description: desc,
 				DataType:    osiToIRType(f.DataType),
 				Expr:        expr,
 				Synonyms:    f.AIContext.synonyms(),

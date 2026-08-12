@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -129,5 +130,66 @@ func TestOssieParseSkipsNonOSI(t *testing.T) {
 	}
 	if len(m.Tables) != 0 {
 		t.Errorf("want 0 tables from a non-OSI file, got %d", len(m.Tables))
+	}
+}
+
+// TestOssieParseDegradesUnrepresentable covers OSI constructs the IR has no
+// slot for: a dataset's unique_keys, model-level ai_context.synonyms, and
+// ai_context.examples at every level must each surface as a note rather than
+// vanish; a field's label has no field-level IR slot either, but degrades
+// into the field description instead of a note, so the information stays
+// visible to any consumer.
+func TestOssieParseDegradesUnrepresentable(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    ai_context:
+      synonyms: [revenue]
+      examples: ["What were total sales last quarter?"]
+    datasets:
+      - name: orders
+        source: sales.public.orders
+        unique_keys:
+          - [order_number]
+        ai_context:
+          examples: ["Show me all orders."]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: order_id
+            datatype: Integer
+            label: Order ID
+            description: Order identifier.
+            ai_context:
+              examples: ["What is the order id?"]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 1 || len(m.Tables[0].Dimensions) != 1 {
+		t.Fatalf("want 1 table with 1 dimension, got %+v", m.Tables)
+	}
+
+	got := m.Tables[0].Dimensions[0].Description
+	want := "Order identifier. Display name: Order ID."
+	if got != want {
+		t.Errorf("Description = %q, want %q", got, want)
+	}
+
+	joined := strings.Join(m.Notes, "\n")
+	for _, want := range []string{
+		`dataset "orders" unique_keys`,
+		`model "sales" ai_context.synonyms`,
+		`model "sales" ai_context.examples`,
+		`dataset "orders" ai_context.examples`,
+		`field "order_id" on dataset "orders" ai_context.examples`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Notes = %v, want a note containing %q", m.Notes, want)
+		}
 	}
 }
