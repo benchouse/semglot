@@ -1,8 +1,13 @@
 # semglot: some source constructs could not be transpiled to Lightdash:
 # - metric refunded_orders not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
 # - metric refund_rate not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
+# - measure refunded_orders_count on fct_orders not emitted: its expression is not a plain column (case when is_refunded then 1 else 0 end), and a Lightdash column metric must hang off one
 # - table fct_orders: column aov not emitted as a dimension: its name collides with metric aov, and Lightdash resolves that clash in favour of the dimension, silently dropping the metric
 # - metric units_per_order not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
+# - table fct_order_lines: column net_line_revenue not emitted as a dimension: its name collides with metric net_line_revenue, and Lightdash resolves that clash in favour of the dimension, silently dropping the metric
+# - table dim_customer: no metric was derivable from the source, so a row-count metric dim_customer_count was synthesised over customer_sk
+# - table dim_product: no metric was derivable from the source, so a row-count metric dim_product_count was synthesised over product_id
+# - table dim_channel: no metric was derivable from the source, so a row-count metric dim_channel_count was synthesised over channel_id
 version: 2
 models:
   - name: fct_orders
@@ -88,6 +93,10 @@ models:
           - join: dim_product
             sql_on: ${fct_order_lines.product_id} = ${dim_product.product_id}
             relationship: many-to-one
+        metrics:
+          net_line_revenue:
+            type: sum
+            sql: ${TABLE}.net_line_revenue
     columns:
       - name: order_line_id
         description: Line-item surrogate key.
@@ -131,6 +140,9 @@ models:
           meta:
             dimension:
               type: number
+            metrics:
+              dim_customer_count:
+                type: count
       - name: customer_segment
         description: 'Marketing segment. Values: new = First-ever order not yet placed or just placed; returning = Has ordered before; vip = High-value repeat customer; prospect = Signed up, never ordered. Synonyms: segment, customer_type.'
         config:
@@ -155,6 +167,9 @@ models:
           meta:
             dimension:
               type: number
+            metrics:
+              dim_product_count:
+                type: count
       - name: category
         description: Product category.
         config:
@@ -207,6 +222,18 @@ models:
           meta:
             dimension:
               type: date
+      - name: quantity
+        config:
+          meta:
+            metrics:
+              obt_units_sold:
+                type: sum
+      - name: net_revenue
+        config:
+          meta:
+            metrics:
+              obt_net_revenue_line:
+                type: sum
   - name: dim_channel
     description: Sales channel dimension.
     config:
@@ -219,6 +246,9 @@ models:
           meta:
             dimension:
               type: number
+            metrics:
+              dim_channel_count:
+                type: count
       - name: channel_name
         description: Channel display name.
         config:

@@ -509,3 +509,89 @@ func TestLightdashConfigDbtMetaKeyPath(t *testing.T) {
 			doc.Models[0].Columns[0].Config.Meta.Dimension.Type, got)
 	}
 }
+
+// TestLightdashEmitsRawMeasures pins the pass that keeps measures no metric
+// covers. Without it the emitter silently dropped them AND their backing
+// columns: the benchmark's source had 22 measures behind 14 metrics, so clicks
+// and impressions vanished entirely and 34 of 38 explores ended up with no
+// metric at all.
+func TestLightdashEmitsRawMeasures(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "obt_marketing_daily",
+		PrimaryKey: []string{"report_date"},
+		Dimensions: []ir.Field{{Name: "platform", Expr: "platform", DataType: "varchar"}},
+		Measures: []ir.Measure{
+			{Field: ir.Field{Name: "total_clicks", Expr: "clicks"}, Agg: "sum"},
+			// Not a plain column: must degrade rather than become a column name.
+			{Field: ir.Field{Name: "refunded_orders", Expr: "case when is_refunded then 1 else 0 end"}, Agg: "sum"},
+		},
+		Metrics: []ir.Metric{
+			{Name: "ad_spend", Def: ir.Agg{Func: "sum", Table: "obt_marketing_daily", Arg: ir.Col{Name: "spend"}}},
+		},
+	}}}
+
+	out := emitLightdash(t, m, Options{Name: "ecommerce"})
+	doc := parseLightdash(t, out)
+
+	// The measure survives, and its backing column is created for it.
+	if got, ok := doc.Models[0].columnMetric("clicks", "total_clicks"); !ok || got != "sum" {
+		t.Errorf("total_clicks on clicks = %q (ok=%v), want sum\n%s", got, ok, out)
+	}
+	// The metric-backed measure is untouched.
+	if _, ok := doc.Models[0].columnMetric("spend", "ad_spend"); !ok {
+		t.Errorf("ad_spend should still be emitted\n%s", out)
+	}
+	// A compound expression is never used as a column name.
+	for _, c := range doc.Models[0].Columns {
+		if strings.Contains(c.Name, " ") {
+			t.Errorf("emitted a compound expression as a column name: %q", c.Name)
+		}
+	}
+	if !strings.Contains(out, "not a plain column") {
+		t.Errorf("dropping the compound measure should be noted\n%s", out)
+	}
+}
+
+// TestLightdashSynthesisesRowCount covers a dimension-only table. Lightdash does
+// not require a metric, but its AI agent invents one when given nothing
+// selectable, and Lightdash then compiles the unresolvable field away into
+// `SELECT\n\nFROM t`, which ClickHouse rejects outright.
+func TestLightdashSynthesisesRowCount(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "dim_carrier",
+		PrimaryKey: []string{"carrier_code"},
+		Dimensions: []ir.Field{
+			{Name: "carrier_code", Expr: "carrier_code", DataType: "varchar"},
+			{Name: "carrier_name", Expr: "carrier_name", DataType: "varchar"},
+		},
+	}}}
+
+	out := emitLightdash(t, m, Options{Name: "ecommerce"})
+	doc := parseLightdash(t, out)
+
+	// Synthesised over the primary key, not an arbitrary column.
+	if got, ok := doc.Models[0].columnMetric("carrier_code", "dim_carrier_count"); !ok || got != "count" {
+		t.Errorf("dim_carrier_count on carrier_code = %q (ok=%v), want count\n%s", got, ok, out)
+	}
+	if !strings.Contains(out, "row-count metric") {
+		t.Errorf("synthesising a row count should be noted\n%s", out)
+	}
+}
+
+// TestLightdashNoRowCountWhenMetricsExist guards the other direction: a table
+// that already exposes a metric must not gain a synthetic one.
+func TestLightdashNoRowCountWhenMetricsExist(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_orders",
+		PrimaryKey: []string{"order_id"},
+		Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id", DataType: "number"}},
+		Metrics: []ir.Metric{
+			{Name: "net_revenue", Def: ir.Agg{Func: "sum", Table: "fct_orders", Arg: ir.Col{Name: "amount"}}},
+		},
+	}}}
+
+	out := emitLightdash(t, m, Options{Name: "ecommerce"})
+	if strings.Contains(out, "fct_orders_count") {
+		t.Errorf("must not synthesise a row count when a metric exists\n%s", out)
+	}
+}

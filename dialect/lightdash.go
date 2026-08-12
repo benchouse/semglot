@@ -232,6 +232,16 @@ func (s *ldColumnSet) names() map[string]bool {
 	return out
 }
 
+// hasMetric reports whether any column carries a metric.
+func (s *ldColumnSet) hasMetric() bool {
+	for _, c := range s.byName {
+		if c.Meta != nil && len(c.Meta.Metrics) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // metric records a column-level Lightdash metric on col.
 func (s *ldColumnSet) metric(col, name string, met ldMetric) {
 	c := s.get(col)
@@ -557,6 +567,85 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 				continue
 			}
 			notes = append(notes, degradeNote(mt))
+		}
+
+		// Raw measures no metric covers. Without this the emitter drops them
+		// silently: the source's 22 measures became 9 metrics, so clicks,
+		// impressions, order_lines_count and shipments_count vanished along with
+		// their backing columns, leaving 34 of 38 explores with no metric at
+		// all. databricks_metric_view.go already does this pass; not doing it
+		// here made the same IR produce a materially thinner layer for one
+		// target than another, which is the opposite of the point of an IR.
+		//
+		// Dedup follows the databricks precedent exactly: raw-vs-metric by name
+		// OR by rendered aggregate (so orders_count is suppressed beside an
+		// orders metric with the same agg+column), raw-vs-raw by name only (so
+		// revenue and net_revenue both survive even if both are sum(amount)).
+		usedExprs := map[string]bool{}
+		for _, c := range cols.list() {
+			if c.Meta == nil {
+				continue
+			}
+			for _, met := range c.Meta.Metrics {
+				usedExprs[strings.ToLower(met.Type+"("+c.Name+")")] = true
+			}
+		}
+		for _, ms := range t.Measures {
+			typ, ok := ldAggType(ms.Agg)
+			if !ok {
+				notes = append(notes, "measure "+ms.Name+" on "+t.Name+
+					" not emitted: aggregation "+ms.Agg+" has no Lightdash metric type")
+				continue
+			}
+			// A column metric hangs off a real column, so the measure's expr
+			// must be a bare identifier. A compound expr (e.g.
+			// "case when is_refunded then 1 else 0 end") would otherwise be
+			// emitted as a column NAME, and Lightdash would look for a column
+			// literally called that. Same isIdent guard the joined-dimension
+			// path uses.
+			col := ms.Expr
+			if !isIdent(col) {
+				notes = append(notes, "measure "+ms.Name+" on "+t.Name+
+					" not emitted: its expression is not a plain column ("+col+"), "+
+					"and a Lightdash column metric must hang off one")
+				continue
+			}
+			key := strings.ToLower(typ + "(" + col + ")")
+			if emitted[ms.Name] || usedExprs[key] {
+				continue
+			}
+			// A measure named after a key column would be dropped by Lightdash
+			// in favour of that dimension, exactly as a metric would.
+			if keys[ms.Name] {
+				notes = append(notes, keyCollisionNote(ms.Name, t.Name))
+				continue
+			}
+			cols.metric(col, ms.Name, ldMetric{Type: typ})
+			emitted[ms.Name] = true
+			usedExprs[key] = true
+		}
+
+		// Synthesise a row count when the table would otherwise expose no metric
+		// at all. Lightdash does NOT require one — ad-hoc custom metrics work
+		// against a dimension-only explore. But its AI agent, given nothing
+		// selectable, invents a metric id; Lightdash then drops the unresolvable
+		// field and compiles the rest, yielding `SELECT\n\nFROM t` which strict
+		// warehouses reject outright (ClickHouse Code 62). A real countable
+		// metric removes the incentive. databricks_metric_view.go synthesises
+		// the same thing, for a different reason: that format requires one.
+		if !cols.hasMetric() && len(mm.Metrics) == 0 && len(cols.order) > 0 {
+			countCol := cols.order[0]
+			if len(t.PrimaryKey) == 1 {
+				countCol = t.PrimaryKey[0]
+			}
+			name := t.Name + "_count"
+			if !emitted[name] && !keys[name] {
+				cols.metric(countCol, name, ldMetric{Type: "count"})
+				emitted[name] = true
+				notes = append(notes, "table "+t.Name+
+					": no metric was derivable from the source, so a row-count metric "+
+					name+" was synthesised over "+countCol)
+			}
 		}
 
 		// Every emitted metric is placed by now, so the dimension/metric
