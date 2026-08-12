@@ -129,6 +129,149 @@ func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
 	return strings.Join(cols, "_")
 }
 
+// relationshipNames resolves the name each relationship in all must carry in
+// target's artifact, returning names[i] for all[i] plus warn[i] — the reason
+// all[i]'s DECLARED name could not be used, or "" when nothing was lost. The
+// caller decides where each warning goes (a returned emitter warning, an
+// artifact comment, or both), which is why they are returned per relationship
+// rather than appended through a callback.
+//
+// This is the "prefer when set, fall back and warn" contract ir.Table.Source
+// already uses, applied to ir.Relationship.Name: a name the source dialect
+// declared is the author's own identifier and beats anything semglot can
+// generate, but it must not be preferred when preferring it would be WRONG.
+// fallback builds the generated name (each target's own casing/shape, on top of
+// relRoleSuffix), and is what a declared name loses to in three cases:
+//
+//   - it is empty — a dbt `relationships` test is anonymous, so this is the
+//     normal, unwarned path, and today's generated name is unchanged;
+//   - it collides — with another relationship's declared name, or with another
+//     relationship's generated name. relRoleSuffix exists precisely to keep two
+//     FKs between the same table pair (a role-playing dimension) apart, and
+//     every one of these targets requires relationship/join names to be unique,
+//     so a declared name that collides must not silently win and take the other
+//     relationship down with it;
+//   - it is invalid for the target — valid reports whether the target can hold
+//     the name at all (typically a bare SQL identifier, since cortex, Snowflake
+//     DDL and a Databricks join alias each need one). A nil valid accepts any
+//     non-empty name, which is right for ossie: the OSI schema types `name` as
+//     a plain string.
+//
+// Collisions are compared case-insensitively — the superset of what the targets
+// need, since Snowflake upper-cases its names and Databricks lower-cases its
+// join aliases, and two names differing only in case would collide there even
+// though they differ here. A declared name equal to its OWN generated name is
+// not a collision.
+func relationshipNames(all []ir.Relationship, target string, fallback func(ir.Relationship) string, valid func(string) bool) (names, warn []string) {
+	names = make([]string, len(all))
+	warn = make([]string, len(all))
+	generated := make([]string, len(all))
+	declaredCount := map[string]int{}
+	generatedCount := map[string]int{}
+	for i, r := range all {
+		generated[i] = fallback(r)
+		generatedCount[strings.ToLower(generated[i])]++
+		if n := strings.TrimSpace(r.Name); n != "" {
+			declaredCount[strings.ToLower(n)]++
+		}
+	}
+	for i, r := range all {
+		names[i] = generated[i]
+		n := strings.TrimSpace(r.Name)
+		if n == "" {
+			continue
+		}
+		key := strings.ToLower(n)
+		// Its own generated name does not count against it: preferring the
+		// declared name there changes nothing and collides with nothing.
+		otherGenerated := generatedCount[key]
+		if strings.EqualFold(generated[i], n) {
+			otherGenerated--
+		}
+		switch {
+		case declaredCount[key] > 1:
+			warn[i] = fmt.Sprintf(
+				"%s: its declared name is used by more than one relationship, which %s requires to be unique; emitted as %q instead",
+				relLabel(n, r), target, generated[i])
+		case otherGenerated > 0:
+			warn[i] = fmt.Sprintf(
+				"%s: its declared name collides with another relationship's generated name, which %s requires to be unique; emitted as %q instead",
+				relLabel(n, r), target, generated[i])
+		case valid != nil && !valid(n):
+			warn[i] = fmt.Sprintf(
+				"%s: its declared name is not a valid %s relationship name; emitted as %q instead",
+				relLabel(n, r), target, generated[i])
+		default:
+			names[i] = n
+		}
+	}
+	return names, warn
+}
+
+// relIdentityClause renders a relationship's declared identity — the name its
+// author gave the join, and the synonyms an agent matches a question against —
+// as a prose clause, or "" when it declares neither. For the two targets that
+// carry text rather than a structural slot (nao-yaml's notes:, nao-context-
+// rules' join list), which lose nothing by having none. Deliberately shaped
+// like sourceClause and synonymClause, whose prose folds it sits beside.
+func relIdentityClause(r ir.Relationship) string {
+	var parts []string
+	if n := strings.TrimSpace(r.Name); n != "" {
+		parts = append(parts, "Join name: "+n+".")
+	}
+	if c := synonymClause(r.Synonyms); c != "" {
+		parts = append(parts, c)
+	}
+	return strings.Join(parts, " ")
+}
+
+// relLabel names a relationship for a warning: by the name it is known by when
+// there is one, and by its endpoints alone when there is not — an anonymous
+// relationship (every dbt one) has no other identity, and a bare `relationship
+// ""` names nothing a reader can act on. Distinct from the parse-side
+// `relationship %q` subjects in ossie.go, whose wording is pinned by
+// test/ossie_conformance_test.go's wantNotes.
+func relLabel(name string, r ir.Relationship) string {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Sprintf("relationship %s -> %s", r.Left, r.Right)
+	}
+	return fmt.Sprintf("relationship %q (%s -> %s)", name, r.Left, r.Right)
+}
+
+// relNameWarning reports that r's DECLARED name has nowhere to go in target,
+// or "" when r declares none. Used by the targets that carry a join but not an
+// identifier for it — a dbt `relationships` data test, a Lightdash join, a
+// supersimple relation and nao-yaml all describe the join by its endpoints
+// alone — so the author's own name for it is lost rather than renamed. The
+// name is the relationship's identity in the source document (OSI calls it
+// "unique identifier for the relationship"), so losing it silently is exactly
+// what this branch's ruling forbids.
+func relNameWarning(target string, r ir.Relationship) string {
+	if strings.TrimSpace(r.Name) == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s: declared name not emitted; %s has no name slot on a join",
+		relLabel(r.Name, r), target)
+}
+
+// relSynonymsWarning reports that r's join synonyms have nowhere to go in
+// target, or "" when r has none. Cortex relationships, a Snowflake semantic
+// view's relationships clause and a Databricks join each carry a name and the
+// column pairing and nothing else — no synonym list, and no per-relationship
+// comment to fold one into the way a table's synonyms fold into its comment.
+// So unlike ir.Table.Synonyms, which every prose-capable target absorbs, these
+// are genuinely lost and have to say so.
+//
+// name is the name the relationship is emitted under, which is how a reader
+// finds the join the warning is about.
+func relSynonymsWarning(target, name string, r ir.Relationship) string {
+	if len(r.Synonyms) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s: synonyms %v not emitted; %s has no synonym slot on a relationship",
+		relLabel(name, r), r.Synonyms, target)
+}
+
 // splitSource splits an ir.Table.Source into its three dot-separated parts
 // (database, schema, table). ok is false unless source has EXACTLY three
 // non-empty parts. This is cortex's OWN requirement, not a general one:

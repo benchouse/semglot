@@ -496,6 +496,19 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	var notes []string
 	notes = append(notes, m.Notes...)
 
+	// A Lightdash join is `join: <model>` plus a sql_on: it identifies itself by
+	// the model it joins, and ldJoin has no key for the join's own declared name
+	// or its synonyms. Both are reported rather than dropped in silence. (These
+	// go into notes, which lightdash both returns and writes into the emitted
+	// schema.yml, so a reader of the artifact sees them too.)
+	for _, r := range m.Relationships {
+		for _, w := range []string{relNameWarning("lightdash", r), relSynonymsWarning("lightdash", r.Name, r)} {
+			if w != "" {
+				notes = append(notes, w)
+			}
+		}
+	}
+
 	// Default to config.meta: it has been dbt's preferred form since 1.10
 	// (2025-06-16) and top-level meta is deprecated there. Only an explicit
 	// "meta" opts back into the legacy form, for a project pinned to dbt 1.9

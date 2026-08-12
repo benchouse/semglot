@@ -147,6 +147,15 @@ func (n naoYaml) Emit(m *ir.Model, dir string) ([]string, error) {
 			doc.Metrics = append(doc.Metrics, nm)
 		}
 	}
+	// nao-yaml has no joins: section, so a relationship's own declared name and
+	// its join synonyms have no structural home — but notes: is prose and
+	// carries either whole, exactly as a table's synonyms and its physical
+	// source do above. Folded rather than warned about: nothing is lost.
+	for _, r := range m.Relationships {
+		if c := relIdentityClause(r); c != "" {
+			notes = append(notes, r.Left+" -> "+r.Right+": "+c)
+		}
+	}
 	if len(notes) > 0 {
 		doc.Notes = strings.Join(notes, "\n")
 	}

@@ -277,18 +277,30 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 	}
 
-	for _, r := range m.Relationships {
+	// OSI requires a unique relationship name and types it as a plain string, so
+	// any non-empty declared name is legal here (valid == nil) and only a
+	// collision can cost one. The generated fallback keeps relRoleSuffix, which
+	// disambiguates a role-playing dimension (two FKs between the same pair)
+	// exactly as the cortex, snowflake-semantic-view and databricks emitters do.
+	relNames, relWarn := relationshipNames(m.Relationships, "ossie",
+		func(r ir.Relationship) string {
+			name := r.Left + "_to_" + r.Right
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				name += "_" + suffix
+			}
+			return name
+		}, nil)
+	for i, r := range m.Relationships {
 		if len(r.Columns) == 0 {
 			continue
 		}
-		// OSI requires a unique relationship name. relRoleSuffix disambiguates a
-		// role-playing dimension (two FKs between the same pair) exactly as the
-		// cortex, snowflake-semantic-view and databricks emitters do.
-		relName := r.Left + "_to_" + r.Right
-		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
-			relName += "_" + suffix
+		if relWarn[i] != "" {
+			warnings = append(warnings, relWarn[i])
 		}
-		rel := osiRelationship{Name: relName, From: r.Left, To: r.Right}
+		rel := osiRelationship{
+			Name: relNames[i], From: r.Left, To: r.Right,
+			AIContext: aiContext("", r.Synonyms),
+		}
 		for _, cp := range r.Columns {
 			rel.FromColumns = append(rel.FromColumns, cp.Left)
 			rel.ToColumns = append(rel.ToColumns, cp.Right)

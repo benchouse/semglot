@@ -15,8 +15,12 @@ import (
 // lossLine is one structured entry lossReport produces: a table-scoped
 // field-list membership change (Table+Category+Dir+Name), a table's Grain
 // changing (Table+Category="grain", Dir/Name unused), a whole table
-// appearing/disappearing (Table+Category="table"), or the relationship
-// count changing (Category="relationships", Table unused).
+// appearing/disappearing (Table+Category="table"), the relationship count
+// changing (Category="relationships", Table unused), or a relationship's
+// declared identity changing (Category="relationship name"/"relationship
+// synonyms", with Table carrying the join's endpoints+columns key rather than
+// a table name — a relationship belongs to a PAIR of tables, so there is no
+// single one to scope it to).
 //
 // allowedLoss matches on these fields directly — the exact tuple a
 // documented format limit is expected to produce for a specific table in a
@@ -31,7 +35,7 @@ import (
 // fails to match any allowedLoss entry and is reported as unplanned loss.
 type lossLine struct {
 	Table    string
-	Category string // "dimensions", "time dimensions", "measures", "metrics", "primary key", "synonyms", "grain", "source", "table", "relationships"
+	Category string // "dimensions", "time dimensions", "measures", "metrics", "primary key", "synonyms", "grain", "source", "table", "relationships", "relationship name", "relationship synonyms"
 	Dir      string // "gained" or "lost"; "" for grain/source/table/relationships
 	Name     string // the item name gained/lost; "" for grain/source/table/relationships
 	Text     string // human-readable rendering, for t.Logf and error messages
@@ -97,6 +101,43 @@ func lossReport(before, after *ir.Model) []lossLine {
 			Category: "relationships",
 			Text:     fmt.Sprintf("relationships: %d -> %d", len(b.Relationships), len(a.Relationships)),
 		})
+	}
+	// A join's declared identity, matched by endpoints+columns (relSortKey —
+	// the same key canonicalizeModel sorts by, and the only part of a
+	// relationship that is structural rather than nominal). The count line
+	// above cannot see this: a round-trip that renames every relationship
+	// keeps the count exactly.
+	//
+	// As with source above, only flagged when the BEFORE model actually
+	// declared one. A dbt relationship is anonymous — a `relationships` test
+	// names nothing — so every emitter mints a name from the endpoints, and an
+	// empty-before/populated-after pair is that documented fallback rather
+	// than loss. What this catches is an ossie-declared name or ai_context
+	// synonym list failing to survive a round-trip unchanged.
+	afterRels := map[string]ir.Relationship{}
+	for _, r := range a.Relationships {
+		afterRels[relSortKey(r)] = r
+	}
+	for _, br := range b.Relationships {
+		ar, ok := afterRels[relSortKey(br)]
+		if !ok {
+			continue // the count line above reports a join that vanished
+		}
+		if br.Name != "" && br.Name != ar.Name {
+			out = append(out, lossLine{
+				Category: "relationship name", Name: br.Name,
+				Text: fmt.Sprintf("relationship %s name: %q -> %q", relSortKey(br), br.Name, ar.Name),
+			})
+		}
+		if len(br.Synonyms) > 0 {
+			// diffNames does the set comparison; only its Text is rewritten,
+			// since "table <endpoints>" would misname a join as a table. Text
+			// is derived and carries no identity — key() ignores it.
+			for _, l := range diffNames(relSortKey(br), "relationship synonyms", br.Synonyms, ar.Synonyms) {
+				l.Text = fmt.Sprintf("relationship %s synonyms: %s %s", relSortKey(br), l.Dir, l.Name)
+				out = append(out, l)
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Text < out[j].Text })
 	return out

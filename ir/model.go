@@ -80,9 +80,24 @@ type Metric struct {
 
 // Relationship is a join between two tables.
 type Relationship struct {
-	Left    string
-	Right   string
-	Columns []ColumnPair
+	// Name is the join's own declared identifier, as the source dialect named
+	// it (e.g. "store_sales_to_date"). Empty when the source declares none — a
+	// dbt `relationships` test is anonymous, and only the two endpoints and the
+	// column pair identify it — in which case emitters generate one from the
+	// endpoints. Emitters prefer this name when it is set, unique within the
+	// model, and legal for the target, and fall back to the generated one with
+	// a warning otherwise (see dialect.relationshipNames).
+	Name  string
+	Left  string
+	Right string
+	// Synonyms are alternative phrasings for the JOIN itself, as distinct from
+	// a table's or a field's synonyms ("sales date relationship", "when the
+	// sale occurred"). Sourced from an ossie relationship's ai_context.synonyms.
+	// They are the phrases an agent matches a natural-language question against
+	// when it has to choose which join answers it. Emitters render them where
+	// the target has a relationship-level slot; the rest report them lost.
+	Synonyms []string
+	Columns  []ColumnPair
 }
 
 // ColumnPair is one equi-join column pairing (left_column = right_column).

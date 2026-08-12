@@ -77,6 +77,7 @@ type osiRelationship struct {
 	To               string               `yaml:"to"`
 	FromColumns      []string             `yaml:"from_columns"`
 	ToColumns        []string             `yaml:"to_columns"`
+	AIContext        *osiAIContext        `yaml:"ai_context,omitempty"`
 	CustomExtensions []osiCustomExtension `yaml:"custom_extensions,omitempty"`
 }
 
@@ -412,7 +413,17 @@ func mergeModel(out *ir.Model, sm osiModel) {
 	}
 
 	for _, r := range sm.Relationships {
-		addNote(&out.Notes, customExtensionsNote(fmt.Sprintf("relationship %q", r.Name), r.CustomExtensions))
+		relSubject := fmt.Sprintf("relationship %q", r.Name)
+		// Reported before the skip checks below, so a relationship that never
+		// reaches the IR still surfaces what its ai_context carried. Only
+		// synonyms have a structural home (ir.Relationship.Synonyms);
+		// instructions and examples have none at any level below the model, so
+		// they surface as notes exactly as they do for a dataset, field or
+		// metric. Relationship was the one level these two helpers were never
+		// wired to, which made its ai_context a silent drop.
+		addNote(&out.Notes, r.AIContext.instructionsNote(relSubject))
+		addNote(&out.Notes, r.AIContext.examplesNote(relSubject))
+		addNote(&out.Notes, customExtensionsNote(relSubject, r.CustomExtensions))
 		if len(r.FromColumns) != len(r.ToColumns) {
 			out.Notes = append(out.Notes, fmt.Sprintf(
 				"relationship %q: from_columns (%d) and to_columns (%d) differ in length; skipped",
@@ -424,7 +435,12 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"relationship %q: from_columns/to_columns is empty; skipped", r.Name))
 			continue
 		}
-		rel := ir.Relationship{Left: r.From, Right: r.To}
+		// Name is OSI's "unique identifier for the relationship" — the author's
+		// own choice, which no downstream generator can recover once discarded
+		// (regenerating it from the endpoints renames store_sales_to_date to
+		// store_sales_to_date_dim). Carried verbatim, exactly as ir.Table.Source
+		// carries a dataset's declared physical address.
+		rel := ir.Relationship{Name: r.Name, Left: r.From, Right: r.To, Synonyms: r.AIContext.synonyms()}
 		for i := range r.FromColumns {
 			rel.Columns = append(rel.Columns, ir.ColumnPair{Left: r.FromColumns[i], Right: r.ToColumns[i]})
 		}

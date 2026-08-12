@@ -227,13 +227,31 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// dropping the second FK on a right-table-name collision. A pair with
 	// exactly one relationship keeps today's plain lowercased-right-table-name
 	// join, unchanged.
-	for _, r := range m.Relationships {
+	//
+	// The join's NAME prefers the one the source dialect declared, since that is
+	// the author's own identifier for this join; it falls back to the generated
+	// name (with a note) when there is none, when it collides, or when it cannot
+	// serve as the alias a metric view's join actually is — see dbxJoinName.
+	// Names are resolved against the WHOLE model, not just this view's joins, so
+	// two views cannot disagree about what one relationship is called.
+	relNames, relWarn := relationshipNames(m.Relationships, "databricks-metric-view",
+		func(r ir.Relationship) string {
+			name := strings.ToLower(r.Right)
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				name += "_" + strings.ToLower(suffix)
+			}
+			return name
+		}, dbxJoinName)
+	for i, r := range m.Relationships {
 		if !strings.EqualFold(r.Left, t.Name) || len(r.Columns) == 0 {
 			continue
 		}
-		joinName := strings.ToLower(r.Right)
-		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
-			joinName += "_" + strings.ToLower(suffix)
+		joinName := strings.ToLower(relNames[i])
+		if relWarn[i] != "" {
+			addNote(relWarn[i])
+		}
+		if w := relSynonymsWarning("databricks-metric-view", joinName, r); w != "" {
+			addNote(w)
 		}
 		var conds []string
 		for _, cp := range r.Columns {
@@ -455,6 +473,20 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 func dbxStripSourceQualifier(expr, table string) string {
 	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\.`)
 	return re.ReplaceAllString(expr, "")
+}
+
+// dbxJoinName reports whether name can be used as a metric view's join name.
+// A join name here is not decoration: it is the relation ALIAS every one of
+// that join's ON conditions and every joined dimension's expr is qualified
+// with (`<join>.<column>`), so it has to be a bare identifier — anything else
+// produces SQL Databricks rejects, taking the whole view down with it.
+//
+// `source` is refused as well. It is the alias the metric view's own base
+// relation already carries (`source.<column>` on the left of every join
+// condition), so a join claiming it would either duplicate the alias or
+// silently re-point the base table's own columns at the joined table.
+func dbxJoinName(name string) bool {
+	return isIdent(name) && !strings.EqualFold(name, "source")
 }
 
 // dbxQualify builds a Unity Catalog table reference, three-part when a catalog

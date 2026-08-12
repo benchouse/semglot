@@ -167,7 +167,25 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 			dims = append(dims, dl)
 		}
 	}
-	for _, r := range m.Relationships {
+	// Prefer the source's own declared relationship name, upper-cased like every
+	// other identifier in this DDL, and fall back to the generated
+	// LEFT_RIGHT name (with a warning) when there is none, when it collides, or
+	// when it is not a bare identifier this clause can hold unquoted.
+	//
+	// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
+	// ship-to vs bill-to customer) would otherwise collide on that generated
+	// name — Snowflake requires relationship names to be unique in a semantic
+	// view — so relRoleSuffix disambiguates all of the pair's relationships by
+	// their own left column(s), giving each a distinct, deterministic name.
+	relNames, relWarn := relationshipNames(m.Relationships, "snowflake-semantic-view",
+		func(r ir.Relationship) string {
+			name := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				name += "_" + strings.ToUpper(suffix)
+			}
+			return name
+		}, isIdent)
+	for i, r := range m.Relationships {
 		if len(r.Columns) == 0 {
 			continue
 		}
@@ -176,14 +194,13 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 			leftCols = append(leftCols, strings.ToUpper(cp.Left))
 			rightCols = append(rightCols, strings.ToUpper(cp.Right))
 		}
-		relName := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
-		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
-		// ship-to vs bill-to customer) would otherwise collide on this same name —
-		// Snowflake requires relationship names to be unique in a semantic view.
-		// Disambiguate all of the pair's relationships by their own left column(s)
-		// so each gets a distinct, deterministic name.
-		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
-			relName += "_" + strings.ToUpper(suffix)
+		relName := strings.ToUpper(relNames[i])
+		for _, w := range []string{relWarn[i], relSynonymsWarning("snowflake-semantic-view", relName, r)} {
+			if w == "" {
+				continue
+			}
+			notes = append(notes, w)
+			own = append(own, w)
 		}
 		rels = append(rels, fmt.Sprintf("%s as %s(%s) references %s(%s)",
 			relName,

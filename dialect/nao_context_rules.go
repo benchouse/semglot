@@ -76,8 +76,18 @@ func (naoContextRules) Emit(m *ir.Model, dir string) ([]string, error) {
 	if len(m.Relationships) > 0 {
 		b.WriteString("\n## Joins & routing\n\n")
 		for _, r := range m.Relationships {
+			// The join's declared name and its synonyms fold into the line as
+			// prose. This target is a routing guide for an agent choosing a
+			// join from a natural-language question, so "when the sale
+			// occurred" is precisely the phrase that has to reach it; a
+			// structural target with no synonym slot has to report them lost
+			// instead (see relSynonymsWarning).
+			suffix := ""
+			if c := relIdentityClause(r); c != "" {
+				suffix = " " + c
+			}
 			for _, c := range r.Columns {
-				fmt.Fprintf(&b, "- `%s.%s → %s.%s`\n", r.Left, c.Left, r.Right, c.Right)
+				fmt.Fprintf(&b, "- `%s.%s → %s.%s`%s\n", r.Left, c.Left, r.Right, c.Right, suffix)
 			}
 		}
 	}

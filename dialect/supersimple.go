@@ -227,6 +227,17 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 				key += "_" + slug(suffix)
 				label += " (" + prettify(suffix) + ")"
 			}
+			// A supersimple relation identifies itself by the CHILD model it
+			// pulls in: its key is a slug of that model's name and its Name is
+			// that model's display label, both of which a consumer resolves back
+			// to the model. The join's own declared name is a different thing
+			// and has no slot here, so it (and its synonyms) are reported rather
+			// than silently replaced by the child's name.
+			for _, w := range []string{relNameWarning("supersimple", r), relSynonymsWarning("supersimple", r.Name, r)} {
+				if w != "" {
+					degradeNotes = append(degradeNotes, w)
+				}
+			}
 			model.Relations[key] = ssRelation{
 				Name: label, Type: "hasMany", ModelID: strings.ToUpper(child),
 				JoinStrategy: ssJoinStrategy{JoinKey: join},

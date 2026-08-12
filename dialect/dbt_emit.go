@@ -148,6 +148,18 @@ type dbtEmitConversionParams struct {
 func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 	var f dbtEmitFile
 	var warnings []string
+	// A relationship reaches dbt as a `relationships` data test on the FK
+	// column, which states only the target ref() and its field. There is no
+	// slot for the join's own declared name or its synonyms, so both are
+	// reported here rather than dropped in silence — the same posture
+	// dbtSchemaSourceWarning takes for ir.Table.Source below.
+	for _, r := range m.Relationships {
+		for _, w := range []string{relNameWarning("dbt", r), relSynonymsWarning("dbt", r.Name, r)} {
+			if w != "" {
+				warnings = append(warnings, w)
+			}
+		}
+	}
 	hoist := hoistInlineAggs(m)
 	for _, t := range m.Tables {
 		pk := stringSet(t.PrimaryKey)

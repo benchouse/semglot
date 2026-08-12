@@ -268,7 +268,10 @@ semantic_model:
 		t.Fatal(err)
 	}
 
+	// Name is carried verbatim: OSI documents it as the relationship's unique
+	// identifier, and regenerating one from the endpoints renames the join.
 	wantRel := ir.Relationship{
+		Name: "orders_to_customers",
 		Left: "orders", Right: "customers",
 		Columns: []ir.ColumnPair{{Left: "customer_id", Right: "id"}},
 	}
@@ -1259,6 +1262,86 @@ semantic_model:
 		if !strings.Contains(joined, want) {
 			t.Errorf("Notes = %v,\nwant one containing %q", m.Notes, want)
 		}
+	}
+}
+
+// TestOssieRelationshipAIContext pins the relationship level of ai_context,
+// which was the one level never wired: osiRelationship had no AIContext field
+// at all, so yaml.v3 discarded the key before any code could see it and
+// nothing could even note it dropped. Its three parts split three ways —
+// synonyms map onto ir.Relationship.Synonyms structurally (they are what an
+// agent matches a question against when choosing a join), while instructions
+// and examples have no IR home below the model and must surface as notes, the
+// same treatment every other level already gets.
+func TestOssieRelationshipAIContext(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: customer_id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: customer_id}]
+      - name: customers
+        source: s.p.customers
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+    relationships:
+      - name: orders_to_customers
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [id]
+        ai_context:
+          synonyms: ["who bought", "purchasing customer"]
+          instructions: Join through this rather than the shipping address.
+          examples: ["Which customers bought the most?"]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Relationships) != 1 {
+		t.Fatalf("want 1 relationship, got %d", len(m.Relationships))
+	}
+	r := m.Relationships[0]
+	if r.Name != "orders_to_customers" {
+		t.Errorf("Name = %q, want orders_to_customers", r.Name)
+	}
+	if !reflect.DeepEqual(r.Synonyms, []string{"who bought", "purchasing customer"}) {
+		t.Errorf("Synonyms = %v", r.Synonyms)
+	}
+	joined := strings.Join(m.Notes, "\n")
+	for _, want := range []string{
+		`relationship "orders_to_customers" ai_context.instructions "Join through this rather than the shipping address."`,
+		`relationship "orders_to_customers" ai_context.examples [Which customers bought the most?]`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Notes = %v,\nwant one containing %q", m.Notes, want)
+		}
+	}
+	// Synonyms have a home, so they must NOT also be reported as dropped.
+	if strings.Contains(joined, "ai_context.synonyms") {
+		t.Errorf("join synonyms are carried structurally and must not be noted as lost: %v", m.Notes)
+	}
+
+	// Emit puts both back: the declared name verbatim, and the synonyms under
+	// ai_context, so the document that comes out matches the one that went in.
+	f, raw := emitOssie(t, m, Options{Database: "A", Schema: "M", Name: "sales"})
+	out := f.SemanticModel[0].Relationships
+	if len(out) != 1 {
+		t.Fatalf("want 1 emitted relationship, got %d:\n%s", len(out), raw)
+	}
+	if out[0].Name != "orders_to_customers" {
+		t.Errorf("emitted name = %q, want the declared orders_to_customers:\n%s", out[0].Name, raw)
+	}
+	if out[0].AIContext == nil || !reflect.DeepEqual(out[0].AIContext.Synonyms, r.Synonyms) {
+		t.Errorf("emitted ai_context = %+v, want synonyms %v:\n%s", out[0].AIContext, r.Synonyms, raw)
 	}
 }
 

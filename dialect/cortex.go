@@ -193,21 +193,34 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 		cm.Tables = append(cm.Tables, ct)
 	}
-	for _, r := range m.Relationships {
+	// Prefer the source's own declared relationship name, falling back to the
+	// generated left_to_right name (with a warning) when there is none, when it
+	// collides, or when it is not an identifier Cortex can hold. A role-playing
+	// dimension (two+ FKs from this Left to this Right, e.g. ship-to vs bill-to
+	// customer) would otherwise collide on that generated name for every
+	// relationship in the pair; relRoleSuffix disambiguates all of them by their
+	// own left column(s) so each survives with a distinct, deterministic name.
+	relNames, relWarn := relationshipNames(m.Relationships, "cortex",
+		func(r ir.Relationship) string {
+			name := r.Left + "_to_" + r.Right
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				name += "_" + suffix
+			}
+			return name
+		}, isIdent)
+	for i, r := range m.Relationships {
 		cols := make([]cortexRelCol, len(r.Columns))
-		for i, cp := range r.Columns {
-			cols[i] = cortexRelCol{LeftColumn: strings.ToUpper(cp.Left), RightColumn: strings.ToUpper(cp.Right)}
+		for j, cp := range r.Columns {
+			cols[j] = cortexRelCol{LeftColumn: strings.ToUpper(cp.Left), RightColumn: strings.ToUpper(cp.Right)}
 		}
-		name := r.Left + "_to_" + r.Right
-		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
-		// ship-to vs bill-to customer) would otherwise collide on this same name
-		// for every relationship in the pair; disambiguate all of them by their
-		// own left column(s) so each survives with a distinct, deterministic name.
-		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
-			name += "_" + suffix
+		if relWarn[i] != "" {
+			degradeNotes = append(degradeNotes, relWarn[i])
+		}
+		if w := relSynonymsWarning("cortex", relNames[i], r); w != "" {
+			degradeNotes = append(degradeNotes, w)
 		}
 		cm.Relationships = append(cm.Relationships, cortexRel{
-			Name: name, LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
+			Name: relNames[i], LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
 		})
 	}
 
