@@ -29,6 +29,7 @@ Each emitter writes:
 | `nao-yaml` | `semantic.yaml` |
 | `nao-context-rules` | `RULES.md` (prose) |
 | `databricks-metric-view` | one `<table>.yaml` metric view per model table, with direct joins to referenced tables (requires Databricks Runtime 17.2+; `display_name`/`synonyms` require 17.3+) |
+| `lightdash` | `schema.yml` — a dbt schema file carrying Lightdash `meta:` blocks, so Lightdash compiles it into explores. A `meta-style` profile option switches `meta:` (dbt <= 1.9) to `config.meta:` (dbt >= 1.10) |
 
 ## Mapping
 
@@ -36,19 +37,19 @@ Cells name the construct the IR concept becomes. Notation: `<->` dbt reads it
 back into the IR too; `text` the value survives only as prose folded into a
 description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)).
 
-| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` |
-|---|---|---|---|---|---|---|---|
-| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | `source` (+ `joins[].source` for referenced tables) |
-| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | `fields[]` |
-| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | plain `fields[]` entry (not marked as time) |
-| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | `--` |
-| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | `--` |
-| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | `joins[]` (quoted `"on":` condition) |
-| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | `comment` (field/measure/view) |
-| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `synonyms:` (capped at 10) |
-| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | `text` (into comment) |
-| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | `measures[]` |
-| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL | inline SQL in `measures[].expr` |
+| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` |
+|---|---|---|---|---|---|---|---|---|
+| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | `source` (+ `joins[].source` for referenced tables) | `models[]` entry |
+| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | `fields[]` | column + `meta.dimension` |
+| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | plain `fields[]` entry (not marked as time) | column + `meta.dimension type: date/timestamp` |
+| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | `--` | `meta.dimension.type` only where confidently inferable, else omitted |
+| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | `--` | `meta.primary_key` (single column only; composite degrades) |
+| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | `joins[]` (quoted `"on":` condition) | `meta.joins[]` (`sql_on` with `${table.col}` refs) |
+| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | `comment` (field/measure/view) | `description` |
+| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `synonyms:` (capped at 10) | `text` (into the column description) |
+| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | `text` (into comment) | `text` (into the column description) |
+| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | `measures[]` | column-level `meta.metrics` |
+| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL | inline SQL in `measures[].expr` | model-level `meta.metrics` `type: number` (reference-only; filtered/compound aggregates and cross-table refs degrade) |
 
 ## Gaps vs. limits
 
@@ -91,6 +92,32 @@ and nao dimensions carry a structured `values:` list
   metric view declares `source`/`joins`/`fields`/`measures` only, no
   primary-key key; Unity Catalog constraints on the underlying table are the
   authority there instead.
+- **Composite primary keys in `lightdash`.** `meta.primary_key` takes a single
+  column name, so a multi-column key has nowhere to go and degrades to a note.
+- **Synonyms and enum values in `lightdash`.** Lightdash has no synonym or
+  allowed-values slot on a dimension, so both fold into the column description
+  (`≈`), as they do for the nao dialects.
+- **Filtered and compound aggregates in `lightdash`.** A Lightdash metric is
+  either an aggregation of one column or a `type: number` expression over other
+  metrics by name. There is no place for a filtered aggregate
+  (`sum(case when ... end)`), and a `type: number` expression can only reference
+  metrics on the SAME model, so a cross-table derived metric degrades too.
+
+### A note the `--` notation cannot express: name collisions
+
+Lightdash puts dimensions and metrics in ONE namespace per model, and resolves a
+clash in favour of the dimension — **silently dropping the metric**. So a metric
+named after a column is not a gap or a limit, it is a correctness trap: the
+layer deploys cleanly and quietly lacks the metric it exists to publish.
+
+The emitter treats the computed metric as canonical and does not emit the
+colliding column as a dimension, matching `snowflake_semantic_view.go` and
+`databricks_metric_view.go` so semglot's answer to a name like `roas` is the
+same across targets. The exception is a column that `meta.primary_key` or a
+join's `sql_on` names: those are resolved structurally and Lightdash rejects the
+whole explore if the dimension is missing, so there the dimension wins and the
+metric degrades to a note instead. Either way a note is emitted; the one thing
+that must never happen is losing the metric silently.
 
 ## Adding or changing a mapping
 
