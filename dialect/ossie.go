@@ -318,4 +318,185 @@ func mergeModel(out *ir.Model, sm osiModel) {
 		}
 		out.Tables = append(out.Tables, t)
 	}
+
+	for _, r := range sm.Relationships {
+		if len(r.FromColumns) != len(r.ToColumns) {
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"relationship %q: from_columns (%d) and to_columns (%d) differ in length; skipped",
+				r.Name, len(r.FromColumns), len(r.ToColumns)))
+			continue
+		}
+		if len(r.FromColumns) == 0 {
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"relationship %q: from_columns/to_columns is empty; skipped", r.Name))
+			continue
+		}
+		rel := ir.Relationship{Left: r.From, Right: r.To}
+		for i := range r.FromColumns {
+			rel.Columns = append(rel.Columns, ir.ColumnPair{Left: r.FromColumns[i], Right: r.ToColumns[i]})
+		}
+		out.Relationships = append(out.Relationships, rel)
+	}
+
+	owner := colOwner(sm)
+	colsByTable := map[string][]string{}
+	for _, ds := range sm.Datasets {
+		cols := make([]string, 0, len(ds.Fields))
+		for _, f := range ds.Fields {
+			cols = append(cols, strings.ToLower(f.Name))
+		}
+		sort.Strings(cols) // deterministic Raw.Columns
+		colsByTable[ds.Name] = cols
+	}
+	for _, mt := range sm.Metrics {
+		expr, ok, note := pickExpression(mt.Expression)
+		if !ok {
+			out.Notes = append(out.Notes, fmt.Sprintf("metric %q has no expression; skipped", mt.Name))
+			continue
+		}
+		if note != "" {
+			out.Notes = append(out.Notes, fmt.Sprintf("metric %q: %s", mt.Name, note))
+		}
+		def, ok := parseAggExpr(expr)
+		if !ok {
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"metric %q not transpiled: expression %q could not be parsed as an aggregate expression", mt.Name, expr))
+			continue
+		}
+		home, ok := metricHome(def, owner)
+		if !ok {
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"metric %q not transpiled: could not determine the dataset its expression belongs to", mt.Name))
+			continue
+		}
+		idx := tableIndex(out, home)
+		if idx < 0 {
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"metric %q references unknown dataset %q; skipped", mt.Name, home))
+			continue
+		}
+		def = setAggTable(def, home, colsByTable[home])
+		// A plain aggregation over one column is also a column-backed measure.
+		if agg, col, isSimple := simpleAgg(def); isSimple {
+			out.Tables[idx].Measures = append(out.Tables[idx].Measures, ir.Measure{
+				Field: ir.Field{
+					Name:        mt.Name,
+					Description: mt.Description,
+					DataType:    osiToIRType(mt.DataType),
+					Expr:        col,
+					Synonyms:    mt.AIContext.synonyms(),
+				},
+				Agg: agg,
+			})
+		}
+		out.Tables[idx].Metrics = append(out.Tables[idx].Metrics, ir.Metric{
+			Name:        mt.Name,
+			Description: mt.Description,
+			Synonyms:    mt.AIContext.synonyms(),
+			Def:         def,
+		})
+	}
+}
+
+// colOwner indexes which dataset declares a given column, so an unqualified
+// aggregate (Ossie's Databricks fixtures write `SUM(o_totalprice)`) can still
+// be homed. A column declared by more than one dataset maps to "" — ambiguous,
+// and the metric is noted rather than guessed at.
+func colOwner(sm osiModel) map[string]string {
+	owner := map[string]string{}
+	for _, ds := range sm.Datasets {
+		for _, f := range ds.Fields {
+			key := strings.ToLower(f.Name)
+			if prev, seen := owner[key]; seen && prev != ds.Name {
+				owner[key] = ""
+				continue
+			}
+			owner[key] = ds.Name
+		}
+	}
+	return owner
+}
+
+// metricHome returns the table a parsed metric belongs to: the first qualified
+// column's table, else the sole dataset declaring the first unqualified column.
+// Mirrors dbt.go's rule that a cross-table metric homes on its first resolvable
+// operand's table.
+func metricHome(e ir.Expr, owner map[string]string) (string, bool) {
+	switch n := e.(type) {
+	case ir.Col:
+		if n.Table != "" {
+			return n.Table, true
+		}
+		if t := owner[strings.ToLower(n.Name)]; t != "" {
+			return t, true
+		}
+		return "", false
+	case ir.Agg:
+		if n.Arg == nil {
+			return "", false // COUNT(*) names no column
+		}
+		return metricHome(n.Arg, owner)
+	case ir.Raw:
+		for _, tk := range tokenize(n.SQL) {
+			if tk.typ != sqlIdent {
+				continue
+			}
+			if t := owner[strings.ToLower(tk.val)]; t != "" {
+				return t, true
+			}
+		}
+		return "", false
+	case ir.Binary:
+		if t, ok := metricHome(n.Left, owner); ok {
+			return t, true
+		}
+		return metricHome(n.Right, owner)
+	}
+	return "", false
+}
+
+// setAggTable stamps the owning table onto every Agg node and fills a Raw arg's
+// Columns, which renderSQL needs to qualify the fragment at emit time.
+func setAggTable(e ir.Expr, table string, cols []string) ir.Expr {
+	switch n := e.(type) {
+	case ir.Agg:
+		n.Table = table
+		if raw, ok := n.Arg.(ir.Raw); ok {
+			raw.Columns = cols
+			n.Arg = raw
+		} else if n.Arg != nil {
+			n.Arg = setAggTable(n.Arg, table, cols)
+		}
+		return n
+	case ir.Binary:
+		n.Left = setAggTable(n.Left, table, cols)
+		n.Right = setAggTable(n.Right, table, cols)
+		return n
+	}
+	return e
+}
+
+// simpleAgg reports the measure a plain aggregation over one column implies:
+// its aggregate and the column expression. ok=false for anything compound,
+// filtered, or COUNT(*), none of which is a column-backed measure.
+func simpleAgg(e ir.Expr) (agg, col string, ok bool) {
+	a, isAgg := e.(ir.Agg)
+	if !isAgg || a.Filter != nil {
+		return "", "", false
+	}
+	c, isCol := a.Arg.(ir.Col)
+	if !isCol {
+		return "", "", false
+	}
+	return a.Func, c.Name, true
+}
+
+// tableIndex returns the position of the named table in m, or -1.
+func tableIndex(m *ir.Model, name string) int {
+	for i := range m.Tables {
+		if m.Tables[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }

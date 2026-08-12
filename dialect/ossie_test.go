@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/benchouse/semglot/ir"
 )
 
 // writeOSI writes an OSI document into a temp dir and returns the dir.
@@ -192,4 +194,179 @@ semantic_model:
 			t.Errorf("Notes = %v, want a note containing %q", m.Notes, want)
 		}
 	}
+}
+
+func TestOssieParseRelationshipsAndMetrics(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: sales.public.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+          - name: customer_id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: customer_id}]
+      - name: customers
+        source: sales.public.customers
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+    relationships:
+      - name: orders_to_customers
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [id]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount)"}]
+        description: Total revenue.
+        ai_context:
+          synonyms: [revenue]
+      - name: arpu
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount) / COUNT(DISTINCT customers.id)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantRel := ir.Relationship{
+		Left: "orders", Right: "customers",
+		Columns: []ir.ColumnPair{{Left: "customer_id", Right: "id"}},
+	}
+	if len(m.Relationships) != 1 || !reflect.DeepEqual(m.Relationships[0], wantRel) {
+		t.Errorf("Relationships = %#v, want %#v", m.Relationships, wantRel)
+	}
+
+	orders := tableByName(t, m, "orders")
+
+	// A plain aggregation over one column yields BOTH a measure and a metric,
+	// sharing the OSI metric's name - the shape dbt.Parse produces for a
+	// type: simple metric, so every emitter behaves the same whatever the source.
+	if len(orders.Measures) != 1 {
+		t.Fatalf("want 1 measure on orders, got %d", len(orders.Measures))
+	}
+	ms := orders.Measures[0]
+	if ms.Name != "total_revenue" || ms.Agg != "sum" || ms.Expr != "amount" {
+		t.Errorf("measure = %+v, want {total_revenue sum amount}", ms)
+	}
+	if !reflect.DeepEqual(ms.Synonyms, []string{"revenue"}) {
+		t.Errorf("measure Synonyms = %v", ms.Synonyms)
+	}
+
+	// Both metrics home on orders: total_revenue directly, arpu on its first
+	// referenced dataset.
+	var names []string
+	for _, mt := range orders.Metrics {
+		names = append(names, mt.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"total_revenue", "arpu"}) {
+		t.Errorf("orders.Metrics = %v, want [total_revenue arpu]", names)
+	}
+	wantDef := ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}}
+	if !reflect.DeepEqual(orders.Metrics[0].Def, wantDef) {
+		t.Errorf("total_revenue Def = %#v, want %#v", orders.Metrics[0].Def, wantDef)
+	}
+}
+
+// TestOssieParseUnparseableMetric notes a metric it cannot parse rather than
+// guessing an AST for it.
+func TestOssieParseUnparseableMetric(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+    metrics:
+      - name: weird
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "NTILE(4) OVER (ORDER BY amount)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	if len(orders.Metrics) != 0 {
+		t.Errorf("want the unparseable metric skipped, got %d", len(orders.Metrics))
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "weird") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note naming the skipped metric, got %v", m.Notes)
+	}
+}
+
+// TestOssieParseEmptyRelationshipColumns notes a relationship with no
+// from_columns/to_columns rather than dropping it silently.
+func TestOssieParseEmptyRelationshipColumns(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+      - name: customers
+        source: s.p.customers
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+    relationships:
+      - name: empty_rel
+        from: orders
+        to: customers
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Relationships) != 0 {
+		t.Errorf("want the empty-column relationship skipped, got %v", m.Relationships)
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "empty_rel") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note naming the skipped relationship, got %v", m.Notes)
+	}
+}
+
+// tableByName fetches a table by name or fails the test.
+func tableByName(t *testing.T, m *ir.Model, name string) ir.Table {
+	t.Helper()
+	for _, tb := range m.Tables {
+		if tb.Name == name {
+			return tb
+		}
+	}
+	t.Fatalf("no table %q in %v", name, m.Tables)
+	return ir.Table{}
 }
