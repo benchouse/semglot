@@ -12,7 +12,7 @@ import (
 func emitContextRules(t *testing.T, m *ir.Model) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := (naoContextRules{}).Emit(m, dir); err != nil {
+	if _, err := (naoContextRules{}).Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "RULES.md"))

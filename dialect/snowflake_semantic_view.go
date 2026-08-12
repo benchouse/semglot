@@ -33,7 +33,7 @@ func (snowflakeSemanticView) WithOptions(o Options) Emitter {
 	}
 }
 
-func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
+func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	view := strings.ToUpper(s.ModelName)
 	if view == "" {
 		view = "SEMANTIC_VIEW"
@@ -55,6 +55,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 		qualifiedView = fmt.Sprintf("%s.%s.%s", strings.ToUpper(s.Database), strings.ToUpper(viewSchema), view)
 	}
 	notes := slices.Clone(m.Notes)
+	var own []string
 
 	// metricTableOf maps each metric name to its owning table (uppercased) so a
 	// derived metric can reference its component metrics by qualified name.
@@ -85,7 +86,9 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 		seen := map[string]bool{}
 		for _, mt := range t.Metrics {
 			if reason, degrade := cortexDegrade(mt.Def); degrade {
-				notes = append(notes, fmt.Sprintf("metric %q: %s", mt.Name, reason))
+				note := fmt.Sprintf("metric %q: %s", mt.Name, reason)
+				notes = append(notes, note)
+				own = append(own, note)
 				continue
 			}
 			expr, ok := renderSVMetricDef(mt.Def, metricTableOf)
@@ -94,7 +97,9 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 				// references an unknown metric can't be a Snowflake semantic-view
 				// metric ("a metric must directly refer to another aggregate-level
 				// expression … without an aggregate"). Degrade to a note.
-				notes = append(notes, fmt.Sprintf("metric %q: derived ratio not expressible as a semantic-view metric", mt.Name))
+				note := fmt.Sprintf("metric %q: derived ratio not expressible as a semantic-view metric", mt.Name)
+				notes = append(notes, note)
+				own = append(own, note)
 				continue
 			}
 			name := strings.ToUpper(mt.Name)
@@ -133,8 +138,17 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 			leftCols = append(leftCols, strings.ToUpper(cp.Left))
 			rightCols = append(rightCols, strings.ToUpper(cp.Right))
 		}
-		rels = append(rels, fmt.Sprintf("%s_%s as %s(%s) references %s(%s)",
-			strings.ToUpper(r.Left), strings.ToUpper(r.Right),
+		relName := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
+		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
+		// ship-to vs bill-to customer) would otherwise collide on this same name —
+		// Snowflake requires relationship names to be unique in a semantic view.
+		// Disambiguate all of the pair's relationships by their own left column(s)
+		// so each gets a distinct, deterministic name.
+		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+			relName += "_" + strings.ToUpper(suffix)
+		}
+		rels = append(rels, fmt.Sprintf("%s as %s(%s) references %s(%s)",
+			relName,
 			strings.ToUpper(r.Left), strings.Join(leftCols, ","),
 			strings.ToUpper(r.Right), strings.Join(rightCols, ",")))
 	}
@@ -162,9 +176,9 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) error {
 	b.WriteString(";\n```\n")
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return own, err
 	}
-	return os.WriteFile(filepath.Join(dir, "definition.md"), b.Bytes(), 0o644)
+	return own, os.WriteFile(filepath.Join(dir, "definition.md"), b.Bytes(), 0o644)
 }
 
 // writeSection writes a comma-separated CREATE SEMANTIC VIEW clause, or nothing

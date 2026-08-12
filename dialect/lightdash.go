@@ -460,7 +460,14 @@ func (s *ldColumnSet) resolveNameCollisions(mm *ldModelMeta, table string) []str
 // Emit writes the IR as one dbt schema.yml carrying Lightdash annotations. It
 // does not mutate m: passthrough notes and degrade notes accumulate in a local
 // slice and render as a leading # semglot: comment block.
-func (l lightdash) Emit(m *ir.Model, dir string) error {
+// Emit writes schema.yml and returns its degrade notes as warnings.
+//
+// The notes are ALSO written into the file as a leading `# semglot:` comment
+// block, deliberately: the emitted schema.yml is committed and deployed by
+// `lightdash deploy`, so a reader of the artifact should see what was dropped
+// without going back to the build log. Returning them as well lets the CLI
+// surface them at build time, which is the channel main added.
+func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	var notes []string
 	notes = append(notes, m.Notes...)
 
@@ -574,13 +581,13 @@ func (l lightdash) Emit(m *ir.Model, dir string) error {
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(f); err != nil {
-		return err
+		return notes, err
 	}
 	if err := enc.Close(); err != nil {
-		return err
+		return notes, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return notes, err
 	}
-	return os.WriteFile(filepath.Join(dir, "schema.yml"), buf.Bytes(), 0o644)
+	return notes, os.WriteFile(filepath.Join(dir, "schema.yml"), buf.Bytes(), 0o644)
 }

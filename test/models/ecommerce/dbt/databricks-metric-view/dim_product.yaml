@@ -1,0 +1,17 @@
+version: "1.1"
+comment: Product dimension.
+source: analytics.main.dim_product
+fields:
+  - name: product_id
+    expr: product_id
+    comment: Product surrogate key.
+  - name: category
+    expr: category
+    comment: Product category.
+  - name: title
+    expr: title
+    comment: Product title.
+measures:
+  - name: row_count
+    expr: count(1)
+    comment: 'Row count. Synthesised: the source declares no measures for this table.'

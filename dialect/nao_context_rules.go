@@ -16,7 +16,7 @@ type naoContextRules struct{}
 
 func (naoContextRules) Name() string { return "nao-context-rules" }
 
-func (naoContextRules) Emit(m *ir.Model, dir string) error {
+func (naoContextRules) Emit(m *ir.Model, dir string) ([]string, error) {
 	resolve := metricResolver(m)
 
 	var b bytes.Buffer
@@ -100,9 +100,9 @@ func (naoContextRules) Emit(m *ir.Model, dir string) error {
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(filepath.Join(dir, "RULES.md"), b.Bytes(), 0o644)
+	return nil, os.WriteFile(filepath.Join(dir, "RULES.md"), b.Bytes(), 0o644)
 }
 
 func notesToBullets(notes []string) []string {

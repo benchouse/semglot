@@ -13,7 +13,7 @@ import (
 func emitNaoYaml(t *testing.T, m *ir.Model) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := (naoYaml{}).Emit(m, dir); err != nil {
+	if _, err := (naoYaml{}).Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "semantic.yaml"))
@@ -21,6 +21,52 @@ func emitNaoYaml(t *testing.T, m *ir.Model) string {
 		t.Fatalf("read semantic.yaml: %v", err)
 	}
 	return string(b)
+}
+
+// TestNaoYamlWarningsExcludeModelNotes guards the double-print regression: the
+// CLI already prints model.Notes separately, so an emitter's returned
+// warnings must carry only ITS OWN degrade notes, never m.Notes verbatim.
+func TestNaoYamlWarningsExcludeModelNotes(t *testing.T) {
+	m := &ir.Model{
+		Notes: []string{"a pre-existing model-level note"},
+		Tables: []ir.Table{{
+			Name:       "t",
+			Dimensions: []ir.Field{{Name: "id", Expr: "id"}},
+			Metrics: []ir.Metric{
+				{Name: "cumulative_revenue", Def: ir.Window{Base: ir.Ref{Metric: "revenue"}, Window: "7 day"}},
+			},
+		}},
+	}
+	dir := t.TempDir()
+	warnings, err := (naoYaml{}).Emit(m, dir)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	foundDegrade := false
+	for _, w := range warnings {
+		if strings.Contains(w, "cumulative_revenue") {
+			foundDegrade = true
+		}
+		if strings.Contains(w, "a pre-existing model-level note") {
+			t.Errorf("warnings must not include m.Notes (double-print regression), got: %v", warnings)
+		}
+	}
+	if !foundDegrade {
+		t.Errorf("expected a warning naming the degraded metric cumulative_revenue, got: %v", warnings)
+	}
+	// The artifact itself must still carry BOTH the model note and the degrade
+	// note — only the returned warnings are scoped to this emitter's own.
+	b, err := os.ReadFile(filepath.Join(dir, "semantic.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "a pre-existing model-level note") {
+		t.Errorf("semantic.yaml must still carry the model note:\n%s", out)
+	}
+	if !strings.Contains(out, "cumulative_revenue") {
+		t.Errorf("semantic.yaml must still carry the degrade note:\n%s", out)
+	}
 }
 
 // TestNaoYamlFoldsSynonyms verifies a field's synonyms are folded into the

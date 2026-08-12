@@ -20,8 +20,14 @@ models:
         type: Number
         description: Customer surrogate key.
     relations:
-      orders:
-        name: Orders
+      orders_billing_customer_sk:
+        name: Orders (Billing customer sk)
+        type: hasMany
+        model_id: FCT_ORDERS
+        join_strategy:
+          join_key: CUSTOMER_SK
+      orders_customer_sk:
+        name: Orders (Customer sk)
         type: hasMany
         model_id: FCT_ORDERS
         join_strategy:

@@ -46,7 +46,7 @@ func TestSupersimpleEmit(t *testing.T) {
 		},
 	}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestSupersimpleCompoundKeyNoClobber(t *testing.T) {
 		},
 	}}}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatal(err)
 	}
 	out := readFile(t, filepath.Join(dir, "T.yaml"))
@@ -240,7 +240,7 @@ func TestSupersimpleCrossTableNonComposingChildDeferred(t *testing.T) {
 		},
 	}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatal(err)
 	}
 	notes := readFile(t, filepath.Join(dir, "NOTES.md"))
@@ -279,7 +279,7 @@ func TestSupersimpleCrossTableRatioEmit(t *testing.T) {
 		},
 	}
 	dir := t.TempDir()
-	if err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
+	if _, err := (supersimple{Schema: "MAIN"}).Emit(m, dir); err != nil {
 		t.Fatal(err)
 	}
 	orders := readFile(t, filepath.Join(dir, "FCT_ORDERS.yaml"))

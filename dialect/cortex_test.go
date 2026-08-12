@@ -62,7 +62,7 @@ func TestCortexEmitPrefersRealDataType(t *testing.T) {
 		},
 	}}}
 	dir := t.TempDir()
-	if err := (cortex{Database: "DB", Schema: "MAIN", ModelName: "m"}).Emit(m, dir); err != nil {
+	if _, err := (cortex{Database: "DB", Schema: "MAIN", ModelName: "m"}).Emit(m, dir); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
@@ -93,7 +93,7 @@ func TestCortexTypeGaps(t *testing.T) {
 		Measures:       []ir.Measure{{Field: ir.Field{Name: "total_due", Expr: "total_due"}, Agg: "sum"}}, // inferred NUMBER
 	}}}
 
-	got := CortexTypeGaps(m)
+	got := cortexTypeGaps(m)
 	want := []string{
 		"fct_vendor_bills.bill_id (inferred NUMBER)",
 		"fct_vendor_bills.bill_amount (inferred TEXT)",
@@ -116,7 +116,7 @@ func TestCortexTypeGapsNoneWhenTyped(t *testing.T) {
 		Name:       "dim_customer",
 		Dimensions: []ir.Field{{Name: "customer_segment", Expr: "customer_segment", DataType: "varchar"}},
 	}}}
-	if gaps := CortexTypeGaps(m); len(gaps) != 0 {
+	if gaps := cortexTypeGaps(m); len(gaps) != 0 {
 		t.Fatalf("expected no gaps for fully-typed table, got: %v", gaps)
 	}
 }
@@ -138,7 +138,7 @@ func TestCortexEmitEnumSampleValues(t *testing.T) {
 		},
 	}}}
 	dir := t.TempDir()
-	if err := (cortex{Database: "DB", Schema: "MAIN", ModelName: "m"}).Emit(m, dir); err != nil {
+	if _, err := (cortex{Database: "DB", Schema: "MAIN", ModelName: "m"}).Emit(m, dir); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
@@ -166,7 +166,7 @@ func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
 		Notes: []string{`metric "growth" (derived): Orders, boosted. — not transpiled: unsupported metric type "derived"`},
 	}
 	dir := t.TempDir()
-	if err := (cortex{}).Emit(m, dir); err != nil {
+	if _, err := (cortex{}).Emit(m, dir); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
@@ -185,7 +185,7 @@ func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
 func TestCortexEmit(t *testing.T) {
 	dir := t.TempDir()
 	e := cortex{Database: "ANALYTICS", Schema: "MAIN", ModelName: "eval_marts"}
-	if err := e.Emit(sampleIR(), dir); err != nil {
+	if _, err := e.Emit(sampleIR(), dir); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))

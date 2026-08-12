@@ -8,9 +8,15 @@ dimensions:
   - name: is_refunded
     type: categorical
     description: Whether the order was refunded.
+  - name: billing_customer_sk
+    type: categorical
+    description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
   - name: channel_id
     type: categorical
     description: Sales channel the order came through.
+  - name: aov
+    type: categorical
+    description: Precomputed average order value; superseded by the computed aov metric.
   - name: order_date
     type: date
     description: Date the order was placed.

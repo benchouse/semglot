@@ -16,7 +16,7 @@ func emitLightdash(t *testing.T, m *ir.Model, opts Options) string {
 	t.Helper()
 	e := lightdash{}.WithOptions(opts)
 	dir := t.TempDir()
-	if err := e.Emit(m, dir); err != nil {
+	if _, err := e.Emit(m, dir); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "schema.yml"))

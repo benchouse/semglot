@@ -1,6 +1,7 @@
 # semglot: some source constructs could not be transpiled to Lightdash:
 # - metric refunded_orders not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
 # - metric refund_rate not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
+# - table fct_orders: column aov not emitted as a dimension: its name collides with metric aov, and Lightdash resolves that clash in favour of the dimension, silently dropping the metric
 # - metric units_per_order not emitted to Lightdash: no Lightdash primitive (filtered/compound aggregate or unresolved reference)
 version: 2
 models:
@@ -11,6 +12,9 @@ models:
       joins:
         - join: dim_customer
           sql_on: ${fct_orders.customer_sk} = ${dim_customer.customer_sk}
+          relationship: many-to-one
+        - join: dim_customer
+          sql_on: ${fct_orders.billing_customer_sk} = ${dim_customer.customer_sk}
           relationship: many-to-one
         - join: dim_channel
           sql_on: ${fct_orders.channel_id} = ${dim_channel.channel_id}
@@ -38,6 +42,11 @@ models:
         meta:
           dimension:
             type: boolean
+      - name: billing_customer_sk
+        description: Customer who is billed for the order; may differ from the ordering customer (role-playing dimension, e.g. a corporate account's billing contact).
+        meta:
+          dimension:
+            type: number
       - name: channel_id
         description: Sales channel the order came through.
         meta:
@@ -135,6 +144,40 @@ models:
         meta:
           dimension:
             type: string
+  - name: obt_sales
+    description: Wide sales table at order-line grain. One row per order line. Measures only, no metrics.
+    meta:
+      primary_key: order_line_id
+      joins:
+        - join: fct_orders
+          sql_on: ${obt_sales.order_id} = ${fct_orders.order_id}
+          relationship: many-to-one
+    columns:
+      - name: order_line_id
+        description: Line-item surrogate key.
+        meta:
+          dimension:
+            type: number
+      - name: order_id
+        description: Order the line belongs to.
+        meta:
+          dimension:
+            type: number
+      - name: customer_segment
+        description: Marketing segment.
+        meta:
+          dimension:
+            type: string
+      - name: is_refunded
+        description: Whether the order line was refunded.
+        meta:
+          dimension:
+            type: boolean
+      - name: order_date
+        description: Date the order was placed.
+        meta:
+          dimension:
+            type: date
   - name: dim_channel
     description: Sales channel dimension.
     meta:
