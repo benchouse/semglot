@@ -34,6 +34,8 @@ The version string is a pinned const in the emitter, not a computed value.
 | `dialect/sqlexpr.go` | shared SQL-expression parser (extracted from `dbt.go`) |
 | `dialect/ossie_test.go`, `dialect/ossie_emit_test.go` | unit + golden tests |
 | `test/models/ossie/` | fixtures, including vendored upstream files |
+| `ir/model.go` | `Table.Synonyms` (see IR change) |
+| every `dialect/*.go` emitter | table synonyms, structural or prose |
 
 Registered via `init()` as `ossie`, implementing `Parser`, `Emitter`, and
 `Configurable`.
@@ -57,7 +59,7 @@ Multiple `semantic_model[]` entries, and multiple files, merge into the single
 | `Metric` | model-level `metrics[]`, `expression` = `renderSQL(Def)` |
 | `Table.PrimaryKey` | `primary_key: []` (composite supported natively) |
 | `Relationship` | `relationships[]`: `from`/`to` = `Left`/`Right`, zipped `from_columns`/`to_columns` (composite supported natively) |
-| `Field.Synonyms`, `Metric.Synonyms` | `ai_context.synonyms` (round-trips structurally) |
+| `Table.Synonyms` (new), `Field.Synonyms`, `Metric.Synonyms` | `ai_context.synonyms` (round-trips structurally) |
 | `Description` | `description` |
 | `Model.Notes` | model-level `ai_context.instructions` |
 | `Field.Enum`, `Metric.Label`, `Metric.Dimensions` | folded into the field's / metric's own `description` |
@@ -67,10 +69,54 @@ Emit writes exactly one `semantic_model[]` entry, named from `Options.Name` with
 `Options.Description`, since the IR holds one model.
 
 `ai_context` is `string | object` in the schema. Parse accepts both: an object
-reads `synonyms` and `instructions`; a bare string is treated as
-`instructions`. A **dataset**-level `ai_context` has no IR counterpart (`ir.Table`
-carries no synonyms field), so it folds into the table's `Description` on parse
-rather than being dropped.
+reads `synonyms` and `instructions`; a bare string is treated as `instructions`.
+
+## IR change: `Table.Synonyms`
+
+Ossie carries `ai_context.synonyms` on datasets — its own TPC-DS example leans on
+them heavily (`"sales transactions"`, `"POS data"`) — and `ir.Table` has no
+synonyms field, only `ir.Field` and `ir.Metric` do. Rather than degrade
+dataset-level synonyms to prose on parse, add them to the IR:
+
+```go
+// Table is one grain/entity in the layer.
+type Table struct {
+    // ...
+    Synonyms []string // alternative names for the table/entity
+}
+```
+
+This is a genuine pre-existing gap, not an ossie quirk: two shipped targets have
+a table-level synonym slot semglot does not currently fill. Wire it across every
+dialect, structurally where a slot exists and as prose where none does.
+
+| Dialect | Table synonyms land in |
+|---|---|
+| `ossie` | `ai_context.synonyms` on the dataset (parse + emit) |
+| `dbt` | model-level `meta.synonyms` (parse + emit) |
+| `snowflake-semantic-view` | `with synonyms (...)` on the table (emit) |
+| `cortex` | `synonyms:` on the table (emit) |
+| `nao-yaml`, `nao-context-rules`, `lightdash`, `databricks-metric-view`, `supersimple` | folded into the table/model description via `appendClause` |
+
+Notes on the mechanics:
+
+- `svSynonyms` (`snowflake_semantic_view.go:205`) already documents that Snowflake
+  accepts synonyms "on tables, dimensions, facts, and metrics" and renders the
+  clause; the table case is just not called yet.
+- `cortexTable` has no `synonyms` field today while `cortexCol` does. Confirm
+  table-level support against Snowflake's Cortex Analyst YAML spec before adding
+  the key; if unsupported, `cortex` degrades to prose with the rest.
+- `dbtModel` has no `Meta` field at all — only `dbtColumn` does. Add one carrying
+  `synonyms`, mirroring the existing column convention, and honour the
+  `DbtMetaKeyPath` option (`meta:` vs `config.meta:`) exactly as the column path
+  does. Without this, `ossie → dbt → ossie` drops table synonyms.
+- The prose fold reuses `synonymClause` / `appendClause` (`enum.go:65`), which is
+  how these five dialects already degrade *column* synonyms.
+- This closes the **`supersimple` synonyms** gap `dialect/README.md` currently
+  records under "Gaps vs. limits", since the helper finally gets wired there.
+
+All golden fixtures are regenerated (`UPDATE_GOLDEN=1 go test ./...`) and the diff
+reviewed, per `CONTRIBUTING.md`.
 
 ### Measures emit as both a field and a metric
 
@@ -188,8 +234,6 @@ sharing the metric's name — the same shape `dbt.Parse` produces for a
   `dbt → dbt` is not.
 - No per-table grain, metric label, field label, or enum-value slot.
 - No source-table identity on parse.
-- Dataset-level `ai_context.synonyms` has no structural IR home and folds into
-  the table description.
 
 ## Divergences from the reference converters
 
@@ -262,7 +306,9 @@ commit `88e0011148283302c9a04cd0287e00e0b9d87354` (2026-07-31), and the license.
   second source exists.
 - `dialect/README.md`: add an `ossie` column to the mapping table, update the
   **Direction** section (which asserts dbt is the only source), and record the
-  format limits above under **Gaps vs. limits**.
+  format limits above under **Gaps vs. limits**. The **Synonyms** row gains a
+  table-level counterpart across every column, and the `supersimple` synonyms
+  entry moves out of "Gaps" because this change closes it.
 
 ## Out of scope (YAGNI)
 
