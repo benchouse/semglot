@@ -69,22 +69,25 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	var tables, rels, dims, metrics []string
 	for _, t := range m.Tables {
 		u := strings.ToUpper(t.Name)
-		// Prefer the source dialect's own declared physical address (see
-		// cortex.go's identical rule): the TABLES clause needs a
-		// database.schema.table reference, which only a clean three-part
-		// Source can supply. Anything else falls back to the profile
-		// reconstruction with a warning rather than half-applying it.
-		physDB, physSchema, physTable := s.Database, schema, u
+		// Prefer the source dialect's own declared physical address. Unlike
+		// cortexBaseTable, the TABLES clause holds its reference as ONE
+		// string, so a genuine table reference is used verbatim regardless
+		// of how many dot-separated parts it has (a two-part schema.table
+		// resolves fine against the session database). Only a source that is
+		// a QUERY rather than a reference (which the OSI spec permits) can't
+		// go here — that falls back to the profile reconstruction with a
+		// warning rather than pasting a subquery into the TABLES clause.
+		physRef := fmt.Sprintf("%s.%s.%s", s.Database, schema, u)
 		if t.Source != "" {
-			if db, sch, tbl, ok := splitSource(t.Source); ok {
-				physDB, physSchema, physTable = db, sch, tbl
-			} else {
-				note := unsplittableSourceWarning("snowflake-semantic-view", t.Name, t.Source)
+			if looksLikeQuery(t.Source) {
+				note := querySourceWarning("snowflake-semantic-view", t.Name, t.Source)
 				notes = append(notes, note)
 				own = append(own, note)
+			} else {
+				physRef = t.Source
 			}
 		}
-		line := fmt.Sprintf("%s as %s.%s.%s", u, physDB, physSchema, physTable)
+		line := fmt.Sprintf("%s as %s", u, physRef)
 		if len(t.PrimaryKey) > 0 {
 			line += fmt.Sprintf(" primary key (%s)", strings.Join(upperAll(t.PrimaryKey), ","))
 		}

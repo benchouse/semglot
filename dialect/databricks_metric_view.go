@@ -166,7 +166,6 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
 // warning — the CLI already prints m.Notes separately, and double-printing it
 // per emitted view would be wrong).
 func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(string) (ir.Expr, bool), metricOwner map[string]string, tableByName map[string]ir.Table, catalog, schema string) (dbxMetricView, []string) {
-	mv := dbxMetricView{Version: "1.1", Source: dbxQualify(catalog, schema, t.Name)}
 	// Seeded with m.Notes (cloned; Emit is read-only over m), the same
 	// passthrough annotations every sibling target (cortex, supersimple,
 	// snowflake-semantic-view, nao-yaml, nao-context-rules) folds into its
@@ -183,19 +182,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		notes = append(notes, n)
 		own = append(own, n)
 	}
-	// Prefer the source dialect's own declared physical address (see
-	// cortex.go's identical rule): `source:` needs a clean three-part
-	// catalog.schema.table reference. Anything else (a two-part name, or a
-	// source that is a query, which the OSI spec explicitly permits) falls
-	// back to the profile reconstruction with a warning rather than
-	// half-applying it.
-	if t.Source != "" {
-		if db, sch, tbl, ok := splitSource(t.Source); ok {
-			mv.Source = db + "." + sch + "." + tbl
-		} else {
-			addNote(unsplittableSourceWarning("databricks-metric-view", t.Name, t.Source))
-		}
-	}
+	mv := dbxMetricView{Version: "1.1", Source: dbxSourceFor(t, catalog, schema, addNote)}
 
 	// Joins: relationships where this table is the LEFT (referencing) side. A
 	// (Left, Right) pair with more than one relationship is a role-playing
@@ -216,9 +203,19 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		for _, cp := range r.Columns {
 			conds = append(conds, "source."+strings.ToLower(cp.Left)+" = "+joinName+"."+strings.ToLower(cp.Right))
 		}
+		// The joined table's OWN declared source, not the joining table's:
+		// resolving via dbxQualify(catalog, schema, r.Right) alone would
+		// paste this view's catalog/schema onto a table that may declare a
+		// different physical address entirely (fixed as part of task 16's
+		// fix round — a same-named-but-relocated join is exactly the defect
+		// this task exists to close, left live here previously).
+		joinSource := dbxQualify(catalog, schema, r.Right)
+		if rt, ok := tableByName[strings.ToLower(r.Right)]; ok {
+			joinSource = dbxSourceFor(rt, catalog, schema, addNote)
+		}
 		mv.Joins = append(mv.Joins, dbxJoin{
 			Name:       joinName,
-			Source:     dbxQualify(catalog, schema, r.Right),
+			Source:     joinSource,
 			On:         strings.Join(conds, " and "),
 			RightTable: strings.ToLower(r.Right),
 		})
@@ -432,6 +429,26 @@ func dbxQualify(catalog, schema, table string) string {
 		return schema + "." + t
 	}
 	return catalog + "." + schema + "." + t
+}
+
+// dbxSourceFor resolves t's physical reference for a `source:` field —
+// either a metric view's own `source:` or a `joins[].source:`, which share
+// the exact same shape. `source:` holds ONE opaque string, unlike
+// cortexBaseTable's separate Database/Schema/Table fields, so a genuine table
+// reference is used verbatim regardless of its dot-part count (a two-part
+// schema.table resolves fine against the current catalog). Only a source
+// that is a QUERY rather than a reference (which the OSI spec permits) can't
+// go here as-is; addNote records the resulting warning and the profile
+// reconstruction is used instead.
+func dbxSourceFor(t ir.Table, catalog, schema string, addNote func(string)) string {
+	if t.Source != "" {
+		if looksLikeQuery(t.Source) {
+			addNote(querySourceWarning("databricks-metric-view", t.Name, t.Source))
+		} else {
+			return t.Source
+		}
+	}
+	return dbxQualify(catalog, schema, t.Name)
 }
 
 // dbxFieldComment folds a field's enum into its description, since a metric-view

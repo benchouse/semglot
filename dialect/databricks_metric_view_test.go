@@ -218,33 +218,106 @@ func TestDatabricksMetricViewPrefersDeclaredSource(t *testing.T) {
 	}
 }
 
-// TestDatabricksMetricViewUnsplittableSourceFallsBackAndWarns covers the
-// wrinkle: `source:` needs a clean catalog.schema.table reference. A source
-// that does not split into exactly three non-empty parts (a two-part name
-// here) must fall back to the profile reconstruction AND warn, rather than
-// half-applying it into a plausible but wrong, unwarned address.
-func TestDatabricksMetricViewUnsplittableSourceFallsBackAndWarns(t *testing.T) {
+// TestDatabricksMetricViewAcceptsTwoPartSourceVerbatim covers fix round 1's
+// correction: `source:` holds its reference as ONE string (unlike
+// cortexBaseTable's separate Database/Schema/Table fields), so a two-part
+// schema.table source — which resolves fine against the current catalog —
+// must be used verbatim, with no warning, rather than rejected in favour of a
+// same-shaped fabricated two-part address from the profile.
+func TestDatabricksMetricViewAcceptsTwoPartSourceVerbatim(t *testing.T) {
 	m := &ir.Model{Tables: []ir.Table{{
 		Name:       "orders",
-		Source:     "public.orders",
+		Source:     "crm.orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings for a usable two-part source: %v", warnings)
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: crm.orders") {
+		t.Errorf("source must use the declared two-part crm.orders verbatim:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewQuerySourceFallsBackAndWarns covers the case that
+// genuinely can't go in `source:`: the OSI spec permits `source` to be a
+// query rather than a table reference, but a metric view's `source:` needs
+// an address, not a subquery embedded as if it were one. That must fall back
+// to the profile reconstruction AND warn.
+func TestDatabricksMetricViewQuerySourceFallsBackAndWarns(t *testing.T) {
+	source := "SELECT * FROM raw.orders WHERE deleted_at IS NULL"
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Source:     source,
 		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
 	}}}
 	files, warnings := emitDbxW(t, m)
 	var found bool
 	for _, w := range warnings {
-		if strings.Contains(w, `table "orders"`) && strings.Contains(w, "public.orders") && strings.Contains(w, "databricks-metric-view") {
+		if strings.Contains(w, `table "orders"`) && strings.Contains(w, source) && strings.Contains(w, "databricks-metric-view") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("want a warning naming the table, source, and databricks-metric-view; got %v", warnings)
+		t.Errorf("want a warning naming the table, the query source, and databricks-metric-view; got %v", warnings)
 	}
 	got, ok := files["orders.yaml"]
 	if !ok {
 		t.Fatalf("expected orders.yaml, got files: %v", files)
 	}
 	if !strings.Contains(got, "source: analytics.main.orders") {
-		t.Errorf("must fall back to the profile-reconstructed reference, not half-apply the source:\n%s", got)
+		t.Errorf("must fall back to the profile-reconstructed reference, not paste the query into source:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewJoinPrefersDeclaredSource covers fix round 1's
+// critical finding: a join's source was still built from the joining view's
+// own catalog/schema, ignoring the JOINED table's own declared Source —
+// producing a view whose own `source:` correctly pointed at its declared
+// address while `joins[].source:` pointed at a fabricated, unrelated location
+// for the very same entity (and orphaned any real declared source for it
+// entirely). The joined table's Source must resolve the same way the view's
+// own source does.
+func TestDatabricksMetricViewJoinPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "orders",
+				Source:     "PROD.SALES.orders_v1",
+				Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+			},
+			{
+				Name:       "customer",
+				Source:     "OTHERDB.CRM.customer_master",
+				Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
+			},
+		},
+		Relationships: []ir.Relationship{
+			{Left: "orders", Right: "customer", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
+		},
+	}
+	files, warnings := emitDbxW(t, m)
+	for _, w := range warnings {
+		if strings.Contains(w, "orders") || strings.Contains(w, "customer") {
+			t.Errorf("unexpected warning for two cleanly-declared sources: %q", w)
+		}
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: PROD.SALES.orders_v1") {
+		t.Errorf("view's own source must be the declared PROD.SALES.orders_v1:\n%s", got)
+	}
+	if !strings.Contains(got, "source: OTHERDB.CRM.customer_master") {
+		t.Errorf("join's source must be the JOINED table's declared OTHERDB.CRM.customer_master, not the view's own catalog/schema:\n%s", got)
+	}
+	if strings.Contains(got, "source: analytics.main.customer") {
+		t.Errorf("join must not fall back to a fabricated analytics.main.customer when customer declares its own source:\n%s", got)
 	}
 }
 

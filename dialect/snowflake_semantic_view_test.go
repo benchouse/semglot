@@ -94,14 +94,45 @@ func TestSVEmitPrefersDeclaredSource(t *testing.T) {
 	}
 }
 
-// TestSVEmitUnsplittableSourceFallsBackAndWarns covers the wrinkle: the TABLES
-// clause needs a clean database.schema.table reference. A source that does
-// not split into exactly three non-empty parts (a two-part name here) must
-// fall back to the profile reconstruction AND warn, rather than half-applying
-// it into a plausible but wrong, unwarned address.
-func TestSVEmitUnsplittableSourceFallsBackAndWarns(t *testing.T) {
+// TestSVEmitAcceptsTwoPartSourceVerbatim covers fix round 1's correction: the
+// TABLES clause holds its reference as ONE string (unlike cortexBaseTable's
+// separate Database/Schema/Table fields), so a two-part schema.table source —
+// which resolves fine against the session database — must be used verbatim,
+// with no warning, rather than rejected in favour of a same-shaped fabricated
+// two-part address from the profile.
+func TestSVEmitAcceptsTwoPartSourceVerbatim(t *testing.T) {
 	dir := t.TempDir()
-	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: "public.orders"}}}
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: "CRM.orders"}}}
+	e := snowflakeSemanticView{}.WithOptions(Options{Database: "WAREHOUSE", Schema: "PUBLIC", Name: "SV"})
+	warnings, err := e.Emit(m, dir)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings for a usable two-part source: %v", warnings)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "ORDERS as CRM.orders") {
+		t.Errorf("table line must use the declared two-part source CRM.orders verbatim:\n%s", out)
+	}
+	if strings.Contains(out, "WAREHOUSE.PUBLIC.ORDERS") {
+		t.Errorf("must not fall back to the profile reconstruction for a usable source:\n%s", out)
+	}
+}
+
+// TestSVEmitQuerySourceFallsBackAndWarns covers the case that genuinely can't
+// go in the TABLES clause: the OSI spec permits `source` to be a query rather
+// than a table reference, but a semantic view's TABLES clause needs an
+// address, not a subquery. That must fall back to the profile reconstruction
+// AND warn, rather than pasting the query in as if it were a table name.
+func TestSVEmitQuerySourceFallsBackAndWarns(t *testing.T) {
+	dir := t.TempDir()
+	source := "SELECT * FROM raw.orders WHERE deleted_at IS NULL"
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: source}}}
 	e := snowflakeSemanticView{}.WithOptions(Options{Database: "WAREHOUSE", Schema: "PUBLIC", Name: "SV"})
 	warnings, err := e.Emit(m, dir)
 	if err != nil {
@@ -109,12 +140,12 @@ func TestSVEmitUnsplittableSourceFallsBackAndWarns(t *testing.T) {
 	}
 	var found bool
 	for _, w := range warnings {
-		if strings.Contains(w, `table "orders"`) && strings.Contains(w, "public.orders") && strings.Contains(w, "snowflake-semantic-view") {
+		if strings.Contains(w, `table "orders"`) && strings.Contains(w, source) && strings.Contains(w, "snowflake-semantic-view") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("want a warning naming the table, the unsplittable source, and snowflake-semantic-view; got %v", warnings)
+		t.Errorf("want a warning naming the table, the query source, and snowflake-semantic-view; got %v", warnings)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
 	if err != nil {
@@ -122,7 +153,7 @@ func TestSVEmitUnsplittableSourceFallsBackAndWarns(t *testing.T) {
 	}
 	out := string(b)
 	if !strings.Contains(out, "ORDERS as WAREHOUSE.PUBLIC.ORDERS") {
-		t.Errorf("must fall back to the profile-reconstructed reference, not half-apply the source:\n%s", out)
+		t.Errorf("must fall back to the profile-reconstructed reference, not paste the query into the TABLES clause:\n%s", out)
 	}
 }
 

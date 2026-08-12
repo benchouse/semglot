@@ -131,9 +131,15 @@ func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
 
 // splitSource splits an ir.Table.Source into its three dot-separated parts
 // (database, schema, table). ok is false unless source has EXACTLY three
-// non-empty parts — a two-part name, or a source that is a query rather than
-// a table reference (which the OSI spec explicitly permits), is not a
-// physical address any of the targets that call this can safely reassemble.
+// non-empty parts. This is cortex's OWN requirement, not a general one:
+// cortexBaseTable has separate Database/Schema/Table YAML fields, so only a
+// clean three-part reference can be reassembled into them (see the note on
+// the shared dialect_test.go doc, and dialect/README.md). Targets that hold
+// their physical reference as a single dotted string (snowflake-semantic-
+// view, databricks-metric-view, supersimple) do NOT need this — they can
+// take Source verbatim regardless of its part count; see looksLikeQuery for
+// the check that actually applies to them.
+//
 // Callers must not half-apply a failed split (e.g. treating the last segment
 // as the table name and inventing the rest) — that produces a plausible,
 // wrong, unwarned address. Fall back to profile reconstruction instead, and
@@ -152,11 +158,46 @@ func splitSource(source string) (database, schema, table string, ok bool) {
 }
 
 // unsplittableSourceWarning reports that table's declared Source could not be
-// expressed in target's database/schema/table shape, so the emitter fell back
-// to reconstructing a physical reference from the profile instead of silently
-// half-applying it.
+// split into target's separate Database/Schema/Table fields, so the emitter
+// fell back to reconstructing a physical reference from the profile instead
+// of silently half-applying it. Used only by cortex — the one target whose
+// physical-reference shape genuinely requires three separate fields; see
+// querySourceWarning for the equivalent used by the string-valued targets.
 func unsplittableSourceWarning(target, table, source string) string {
 	return fmt.Sprintf(
-		"table %q: declared source %q could not be expressed as %s's database/schema/table shape; reconstructed from the profile instead",
+		"table %q: declared source %q could not be split into %s's separate database/schema/table fields; reconstructed from the profile instead",
+		table, source, target)
+}
+
+// looksLikeQuery reports whether source reads as a SQL query rather than a
+// plain table reference. The OSI spec permits `source` to be "either
+// database_name.schema_name.table_name or query" — a target whose physical-
+// reference field is a single opaque string (snowflake-semantic-view,
+// databricks-metric-view, supersimple) can take a genuine table reference
+// verbatim no matter how many dot-separated parts it has (a two-part
+// schema.table resolves against the session database / current catalog just
+// fine), but must not paste a query into that slot as if it were an address:
+// a snowflake TABLES clause and a supersimple `table:` field both expect a
+// reference, not a subquery. Detected by whitespace, parentheses, or a
+// leading SELECT — a plain dotted identifier list contains none of those.
+func looksLikeQuery(source string) bool {
+	s := strings.TrimSpace(source)
+	if s == "" {
+		return false
+	}
+	if strings.ContainsAny(s, " \t\n\r(") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToUpper(s), "SELECT")
+}
+
+// querySourceWarning reports that table's declared Source is a query rather
+// than a table reference (which the OSI spec explicitly permits, but which
+// target's physical-reference field cannot hold as-is), so the emitter fell
+// back to reconstructing an address from the profile instead of pasting the
+// query in where a table reference belongs.
+func querySourceWarning(target, table, source string) string {
+	return fmt.Sprintf(
+		"table %q: declared source %q is a query, not a table reference; %s needs an address here, so it was reconstructed from the profile instead",
 		table, source, target)
 }

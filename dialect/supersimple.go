@@ -155,18 +155,21 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 	// and relations) and register its simple metrics.
 	for _, t := range m.Tables {
 		id := strings.ToUpper(t.Name)
-		// Prefer the source dialect's own declared physical address (see
-		// cortex.go's identical rule): only a clean three-part Source can be
-		// reassembled here; anything else (a two-part name, or a source that
-		// is a query, which the OSI spec explicitly permits) falls back to
-		// the profile reconstruction with a warning rather than
-		// half-applying it.
+		// Prefer the source dialect's own declared physical address. `table:`
+		// holds ONE opaque string, unlike cortexBaseTable's separate
+		// Database/Schema/Table fields, so a genuine table reference is used
+		// verbatim regardless of its dot-part count (a two-part schema.table
+		// resolves fine against the connection's default database). Only a
+		// source that is a QUERY rather than a reference (which the OSI spec
+		// permits) can't go here as-is — that falls back to the profile
+		// reconstruction with a warning rather than pasting a query into
+		// `table:` as if it were an address.
 		table := schema + "." + id
 		if t.Source != "" {
-			if db, sch, tbl, ok := splitSource(t.Source); ok {
-				table = db + "." + sch + "." + tbl
+			if looksLikeQuery(t.Source) {
+				degradeNotes = append(degradeNotes, querySourceWarning("supersimple", t.Name, t.Source))
 			} else {
-				degradeNotes = append(degradeNotes, unsplittableSourceWarning("supersimple", t.Name, t.Source))
+				table = t.Source
 			}
 		}
 		model := ssModel{
