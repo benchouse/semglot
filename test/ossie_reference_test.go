@@ -23,21 +23,36 @@ import (
 //     osi-schema.json rejects (additionalProperties: false permits only
 //     `version` and `semantic_model`). semglot does not emit it, and the
 //     comparison ignores it entirely by parsing into semglot's own structs.
+//
 //  2. Their ratios parenthesize aggressively — `(SUM(x)) / (SUM(y))` — while
 //     renderOperand parenthesizes only compound operands. normalizeExpr strips
 //     redundant parens around single terms before comparing.
+//
 //  3. Expression case and whitespace: they uppercase aggregate names, semglot
 //     renders lowercase neutral SQL. normalizeExpr folds case.
+//
 //  4. COUNT desugaring: they rewrite a COUNT measure over column x as
-//     `SUM(CASE WHEN x IS NOT NULL THEN 1 ELSE 0 END)`, presumably so every
-//     metric expression is a SUM and stays trivially roll-up-able. semglot
-//     emits plain `COUNT(x)`, and is right to: COUNT is the ANSI spelling of
-//     exactly this aggregate, it is what every other semglot target emits for
-//     a dbt `agg: count` measure, and it is better behaved at the edge — over
-//     an empty input COUNT(x) is 0 while their SUM(CASE …) is NULL. Their form
-//     is an internal representation choice, not a semantic requirement.
-//     normalizeExpr folds the desugared form back to COUNT(x), so a genuine
-//     arithmetic disagreement still fails.
+//     `SUM(CASE WHEN x IS NOT NULL THEN 1 ELSE 0 END)` — in the metric
+//     expression, and in the dataset field the measure contributes (there
+//     without the SUM wrapper). This is not Ossie's own logic: it arrives via
+//     dbt Labs' metricflow_semantic_interfaces, whose measure-level sibling is
+//     commented upstream as "legacy behavior that will be irrelevant once
+//     measures are no longer supported" — an implementation artifact being
+//     phased out, not a semantic requirement.
+//
+//     semglot emits plain `COUNT(x)`, and is right to: COUNT is the ANSI
+//     spelling of exactly this aggregate, and it is what every other semglot
+//     target emits for a dbt `agg: count` measure. The edge-case behaviour
+//     genuinely differs in BOTH directions, and neither form dominates: over
+//     an empty input `COUNT(x)` is 0 where their `SUM(CASE …)` is NULL, which
+//     favours COUNT read on its own — but composed as a ratio denominator
+//     (`arpu` here) that reverses, since their NULL propagates to a NULL
+//     result while COUNT's 0 risks a divide-by-zero error. Recorded so a
+//     future reader sees the whole trade, not only the half favouring us.
+//
+//     normalizeExpr folds the metric-level form back to COUNT(x) and
+//     normalizeFieldExpr folds the bare field-level form back to x, so a
+//     genuine arithmetic disagreement still fails.
 const referenceDivergences = `dialects key; redundant parens; expression case; COUNT desugaring`
 
 var (
@@ -48,6 +63,14 @@ var (
 	// deliberately anchored on the whole idiom (both the SUM wrapper and the
 	// literal 1/0 arms) so it cannot collapse an unrelated conditional SUM.
 	countDesugar = regexp.MustCompile(`sum\(\s*case when ([A-Za-z_][A-Za-z0-9_.]*) is not null then 1 else 0 end\s*\)`)
+	// countDesugarBare matches the FIELD-level half of that same desugaring,
+	// where the SUM wrapper is absent: the field a COUNT measure contributes is
+	// declared as `case when x is not null then 1 else 0 end` rather than `x`.
+	// Losing the wrapper loses an anchor, so this pattern is anchored on the
+	// whole string instead (^…$): it can only ever rewrite a field whose ENTIRE
+	// expression is this exact idiom over a bare identifier. It cannot match a
+	// sub-expression, so it cannot quietly absorb part of a future regression.
+	countDesugarBare = regexp.MustCompile(`^case when ([A-Za-z_][A-Za-z0-9_.]*) is not null then 1 else 0 end$`)
 )
 
 // normalizeExpr canonicalizes a SQL expression for comparison: case-folded,
@@ -67,8 +90,20 @@ func normalizeExpr(s string) string {
 	}
 }
 
+// normalizeFieldExpr canonicalizes a dataset FIELD's expression. It is
+// normalizeExpr plus the whole-string bare-CASE fold of divergence 4; field
+// expressions are compared separately from metric expressions precisely so
+// that extra fold applies only where the reference converter actually emits
+// that form, and nowhere else.
+func normalizeFieldExpr(s string) string {
+	return countDesugarBare.ReplaceAllString(normalizeExpr(s), "$1")
+}
+
 // osiSummary is the semantic content compared between the two implementations:
-// dataset -> sorted field names, and metric name -> normalized expression.
+// dataset -> sorted "field = expression" entries, and metric name ->
+// normalized expression. Fields carry their expression, not just their name,
+// so a regression that keeps a field's name but changes the column it resolves
+// to still fails.
 type osiSummary struct {
 	fields  map[string][]string
 	metrics map[string]string
@@ -90,7 +125,13 @@ func summarize(t *testing.T, path string) osiSummary {
 			Datasets []struct {
 				Name   string `yaml:"name"`
 				Fields []struct {
-					Name string `yaml:"name"`
+					Name       string `yaml:"name"`
+					Expression struct {
+						Dialects []struct {
+							Dialect    string `yaml:"dialect"`
+							Expression string `yaml:"expression"`
+						} `yaml:"dialects"`
+					} `yaml:"expression"`
 				} `yaml:"fields"`
 			} `yaml:"datasets"`
 			Metrics []struct {
@@ -110,12 +151,18 @@ func summarize(t *testing.T, path string) osiSummary {
 	s := osiSummary{fields: map[string][]string{}, metrics: map[string]string{}}
 	for _, sm := range doc.SemanticModel {
 		for _, ds := range sm.Datasets {
-			var names []string
+			var fields []string
 			for _, f := range ds.Fields {
-				names = append(names, f.Name)
+				// A field with no ANSI_SQL expression is compared on its name
+				// alone rather than skipped — dropping it would hide it.
+				var expr string
+				if len(f.Expression.Dialects) > 0 {
+					expr = normalizeFieldExpr(f.Expression.Dialects[0].Expression)
+				}
+				fields = append(fields, f.Name+" = "+expr)
 			}
-			sort.Strings(names)
-			s.fields[ds.Name] = names
+			sort.Strings(fields)
+			s.fields[ds.Name] = fields
 		}
 		for _, mt := range sm.Metrics {
 			if len(mt.Expression.Dialects) == 0 {

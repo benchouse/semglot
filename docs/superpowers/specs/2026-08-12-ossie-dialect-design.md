@@ -248,10 +248,17 @@ Recorded because the differential tests below must tolerate them:
   lowercase SQL. Textual only.
 - They desugar a `COUNT` measure over column `x` into
   `SUM(CASE WHEN x IS NOT NULL THEN 1 ELSE 0 END)` — both in the metric
-  expression and in the dataset field the measure contributes. semglot emits
-  plain `COUNT(x)`: it is the ANSI spelling of the same aggregate, it is what
-  every other semglot target emits for a dbt `agg: count`, and it is better
-  behaved over an empty input (`COUNT(x)` is 0, their `SUM(CASE …)` is NULL).
+  expression and in the dataset field the measure contributes (there without the
+  `SUM` wrapper). The rule is not Ossie's own: it arrives via dbt Labs'
+  `metricflow_semantic_interfaces`, whose measure-level sibling upstream is
+  commented as *"legacy behavior that will be irrelevant once measures are no
+  longer supported"* — an implementation artifact being phased out. semglot
+  emits plain `COUNT(x)`: the ANSI spelling of the same aggregate, and what
+  every other semglot target emits for a dbt `agg: count`. The edge-case
+  behaviour differs in both directions and neither form dominates: over an empty
+  input `COUNT(x)` is 0 where their `SUM(CASE …)` is NULL (favouring COUNT read
+  alone), but as a ratio denominator that reverses — their NULL propagates to a
+  NULL result while COUNT's 0 risks a divide-by-zero.
 - Their Databricks converter picks the fact table as `source` and folds the rest
   in as `joins`, while semglot's `databricks-metric-view` emitter writes one view
   per table. Their paired `*_metric_view.yaml` files are therefore **not** valid
