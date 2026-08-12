@@ -230,6 +230,23 @@ sharing the metric's name — the same shape `dbt.Parse` produces for a
 - Metric expressions that do not parse.
 - Expression available only under several non-ANSI dialects.
 - `from_columns` / `to_columns` length mismatch.
+- A dataset's `unique_keys` (the IR has only a primary key).
+- `ai_context.instructions` below the model level (dataset, field, metric); the
+  MODEL's instructions map onto `Model.Notes` structurally instead.
+- `ai_context.examples` at every level, and model-level `ai_context.synonyms`.
+- `custom_extensions` at every level, naming the owner and the `vendor_name`s.
+- A metric `datatype` that no synthesised measure carries (a ratio or derived
+  metric — `ir.Metric` has no `DataType`).
+- A same-named dataset, field, or metric declared twice with CONFLICTING
+  content (see "Merging" below).
+
+**Merging.** Multiple `semantic_model[]` entries and multiple files merge into
+one `ir.Model`, and a dataset declared more than once merges by NAME into one
+`ir.Table` — unioning fields and synonyms and filling in an empty description or
+primary key — mirroring `dbt.Parse`. OSI requires a dataset name to be unique
+within a model, so appending a second same-named `ir.Table` would emit an
+invalid document. Conflicts (a field name with two expressions, two primary
+keys, a duplicate metric name) resolve first-wins with a note.
 
 **Format limits** (documented in `dialect/README.md` as limits, not gaps):
 
@@ -352,8 +369,12 @@ commit `88e0011148283302c9a04cd0287e00e0b9d87354` (2026-07-31), and the license.
 ## Out of scope (YAGNI)
 
 - The Ossie ontology layer (`concept` / `ValueType` / `requires`).
-- `custom_extensions` in either direction — the accepted decision is prose-only
-  degradation, so no `vendor_name: SEMGLOT` block is written or read.
+- `custom_extensions` **round-tripping** in either direction — the accepted
+  decision is prose-only degradation, so no `vendor_name: SEMGLOT` block is
+  written, and an incoming block's payload is never interpreted. Out of scope
+  for round-tripping is not the same as invisible, though: parse decodes each
+  block's `vendor_name` only, and notes the owner and vendors present, per the
+  standing no-silent-drop ruling.
 - A live differential harness invoking Ossie's Python converters. It would catch
   upstream drift, but semglot's CI is Go-only with one dependency and this puts
   Python and `uv` on the path.

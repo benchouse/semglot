@@ -218,6 +218,15 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 				warnings = append(warnings, fmt.Sprintf("metric %q not emitted to ossie: %s", mt.Name, reason))
 				continue
 			}
+			// Two IR tables may each publish a metric of one name; OSI's single
+			// flat list cannot hold both under the unique-name rule. First wins,
+			// with a warning — emitting both would produce a document the spec
+			// rejects, silently.
+			if seen[mt.Name] {
+				warnings = append(warnings, fmt.Sprintf(
+					"metric %q on table %q not emitted: a metric of the same name is already in OSI's flat metric list", mt.Name, t.Name))
+				continue
+			}
 			desc := mt.Description
 			// Label, agg-time grain, and slice-by dimensions have no OSI slot.
 			if mt.Label != "" {

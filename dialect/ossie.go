@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -35,32 +36,35 @@ type osiFile struct {
 }
 
 type osiModel struct {
-	Name          string            `yaml:"name"`
-	Description   string            `yaml:"description,omitempty"`
-	AIContext     *osiAIContext     `yaml:"ai_context,omitempty"`
-	Datasets      []osiDataset      `yaml:"datasets"`
-	Relationships []osiRelationship `yaml:"relationships,omitempty"`
-	Metrics       []osiMetric       `yaml:"metrics,omitempty"`
+	Name             string               `yaml:"name"`
+	Description      string               `yaml:"description,omitempty"`
+	AIContext        *osiAIContext        `yaml:"ai_context,omitempty"`
+	Datasets         []osiDataset         `yaml:"datasets"`
+	Relationships    []osiRelationship    `yaml:"relationships,omitempty"`
+	Metrics          []osiMetric          `yaml:"metrics,omitempty"`
+	CustomExtensions []osiCustomExtension `yaml:"custom_extensions,omitempty"`
 }
 
 type osiDataset struct {
-	Name        string        `yaml:"name"`
-	Source      string        `yaml:"source"`
-	PrimaryKey  []string      `yaml:"primary_key,omitempty"`
-	UniqueKeys  [][]string    `yaml:"unique_keys,omitempty"`
-	Description string        `yaml:"description,omitempty"`
-	AIContext   *osiAIContext `yaml:"ai_context,omitempty"`
-	Fields      []osiField    `yaml:"fields,omitempty"`
+	Name             string               `yaml:"name"`
+	Source           string               `yaml:"source"`
+	PrimaryKey       []string             `yaml:"primary_key,omitempty"`
+	UniqueKeys       [][]string           `yaml:"unique_keys,omitempty"`
+	Description      string               `yaml:"description,omitempty"`
+	AIContext        *osiAIContext        `yaml:"ai_context,omitempty"`
+	Fields           []osiField           `yaml:"fields,omitempty"`
+	CustomExtensions []osiCustomExtension `yaml:"custom_extensions,omitempty"`
 }
 
 type osiField struct {
-	Name        string        `yaml:"name"`
-	Expression  osiExpression `yaml:"expression"`
-	Dimension   *osiDimension `yaml:"dimension,omitempty"`
-	Label       string        `yaml:"label,omitempty"`
-	Description string        `yaml:"description,omitempty"`
-	DataType    string        `yaml:"datatype,omitempty"`
-	AIContext   *osiAIContext `yaml:"ai_context,omitempty"`
+	Name             string               `yaml:"name"`
+	Expression       osiExpression        `yaml:"expression"`
+	Dimension        *osiDimension        `yaml:"dimension,omitempty"`
+	Label            string               `yaml:"label,omitempty"`
+	Description      string               `yaml:"description,omitempty"`
+	DataType         string               `yaml:"datatype,omitempty"`
+	AIContext        *osiAIContext        `yaml:"ai_context,omitempty"`
+	CustomExtensions []osiCustomExtension `yaml:"custom_extensions,omitempty"`
 }
 
 type osiDimension struct {
@@ -68,19 +72,37 @@ type osiDimension struct {
 }
 
 type osiRelationship struct {
-	Name        string   `yaml:"name"`
-	From        string   `yaml:"from"`
-	To          string   `yaml:"to"`
-	FromColumns []string `yaml:"from_columns"`
-	ToColumns   []string `yaml:"to_columns"`
+	Name             string               `yaml:"name"`
+	From             string               `yaml:"from"`
+	To               string               `yaml:"to"`
+	FromColumns      []string             `yaml:"from_columns"`
+	ToColumns        []string             `yaml:"to_columns"`
+	CustomExtensions []osiCustomExtension `yaml:"custom_extensions,omitempty"`
 }
 
 type osiMetric struct {
-	Name        string        `yaml:"name"`
-	Expression  osiExpression `yaml:"expression"`
-	Description string        `yaml:"description,omitempty"`
-	DataType    string        `yaml:"datatype,omitempty"`
-	AIContext   *osiAIContext `yaml:"ai_context,omitempty"`
+	Name             string               `yaml:"name"`
+	Expression       osiExpression        `yaml:"expression"`
+	Description      string               `yaml:"description,omitempty"`
+	DataType         string               `yaml:"datatype,omitempty"`
+	AIContext        *osiAIContext        `yaml:"ai_context,omitempty"`
+	CustomExtensions []osiCustomExtension `yaml:"custom_extensions,omitempty"`
+}
+
+// osiCustomExtension is one vendor-private extension block. The spec allows
+// them on the model, a dataset, a field, a relationship and a metric, and real
+// vendor payloads exist in Apache Ossie's own fixtures (DATABRICKS formatting
+// hints, a SALESFORCE Tableau/CRM block).
+//
+// The design's "Out of scope" section decided on prose-only degradation: their
+// contents are vendor-private, semglot neither interprets them nor writes a
+// `vendor_name: SEMGLOT` block of its own, so only vendor_name is decoded and
+// nothing is ever emitted (every emit path leaves the slice nil, and omitempty
+// keeps the key out of the document). Out of scope for round-tripping is not
+// the same as invisible, though: parse notes each block's owner and vendor,
+// per this branch's no-silent-drop ruling.
+type osiCustomExtension struct {
+	VendorName string `yaml:"vendor_name,omitempty"`
 }
 
 type osiExpression struct {
@@ -126,14 +148,56 @@ func (a *osiAIContext) synonyms() []string {
 }
 
 // examplesNote returns a note reporting a's Examples, or "" when there are
-// none. The IR has no examples slot at any level (model, dataset, or field),
-// so this is the only way that data survives parsing. subject names what the
-// ai_context belongs to, e.g. `dataset "orders"`.
+// none. The IR has no examples slot at any level (model, dataset, field, or
+// metric), so this is the only way that data survives parsing. subject names
+// what the ai_context belongs to, e.g. `dataset "orders"`. Every level that
+// can carry an ai_context must call it — a level left out is a silent drop.
 func (a *osiAIContext) examplesNote(subject string) string {
 	if a == nil || len(a.Examples) == 0 {
 		return ""
 	}
 	return fmt.Sprintf("%s ai_context.examples %v: no examples slot in the IR; dropped", subject, a.Examples)
+}
+
+// instructionsNote returns a note reporting a's Instructions, or "" when there
+// are none. Only the MODEL level has an IR home for instructions
+// (ir.Model.Notes, which mergeModel appends the text to directly); a dataset's,
+// field's, or metric's instructions have no slot at all, so they surface as a
+// note naming the level and the owner rather than vanishing. Both the object
+// form and the bare-string form osiAIContext.UnmarshalYAML accepts reach here,
+// since both land in the same Instructions field.
+func (a *osiAIContext) instructionsNote(subject string) string {
+	if a == nil || a.Instructions == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s ai_context.instructions %q: no instructions slot in the IR below the model level; dropped",
+		subject, a.Instructions)
+}
+
+// customExtensionsNote returns a note naming subject's vendor extension blocks,
+// or "" when there are none. See osiCustomExtension for why the payload itself
+// is deliberately not carried across.
+func customExtensionsNote(subject string, ext []osiCustomExtension) string {
+	if len(ext) == 0 {
+		return ""
+	}
+	vendors := make([]string, 0, len(ext))
+	for _, e := range ext {
+		if e.VendorName == "" {
+			vendors = append(vendors, "(unnamed)")
+			continue
+		}
+		vendors = append(vendors, e.VendorName)
+	}
+	return fmt.Sprintf("%s custom_extensions %v: vendor extensions are not transpiled; dropped", subject, vendors)
+}
+
+// addNote appends note to *notes unless it is empty, so a caller can hand it
+// the result of a *Note helper without repeating the emptiness check.
+func addNote(notes *[]string, note string) {
+	if note != "" {
+		*notes = append(*notes, note)
+	}
 }
 
 // ---- data types ----
@@ -255,7 +319,17 @@ func (o ossie) Parse(sources ...string) (*ir.Model, error) {
 }
 
 // mergeModel folds one OSI semantic_model entry into out.
+//
+// A dataset whose name is already in out is MERGED into the existing ir.Table
+// rather than appended as a second same-named one — see mergeTable. Multiple
+// semantic_model entries and multiple files are documented to "merge into the
+// single ir.Model", and dbt.Parse merges its models: / semantic_models: by name
+// the same way (TestDBTParseMerge). Appending a duplicate would also make
+// tableIndex home every metric on the first of the pair and make Emit write two
+// `datasets:` entries under one name, which OSI's "unique identifier for the
+// dataset" rule forbids.
 func mergeModel(out *ir.Model, sm osiModel) {
+	modelSubject := fmt.Sprintf("model %q", sm.Name)
 	if sm.AIContext != nil && sm.AIContext.Instructions != "" {
 		out.Notes = append(out.Notes, sm.AIContext.Instructions)
 	}
@@ -266,10 +340,11 @@ func mergeModel(out *ir.Model, sm osiModel) {
 		out.Notes = append(out.Notes,
 			fmt.Sprintf("model %q ai_context.synonyms %v: no model-level synonym slot in the IR; dropped", sm.Name, syn))
 	}
-	if note := sm.AIContext.examplesNote(fmt.Sprintf("model %q", sm.Name)); note != "" {
-		out.Notes = append(out.Notes, note)
-	}
+	addNote(&out.Notes, sm.AIContext.examplesNote(modelSubject))
+	addNote(&out.Notes, customExtensionsNote(modelSubject, sm.CustomExtensions))
+
 	for _, ds := range sm.Datasets {
+		dsSubject := fmt.Sprintf("dataset %q", ds.Name)
 		t := ir.Table{
 			Name:        ds.Name,
 			Description: ds.Description,
@@ -281,10 +356,14 @@ func mergeModel(out *ir.Model, sm osiModel) {
 			out.Notes = append(out.Notes,
 				fmt.Sprintf("dataset %q unique_keys %v: no unique-key slot in the IR; dropped", ds.Name, ds.UniqueKeys))
 		}
-		if note := ds.AIContext.examplesNote(fmt.Sprintf("dataset %q", ds.Name)); note != "" {
-			out.Notes = append(out.Notes, note)
-		}
+		addNote(&out.Notes, ds.AIContext.instructionsNote(dsSubject))
+		addNote(&out.Notes, ds.AIContext.examplesNote(dsSubject))
+		addNote(&out.Notes, customExtensionsNote(dsSubject, ds.CustomExtensions))
 		for _, f := range ds.Fields {
+			fSubject := fmt.Sprintf("field %q on dataset %q", f.Name, ds.Name)
+			addNote(&out.Notes, f.AIContext.instructionsNote(fSubject))
+			addNote(&out.Notes, f.AIContext.examplesNote(fSubject))
+			addNote(&out.Notes, customExtensionsNote(fSubject, f.CustomExtensions))
 			expr, ok, note := pickExpression(f.Expression)
 			if !ok {
 				out.Notes = append(out.Notes,
@@ -292,10 +371,7 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				continue
 			}
 			if note != "" {
-				out.Notes = append(out.Notes, fmt.Sprintf("field %q on dataset %q: %s", f.Name, ds.Name, note))
-			}
-			if note := f.AIContext.examplesNote(fmt.Sprintf("field %q on dataset %q", f.Name, ds.Name)); note != "" {
-				out.Notes = append(out.Notes, note)
+				out.Notes = append(out.Notes, fmt.Sprintf("%s: %s", fSubject, note))
 			}
 			// OSI's field-level label has no IR field-level slot, so it folds
 			// into the description as visible prose rather than vanishing.
@@ -316,10 +392,15 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				t.Dimensions = append(t.Dimensions, fld)
 			}
 		}
+		if i := tableIndex(out, t.Name); i >= 0 {
+			mergeTable(&out.Tables[i], t, &out.Notes)
+			continue
+		}
 		out.Tables = append(out.Tables, t)
 	}
 
 	for _, r := range sm.Relationships {
+		addNote(&out.Notes, customExtensionsNote(fmt.Sprintf("relationship %q", r.Name), r.CustomExtensions))
 		if len(r.FromColumns) != len(r.ToColumns) {
 			out.Notes = append(out.Notes, fmt.Sprintf(
 				"relationship %q: from_columns (%d) and to_columns (%d) differ in length; skipped",
@@ -350,6 +431,12 @@ func mergeModel(out *ir.Model, sm osiModel) {
 		colsByTable[ds.Name] = cols
 	}
 	for _, mt := range sm.Metrics {
+		mtSubject := fmt.Sprintf("metric %q", mt.Name)
+		// Reported before the skip checks below, so a metric that never reaches
+		// the IR still surfaces what its ai_context carried.
+		addNote(&out.Notes, mt.AIContext.instructionsNote(mtSubject))
+		addNote(&out.Notes, mt.AIContext.examplesNote(mtSubject))
+		addNote(&out.Notes, customExtensionsNote(mtSubject, mt.CustomExtensions))
 		expr, ok, note := pickExpression(mt.Expression)
 		if !ok {
 			out.Notes = append(out.Notes, fmt.Sprintf("metric %q has no expression; skipped", mt.Name))
@@ -376,6 +463,15 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"metric %q references unknown dataset %q; skipped", mt.Name, home))
 			continue
 		}
+		if metricIndex(out.Tables[idx].Metrics, mt.Name) >= 0 {
+			// Two semantic_model entries (or two files) publishing the same
+			// metric name onto the same dataset. Keeping both would put two
+			// same-named entries in OSI's one flat, model-level metrics list on
+			// the way back out, which the spec's unique-name rule forbids.
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"metric %q on dataset %q is declared more than once; the later declaration was dropped", mt.Name, home))
+			continue
+		}
 		def = resolveAggTables(def, mt.Name, owner, tables, colsByTable, &out.Notes)
 		// A plain aggregation over one column is also a column-backed measure.
 		if agg, col, isSimple := simpleAgg(def); isSimple {
@@ -389,6 +485,13 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				},
 				Agg: agg,
 			})
+		} else if mt.DataType != "" {
+			// Only a column-backed measure has a DataType slot to carry the
+			// metric's datatype (the branch above). ir.Metric has none at all,
+			// so a ratio's or derived metric's datatype would otherwise vanish.
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"metric %q datatype %q: ir.Metric has no datatype slot (only a column-backed measure carries one); dropped",
+				mt.Name, mt.DataType))
 		}
 		out.Tables[idx].Metrics = append(out.Tables[idx].Metrics, ir.Metric{
 			Name:        mt.Name,
@@ -397,6 +500,92 @@ func mergeModel(out *ir.Model, sm osiModel) {
 			Def:         def,
 		})
 	}
+}
+
+// mergeTable folds src into dst, both being the same OSI dataset declared
+// twice (two semantic_model entries, or two files in one source directory).
+//
+// Fields are unioned by name — OSI documents a field's name as "unique
+// identifier for the field within the logical dataset", so two declarations of
+// one name describe one column. An identical redeclaration is absorbed
+// silently because nothing is lost; a conflicting one keeps the FIRST
+// declaration and notes the conflict, the same first-wins-plus-warn rule
+// ossie_emit.go's addField applies to the emit direction. Scalars (description,
+// primary key) fill in when the first declaration left them empty and are
+// otherwise kept with a note on disagreement, so a merge never invents a
+// composite key or a spliced description out of two conflicting sources.
+func mergeTable(dst *ir.Table, src ir.Table, notes *[]string) {
+	switch {
+	case dst.Description == "":
+		dst.Description = src.Description
+	case src.Description != "" && src.Description != dst.Description:
+		*notes = append(*notes, fmt.Sprintf(
+			"dataset %q is declared more than once with different descriptions; kept %q and dropped %q",
+			dst.Name, dst.Description, src.Description))
+	}
+	for _, s := range src.Synonyms {
+		if !contains(dst.Synonyms, s) {
+			dst.Synonyms = append(dst.Synonyms, s)
+		}
+	}
+	switch {
+	case len(dst.PrimaryKey) == 0:
+		dst.PrimaryKey = src.PrimaryKey
+	case len(src.PrimaryKey) > 0 && !reflect.DeepEqual(dst.PrimaryKey, src.PrimaryKey):
+		*notes = append(*notes, fmt.Sprintf(
+			"dataset %q is declared more than once with different primary keys; kept %v and dropped %v",
+			dst.Name, dst.PrimaryKey, src.PrimaryKey))
+	}
+	mergeFields(dst, src.Dimensions, false, notes)
+	mergeFields(dst, src.TimeDimensions, true, notes)
+}
+
+// mergeFields adds each of src's fields to dst's dimension or time-dimension
+// list, skipping a name dst already declares. A skipped field that differs from
+// the one already there (a different expression, or a different temporal role)
+// is real information loss and is noted; an identical one is not.
+func mergeFields(dst *ir.Table, src []ir.Field, isTime bool, notes *[]string) {
+	for _, f := range src {
+		if prev, prevTime, found := findField(dst, f.Name); found {
+			if prevTime != isTime || !reflect.DeepEqual(prev, f) {
+				*notes = append(*notes, fmt.Sprintf(
+					"field %q on dataset %q is declared more than once with different definitions; kept the first (expression %q) and dropped the second (expression %q)",
+					f.Name, dst.Name, prev.Expr, f.Expr))
+			}
+			continue
+		}
+		if isTime {
+			dst.TimeDimensions = append(dst.TimeDimensions, f)
+		} else {
+			dst.Dimensions = append(dst.Dimensions, f)
+		}
+	}
+}
+
+// findField looks name up across both of t's field lists, reporting whether it
+// was found and whether it is a time dimension.
+func findField(t *ir.Table, name string) (f ir.Field, isTime, found bool) {
+	for _, d := range t.Dimensions {
+		if d.Name == name {
+			return d, false, true
+		}
+	}
+	for _, d := range t.TimeDimensions {
+		if d.Name == name {
+			return d, true, true
+		}
+	}
+	return ir.Field{}, false, false
+}
+
+// metricIndex returns the position of the named metric in ms, or -1.
+func metricIndex(ms []ir.Metric, name string) int {
+	for i := range ms {
+		if ms[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // colOwner indexes which dataset declares a given column, so an unqualified
@@ -503,8 +692,29 @@ func metricHome(e ir.Expr, owner map[string]string, tables map[string]string) (s
 // left empty and a note is appended to *notes naming metricName and the
 // unattributable sub-expression, rather than falling back to any table
 // silently.
+//
+// A Col reached OUTSIDE an aggregate — an OSI metric whose whole expression is
+// `amount`, or the bare operand in `amount / order_count` — is qualified by the
+// same rule. It has to be: OSI's metrics list is MODEL-scoped, with none of the
+// implicit dataset scope a dataset's own `fields:` entries have, so a bare
+// column emitted there names nothing in particular. Skipping this case (as an
+// earlier version did, descending only Agg and Binary) broke the very
+// always-qualified invariant this comment claims, and did it silently.
 func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tables map[string]string, colsByTable map[string][]string, notes *[]string) ir.Expr {
 	switch n := e.(type) {
+	case ir.Col:
+		if n.Table != "" {
+			return n
+		}
+		table, ok := metricHome(n, owner, tables)
+		if !ok {
+			*notes = append(*notes, fmt.Sprintf(
+				"metric %q: column %q could not be attributed to a dataset (unknown or ambiguous column); left unqualified",
+				metricName, n.Name))
+			return n
+		}
+		n.Table = table
+		return n
 	case ir.Agg:
 		if n.Arg == nil {
 			return n // COUNT(*) has no column to qualify

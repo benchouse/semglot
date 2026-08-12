@@ -503,6 +503,437 @@ semantic_model:
 	}
 }
 
+// TestOssieMetricBareColumnQualified covers an OSI metric whose expression is
+// a bare column, with no aggregate wrapper: `amount` parses to an ir.Col with
+// no Table, and OSI's metrics list is MODEL-scoped, so emitting it unqualified
+// names nothing in particular. resolveAggTables must fill the Table in — it
+// used to descend only Agg and Binary, leaving this case silently wrong.
+func TestOssieMetricBareColumnQualified(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+          - name: tax
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: tax}]
+    metrics:
+      - name: raw_amount
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "amount"}]
+      - name: amount_plus_tax
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "amount + tax"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	if len(orders.Metrics) != 2 {
+		t.Fatalf("want 2 metrics on orders, got %d", len(orders.Metrics))
+	}
+	if want := (ir.Col{Table: "orders", Name: "amount"}); !reflect.DeepEqual(orders.Metrics[0].Def, want) {
+		t.Errorf("raw_amount Def = %#v, want %#v", orders.Metrics[0].Def, want)
+	}
+	// A bare Col reached through a Binary must be qualified too.
+	want := ir.Binary{Op: "+", Left: ir.Col{Table: "orders", Name: "amount"}, Right: ir.Col{Table: "orders", Name: "tax"}}
+	if !reflect.DeepEqual(orders.Metrics[1].Def, want) {
+		t.Errorf("amount_plus_tax Def = %#v, want %#v", orders.Metrics[1].Def, want)
+	}
+
+	// The observable defect: the emitted, model-scoped metric expression.
+	f, _ := emitOssie(t, m, Options{Database: "A", Schema: "M", Name: "sales"})
+	got := map[string]string{}
+	for _, mt := range f.SemanticModel[0].Metrics {
+		got[mt.Name] = fieldExprText(osiField{Expression: mt.Expression})
+	}
+	if got["raw_amount"] != "orders.amount" {
+		t.Errorf("emitted raw_amount = %q, want orders.amount", got["raw_amount"])
+	}
+	if got["amount_plus_tax"] != "orders.amount + orders.tax" {
+		t.Errorf("emitted amount_plus_tax = %q, want %q", got["amount_plus_tax"], "orders.amount + orders.tax")
+	}
+}
+
+// TestOssieMetricBareColumnUnattributableNoted covers the other half of the
+// case above: a bare column no dataset declares stays unqualified and is
+// noted, rather than being attributed to the metric's home table by default.
+func TestOssieMetricBareColumnUnattributableNoted(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+    metrics:
+      - name: amount_plus_mystery
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "amount + mystery"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	bin, ok := orders.Metrics[0].Def.(ir.Binary)
+	if !ok {
+		t.Fatalf("Def = %#v, want ir.Binary", orders.Metrics[0].Def)
+	}
+	if right := bin.Right.(ir.Col); right.Table != "" {
+		t.Errorf("Right.Table = %q, want empty (unattributable), not inherited from the home table", right.Table)
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "amount_plus_mystery") && strings.Contains(n, "mystery") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note naming the metric and the unattributable column, got %v", m.Notes)
+	}
+}
+
+// TestOssieParseMergesDatasetsByName covers two semantic_model entries — in
+// two separate files, so file-level merging is exercised too — that each
+// declare `orders`. They must fold into ONE ir.Table: two same-named tables
+// would make tableIndex home every metric on the first and make Emit write two
+// `datasets:` entries under one name, which OSI forbids. dbt.Parse merges by
+// name the same way (TestDBTParseMerge).
+func TestOssieParseMergesDatasetsByName(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.yaml", `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales_a
+    datasets:
+      - name: orders
+        source: s.p.orders
+        primary_key: [order_id]
+        description: Customer orders.
+        ai_context:
+          synonyms: [purchases]
+        fields:
+          - name: order_id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_id}]
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+    metrics:
+      - name: total_amount
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount)"}]
+`)
+	write("b.yaml", `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales_b
+    datasets:
+      - name: orders
+        source: s.p.orders
+        ai_context:
+          synonyms: [sales]
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+          - name: tax
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: tax}]
+    metrics:
+      - name: total_tax
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.tax)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 1 {
+		names := make([]string, len(m.Tables))
+		for i, tb := range m.Tables {
+			names[i] = tb.Name
+		}
+		t.Fatalf("want the two `orders` declarations merged into 1 table, got %d: %v", len(m.Tables), names)
+	}
+	orders := m.Tables[0]
+	if !reflect.DeepEqual(orders.PrimaryKey, []string{"order_id"}) {
+		t.Errorf("PrimaryKey = %v, want [order_id] (from the declaration that had one)", orders.PrimaryKey)
+	}
+	if orders.Description != "Customer orders." {
+		t.Errorf("Description = %q", orders.Description)
+	}
+	if !reflect.DeepEqual(orders.Synonyms, []string{"purchases", "sales"}) {
+		t.Errorf("Synonyms = %v, want the union [purchases sales]", orders.Synonyms)
+	}
+	var dims []string
+	for _, d := range orders.Dimensions {
+		dims = append(dims, d.Name)
+	}
+	// `amount` is declared by both and must appear once.
+	if !reflect.DeepEqual(dims, []string{"order_id", "amount", "tax"}) {
+		t.Errorf("Dimensions = %v, want [order_id amount tax] (unioned, `amount` not duplicated)", dims)
+	}
+	var metrics []string
+	for _, mt := range orders.Metrics {
+		metrics = append(metrics, mt.Name)
+	}
+	if !reflect.DeepEqual(metrics, []string{"total_amount", "total_tax"}) {
+		t.Errorf("Metrics = %v, want both entries' metrics homed on the merged table", metrics)
+	}
+	// An identical redeclaration loses nothing, so it must not produce a note.
+	if len(m.Notes) != 0 {
+		t.Errorf("want no notes for a conflict-free merge, got %v", m.Notes)
+	}
+}
+
+// TestOssieParseMergeConflictsNoted covers a merge whose two declarations
+// DISAGREE: the first wins (mirroring ossie_emit.go's addField in the emit
+// direction) and every discarded value is named in a note.
+func TestOssieParseMergeConflictsNoted(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: first
+    datasets:
+      - name: orders
+        source: s.p.orders
+        primary_key: [order_id]
+        description: The first description.
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+    metrics:
+      - name: total
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount)"}]
+  - name: second
+    datasets:
+      - name: orders
+        source: s.p.orders
+        primary_key: [order_key]
+        description: The second description.
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: gross_amount}]
+    metrics:
+      - name: total
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 1 {
+		t.Fatalf("want 1 merged table, got %d", len(m.Tables))
+	}
+	orders := m.Tables[0]
+	if orders.Description != "The first description." {
+		t.Errorf("Description = %q, want the first declaration's", orders.Description)
+	}
+	if !reflect.DeepEqual(orders.PrimaryKey, []string{"order_id"}) {
+		t.Errorf("PrimaryKey = %v, want the first declaration's [order_id], not a union", orders.PrimaryKey)
+	}
+	if len(orders.Dimensions) != 1 || orders.Dimensions[0].Expr != "amount" {
+		t.Errorf("Dimensions = %+v, want the first `amount` only", orders.Dimensions)
+	}
+	if len(orders.Metrics) != 1 {
+		t.Errorf("want the duplicate metric dropped, got %d", len(orders.Metrics))
+	}
+	joined := strings.Join(m.Notes, "\n")
+	for _, want := range []string{
+		"different descriptions",
+		"different primary keys",
+		`field "amount" on dataset "orders" is declared more than once`,
+		`metric "total" on dataset "orders" is declared more than once`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Notes = %v, want one containing %q", m.Notes, want)
+		}
+	}
+}
+
+// TestOssieParseNotesNonModelAIContextAndExtensions covers the constructs that
+// used to parse into the OSI structs and then vanish: ai_context.instructions
+// anywhere below the model level (in both its object and bare-string forms),
+// metric-level ai_context.examples, and custom_extensions at every level the
+// spec allows one. None has an IR slot, so each must leave a note.
+func TestOssieParseNotesNonModelAIContextAndExtensions(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        ai_context:
+          instructions: Orders are restated nightly.
+        custom_extensions:
+          - vendor_name: ACME
+            data: '{"x": 1}'
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+            ai_context: Amounts are in cents.
+            custom_extensions:
+              - vendor_name: DATABRICKS
+                data: '{"format": "currency"}'
+      - name: customers
+        source: s.p.customers
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+    relationships:
+      - name: orders_to_customers
+        from: orders
+        to: customers
+        from_columns: [amount]
+        to_columns: [id]
+        custom_extensions:
+          - vendor_name: DATABRICKS
+    metrics:
+      - name: total
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount)"}]
+        ai_context:
+          instructions: Always filter to shipped orders.
+          examples: ["What was the total last month?"]
+        custom_extensions:
+          - vendor_name: SALESFORCE
+    custom_extensions:
+      - vendor_name: ACME
+      - vendor_name: DBT
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(m.Notes, "\n")
+	for _, want := range []string{
+		// ai_context.instructions below the model level (object form).
+		`dataset "orders" ai_context.instructions "Orders are restated nightly."`,
+		`metric "total" ai_context.instructions "Always filter to shipped orders."`,
+		// ...and the bare-string form osiAIContext.UnmarshalYAML accepts.
+		`field "amount" on dataset "orders" ai_context.instructions "Amounts are in cents."`,
+		// metric-level ai_context.examples.
+		`metric "total" ai_context.examples [What was the total last month?]`,
+		// custom_extensions at every level, naming the vendor(s).
+		`model "sales" custom_extensions [ACME DBT]`,
+		`dataset "orders" custom_extensions [ACME]`,
+		`field "amount" on dataset "orders" custom_extensions [DATABRICKS]`,
+		`relationship "orders_to_customers" custom_extensions [DATABRICKS]`,
+		`metric "total" custom_extensions [SALESFORCE]`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Notes = %v,\nwant one containing %q", m.Notes, want)
+		}
+	}
+}
+
+// TestOssieEmitWritesNoCustomExtensions pins the emit half of the decision
+// above: semglot degrades custom_extensions to prose and writes none of its
+// own, so no `vendor_name: SEMGLOT` block (or any other) may appear.
+func TestOssieEmitWritesNoCustomExtensions(t *testing.T) {
+	m := &ir.Model{
+		Notes: []string{`model "sales" custom_extensions [ACME]: vendor extensions are not transpiled; dropped`},
+		Tables: []ir.Table{{
+			Name:       "orders",
+			Dimensions: []ir.Field{{Name: "amount", Expr: "amount"}},
+		}},
+	}
+	f, raw := emitOssie(t, m, Options{Database: "A", Schema: "M", Name: "sales"})
+	// No custom_extensions KEY anywhere. Checked on the raw text by key prefix
+	// rather than by substring, because the prose degradation legitimately puts
+	// the words "custom_extensions" inside ai_context.instructions — which is
+	// the whole point, and must keep working.
+	for _, line := range strings.Split(raw, "\n") {
+		if l := strings.TrimLeft(line, " -"); strings.HasPrefix(l, "custom_extensions:") {
+			t.Errorf("emitted document must not declare custom_extensions:\n%s", raw)
+			break
+		}
+	}
+	sm := f.SemanticModel[0]
+	if sm.CustomExtensions != nil || sm.Datasets[0].CustomExtensions != nil ||
+		sm.Datasets[0].Fields[0].CustomExtensions != nil {
+		t.Errorf("emitted document round-trips a custom_extensions block:\n%s", raw)
+	}
+	// The prose degradation itself must survive.
+	if sm.AIContext == nil || !strings.Contains(sm.AIContext.Instructions, "custom_extensions [ACME]") {
+		t.Errorf("the custom_extensions note must survive as prose, got %+v", sm.AIContext)
+	}
+}
+
+// TestOssieParseNotesMetricDataType covers a metric that is NOT a plain
+// aggregation over one column: it synthesises no ir.Measure, and ir.Metric has
+// no DataType field, so its OSI `datatype` has nowhere to go and must be noted.
+func TestOssieParseNotesMetricDataType(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+          - name: order_id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_id}]
+    metrics:
+      - name: total_amount
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount)"}]
+        datatype: Decimal
+      - name: aov
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount) / COUNT(DISTINCT orders.order_id)"}]
+        datatype: Decimal
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	// The simple aggregation keeps its datatype: it synthesises a measure, and
+	// ir.Measure embeds ir.Field, which has a DataType slot.
+	if len(orders.Measures) != 1 || orders.Measures[0].DataType != "decimal" {
+		t.Errorf("measures = %+v, want total_amount carrying DataType decimal", orders.Measures)
+	}
+	// The ratio does not, so it must be noted.
+	joined := strings.Join(m.Notes, "\n")
+	if !strings.Contains(joined, `metric "aov" datatype "Decimal"`) {
+		t.Errorf("Notes = %v, want one reporting aov's dropped datatype", m.Notes)
+	}
+	if strings.Contains(joined, `metric "total_amount" datatype`) {
+		t.Errorf("Notes = %v, must NOT report a datatype the synthesised measure carries", m.Notes)
+	}
+}
+
 // tableByName fetches a table by name or fails the test.
 func tableByName(t *testing.T, m *ir.Model, name string) ir.Table {
 	t.Helper()

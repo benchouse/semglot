@@ -368,3 +368,37 @@ func TestOssieEmitMetricGrainFoldsIntoDescription(t *testing.T) {
 		t.Errorf("revenue description missing folded grain: %q", sm.Metrics[0].Description)
 	}
 }
+
+// TestOssieEmitDuplicateMetricNameWarns covers two IR tables each publishing a
+// metric of the same name. OSI has ONE flat, model-level metrics list and
+// requires a unique metric name, so both cannot be written; the first wins and
+// the second is reported. Emitting both would produce a document the spec
+// rejects, with nothing to say it had happened.
+func TestOssieEmitDuplicateMetricNameWarns(t *testing.T) {
+	agg := func(table, col string) ir.Expr {
+		return ir.Agg{Func: "sum", Table: table, Arg: ir.Col{Table: table, Name: col}}
+	}
+	m := &ir.Model{Tables: []ir.Table{
+		{Name: "orders", Metrics: []ir.Metric{{Name: "revenue", Def: agg("orders", "amount")}}},
+		{Name: "refunds", Metrics: []ir.Metric{{Name: "revenue", Def: agg("refunds", "amount")}}},
+	}}
+	e := ossie{}.WithOptions(Options{Name: "sales"})
+	out := t.TempDir()
+	warnings, err := e.Emit(m, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := emitOssie(t, m, Options{Name: "sales"})
+	if len(f.SemanticModel[0].Metrics) != 1 {
+		t.Errorf("want 1 metric under the unique-name rule, got %d", len(f.SemanticModel[0].Metrics))
+	}
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, `metric "revenue" on table "refunds" not emitted`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the dropped duplicate, got %v", warnings)
+	}
+}

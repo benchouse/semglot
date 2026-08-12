@@ -116,6 +116,21 @@ and nao dimensions carry a structured `values:` list
 - **No source-table identity in `ossie` on parse.** A dataset's `source`
   (`db.schema.table`) has no IR counterpart; emit reconstructs it from the
   profile's `database`/`schema`.
+- **Vendor `custom_extensions` in `ossie`.** OSI lets a model, dataset, field,
+  relationship, or metric carry vendor-private extension blocks (Apache Ossie's
+  own fixtures ship `DATABRICKS`, `SALESFORCE`, and `DBT` ones). Their contents
+  are vendor-specific by definition, so semglot neither interprets them nor
+  writes any of its own; parse notes the owner and the vendor names, and emit
+  writes no `custom_extensions` key at all.
+- **`ai_context` below the model level in `ossie`.** Only the MODEL's
+  `ai_context.instructions` has an IR home (`Model.Notes`). A dataset's,
+  field's, or metric's `instructions`, and `examples` at every level, have no
+  slot at all and degrade to notes.
+- **No metric datatype in the IR.** OSI metrics carry a `datatype`. A metric
+  that is a plain aggregation over one column also synthesises an `ir.Measure`,
+  whose embedded `ir.Field.DataType` carries it; a ratio or derived metric has
+  no such carrier (`ir.Metric` has no `DataType`), so its datatype degrades to
+  a note.
 
 ### A note the `--` notation cannot express: name collisions
 
@@ -132,6 +147,18 @@ join's `sql_on` names: those are resolved structurally and Lightdash rejects the
 whole explore if the dimension is missing, so there the dimension wins and the
 metric degrades to a note instead. Either way a note is emitted; the one thing
 that must never happen is losing the metric silently.
+
+`ossie` has the mirror-image problem on the way IN. OSI requires a dataset name
+to be unique within a model and a field name unique within its dataset, but a
+source directory can hold several files, and a file several `semantic_model[]`
+entries, each declaring the same dataset. `ossie.Parse` merges them by name into
+one `ir.Table` — unioning fields and synonyms, filling in a description or
+primary key the first declaration left empty — the same way `dbt.Parse` merges
+`models:` and `semantic_models:` by name. Where two declarations DISAGREE (a
+different expression for one field name, a different primary key, a duplicate
+metric name) the first wins and the discarded value is named in a note. Keeping
+both would emit two `datasets:` entries under one name, which the spec forbids;
+merging without a note would hide a real conflict.
 
 ## Adding or changing a mapping
 
