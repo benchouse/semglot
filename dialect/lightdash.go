@@ -653,7 +653,11 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 		// remaining collision is over a droppable (non-key) column.
 		notes = append(notes, cols.resolveNameCollisions(mm, t.Name)...)
 
-		model := ldModel{Name: t.Name, Description: t.Description, Columns: cols.list()}
+		model := ldModel{
+			Name:        t.Name,
+			Description: appendClause(t.Description, synonymClause(t.Synonyms)),
+			Columns:     cols.list(),
+		}
 		if !mm.empty() {
 			model.Meta = mm
 		}

@@ -99,6 +99,9 @@ func (n naoYaml) Emit(m *ir.Model, dir string) ([]string, error) {
 	notes := slices.Clone(m.Notes)
 	var own []string
 	for _, t := range m.Tables {
+		if c := synonymClause(t.Synonyms); c != "" {
+			notes = append(notes, t.Name+": "+c)
+		}
 		for _, d := range t.Dimensions {
 			addDim(d, "categorical")
 		}

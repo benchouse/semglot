@@ -159,7 +159,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 			Name:        prettify(t.Name),
 			Table:       schema + "." + id,
 			PrimaryKey:  upperAll(t.PrimaryKey),
-			Description: t.Description,
+			Description: appendClause(t.Description, synonymClause(t.Synonyms)),
 			Properties:  map[string]ssProperty{},
 		}
 		addProp := func(f ir.Field, typ string) {

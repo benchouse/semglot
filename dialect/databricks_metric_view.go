@@ -374,6 +374,9 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	if t.Description != "" {
 		parts = append(parts, t.Description)
 	}
+	if c := synonymClause(t.Synonyms); c != "" {
+		parts = append(parts, c)
+	}
 	if d.Description != "" {
 		parts = append(parts, d.Description)
 	}

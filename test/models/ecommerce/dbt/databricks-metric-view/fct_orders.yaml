@@ -1,5 +1,5 @@
 version: "1.1"
-comment: Order-grain finance fact. One row per order.
+comment: 'Order-grain finance fact. One row per order. Synonyms: purchases, sales.'
 source: analytics.main.fct_orders
 joins:
   - name: dim_customer_customer_sk

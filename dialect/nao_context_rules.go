@@ -86,9 +86,11 @@ func (naoContextRules) Emit(m *ir.Model, dir string) ([]string, error) {
 	// model documents; the withheld data-quirk discriminators never appear here.
 	var tables []string
 	for _, t := range m.Tables {
-		if t.Description != "" {
-			tables = append(tables, fmt.Sprintf("- **%s**: %s", t.Name, t.Description))
+		body := appendClause(strings.TrimSpace(t.Description), synonymClause(t.Synonyms))
+		if body == "" {
+			continue
 		}
+		tables = append(tables, fmt.Sprintf("- **%s**: %s", t.Name, body))
 	}
 	tables = append(tables, notesToBullets(m.Notes)...)
 	if len(tables) > 0 {

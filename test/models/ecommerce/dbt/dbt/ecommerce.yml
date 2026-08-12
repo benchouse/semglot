@@ -1,6 +1,10 @@
 models:
   - name: fct_orders
     description: Order-grain finance fact. One row per order.
+    meta:
+      synonyms:
+        - purchases
+        - sales
     columns:
       - name: order_id
         description: Order surrogate key.

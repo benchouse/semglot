@@ -11,7 +11,7 @@
 version: 2
 models:
   - name: fct_orders
-    description: Order-grain finance fact. One row per order.
+    description: 'Order-grain finance fact. One row per order. Synonyms: purchases, sales.'
     config:
       meta:
         primary_key: order_id

@@ -145,6 +145,26 @@ func TestSupersimpleCompoundKeyNoClobber(t *testing.T) {
 	}
 }
 
+// TestSupersimpleTableSynonyms folds table synonyms into the model description,
+// since supersimple has no synonyms slot. This closes the gap dialect/README.md
+// recorded under "Gaps vs. limits".
+func TestSupersimpleTableSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:        "fct_orders",
+		Description: "Orders.",
+		Synonyms:    []string{"purchases", "sales"},
+		Dimensions:  []ir.Field{{Name: "order_id", Expr: "order_id"}},
+	}}}
+	out := t.TempDir()
+	if _, err := (supersimple{}).Emit(m, out); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, filepath.Join(out, "FCT_ORDERS.yaml"))
+	if !strings.Contains(got, "Synonyms: purchases, sales.") {
+		t.Errorf("emitted supersimple missing folded synonyms in:\n%s", got)
+	}
+}
+
 func readFile(t *testing.T, p string) string {
 	t.Helper()
 	b, err := os.ReadFile(p)

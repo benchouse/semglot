@@ -2,6 +2,9 @@ name: ecommerce
 tables:
   - name: fct_orders
     description: Order-grain finance fact. One row per order.
+    synonyms:
+      - purchases
+      - sales
     base_table:
       database: ANALYTICS
       schema: MAIN

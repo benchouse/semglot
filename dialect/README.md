@@ -46,6 +46,7 @@ description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)
 | Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | `--` | `meta.primary_key` (single column only; composite degrades) |
 | Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | `joins[]` (quoted `"on":` condition) | `meta.joins[]` (`sql_on` with `${table.col}` refs) |
 | Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | `comment` (field/measure/view) | `description` |
+| Table synonyms | model `meta.synonyms` `<->` | `synonyms:` on the table | `with synonyms (...)` on the table | `text` (into the model description) | `text` (into `notes:`) | `text` (into the Table reference entry) | `text` (into the view `comment`) | `text` (into the model description) |
 | Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `synonyms:` (capped at 10) | `text` (into the column description) |
 | Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | `text` (into comment) | `text` (into the column description) |
 | Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | `measures[]` | column-level `meta.metrics` |
@@ -58,17 +59,15 @@ is the part to get right.
 
 **Gaps (the target supports it, we do not emit it yet):**
 
-- **`supersimple` synonyms.** A `synonymClause` helper exists but is not wired
-  into the supersimple emitter (it would fold into a property description, as the
-  nao dialects do).
 - **`nao-yaml` metric `filters:`, per-metric `dimensions:`, and `notes:`.** nao's
   metric supports a filter list, a slice-by `dimensions:` list, and per-metric
   `notes:`. semglot omits them: which dimensions slice a metric and the editorial
   notes are not derivable from a dbt model, and a filtered aggregation currently
   renders as a derived `formula` rather than a structured `filters:`.
 
-(`snowflake-semantic-view` synonyms and `nao-yaml` enum `values:` used to be gaps
-here; both are emitted now. Snowflake supports `with synonyms ('...')`
+(`snowflake-semantic-view` synonyms, `nao-yaml` enum `values:`, and `supersimple`
+synonyms used to be gaps here; all three are emitted now. Snowflake supports
+`with synonyms ('...')`
 ([docs](https://docs.snowflake.com/en/sql-reference/sql/create-semantic-view)),
 and nao dimensions carry a structured `values:` list
 ([nao docs](https://docs.getnao.io/nao-agent/context-engineering/skills)).)
