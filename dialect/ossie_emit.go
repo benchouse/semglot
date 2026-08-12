@@ -69,6 +69,41 @@ func toOSIField(f ir.Field, isTime bool, table string, warnings *[]string) osiFi
 	}
 }
 
+// addField appends f to ds.Fields, deduplicating by name: OSI documents field
+// `name` as "Unique identifier for the field within the logical dataset", and
+// Dimensions, TimeDimensions, and Measures can all resolve to a field sharing
+// a name (e.g. a column that is both a plain dimension and a measure's
+// operand). First occurrence wins, in emit order (Dimensions, then
+// TimeDimensions, then Measures — the order the three loops run in).
+//
+// A later same-name/same-expression entry describes the same column twice;
+// it is dropped with no warning because nothing is lost. A later same-name/
+// different-expression entry is real information loss — the dataset can only
+// keep one field under that name — so it is dropped WITH a returned warning
+// naming both expressions, per this branch's no-silent-drop ruling.
+func addField(ds *osiDataset, seen map[string]string, f osiField, warnings *[]string) {
+	expr := fieldExprText(f)
+	if prevExpr, dup := seen[f.Name]; dup {
+		if prevExpr != expr {
+			*warnings = append(*warnings, fmt.Sprintf(
+				"dataset %q: field %q declared twice with different expressions (%q and %q); second occurrence dropped",
+				ds.Name, f.Name, prevExpr, expr))
+		}
+		return
+	}
+	seen[f.Name] = expr
+	ds.Fields = append(ds.Fields, f)
+}
+
+// fieldExprText extracts the ANSI_SQL expression text ansi() wrapped f's
+// field in, for dedup comparison.
+func fieldExprText(f osiField) string {
+	if len(f.Expression.Dialects) == 0 {
+		return ""
+	}
+	return f.Expression.Dialects[0].Expression
+}
+
 func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 	name := o.ModelName
 	if name == "" {
@@ -94,16 +129,23 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 			Description: desc,
 			AIContext:   aiContext("", t.Synonyms),
 		}
+		seen := map[string]string{} // field name -> its emitted expression, for dedup
 		for _, d := range t.Dimensions {
-			ds.Fields = append(ds.Fields, toOSIField(d, false, t.Name, &warnings))
+			addField(&ds, seen, toOSIField(d, false, t.Name, &warnings), &warnings)
 		}
 		for _, d := range t.TimeDimensions {
-			ds.Fields = append(ds.Fields, toOSIField(d, true, t.Name, &warnings))
+			addField(&ds, seen, toOSIField(d, true, t.Name, &warnings), &warnings)
 		}
 		// A measure's column must be a declared field: OSI defines fields as the
 		// operands of metric expressions. Ossie's own dbt converter does the same.
+		// Note: this field's `name` is the measure's name, not the underlying
+		// column — Task 9's metric expressions reference the physical column
+		// directly (e.g. `<table>.<column>`) rather than looking it up by this
+		// field's name, so a dedup that drops a measure's field entry here does
+		// not break that resolution path; it only removes a redundant (or, when
+		// warned, conflicting) field declaration.
 		for _, ms := range t.Measures {
-			ds.Fields = append(ds.Fields, toOSIField(ms.Field, false, t.Name, &warnings))
+			addField(&ds, seen, toOSIField(ms.Field, false, t.Name, &warnings), &warnings)
 		}
 		sm.Datasets = append(sm.Datasets, ds)
 	}

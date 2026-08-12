@@ -161,3 +161,95 @@ func TestOssieEmitUnmappedDataType(t *testing.T) {
 		t.Errorf("datatype = %q, want omitted for an unmapped SQL type", fld.DataType)
 	}
 }
+
+// TestOssieEmitFieldDedupSameExpr covers a column that is both a plain
+// dimension and a measure's operand: the same underlying column ("amount")
+// declared under the same field name twice (once via Dimensions, once via
+// Measures). OSI documents field name as unique within a dataset, so the
+// second, identical declaration must be dropped — but silently, because
+// nothing is lost: both occurrences describe the exact same column.
+func TestOssieEmitFieldDedupSameExpr(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Dimensions: []ir.Field{{Name: "amount", Expr: "amount"}},
+		Measures:   []ir.Measure{{Field: ir.Field{Name: "amount", Expr: "amount"}, Agg: "sum"}},
+	}}}
+
+	e := ossie{}.WithOptions(Options{Name: "sales"})
+	out := t.TempDir()
+	warnings, err := e.Emit(m, out)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "amount") {
+			t.Errorf("unexpected warning for a same-name/same-expression duplicate: %q", w)
+		}
+	}
+
+	b, err := os.ReadFile(filepath.Join(out, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f osiFile
+	if err := yaml.Unmarshal(b, &f); err != nil {
+		t.Fatalf("emitted YAML does not parse: %v", err)
+	}
+	fields := f.SemanticModel[0].Datasets[0].Fields
+	if len(fields) != 1 {
+		t.Fatalf("want 1 deduplicated field, got %d: %+v", len(fields), fields)
+	}
+	if fields[0].Name != "amount" {
+		t.Errorf("field name = %q, want amount", fields[0].Name)
+	}
+}
+
+// TestOssieEmitFieldDedupDifferentExpr covers a genuine name collision: two
+// different columns end up wanting to declare a field under the same name
+// ("total"). OSI requires field names unique within a dataset, so only the
+// first (Dimensions before Measures) can be kept; dropping the second is real
+// information loss and must surface as a returned warning naming both
+// expressions.
+func TestOssieEmitFieldDedupDifferentExpr(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Dimensions: []ir.Field{{Name: "total", Expr: "amount"}},
+		Measures:   []ir.Measure{{Field: ir.Field{Name: "total", Expr: "amount_usd"}, Agg: "sum"}},
+	}}}
+
+	e := ossie{}.WithOptions(Options{Name: "sales"})
+	out := t.TempDir()
+	warnings, err := e.Emit(m, out)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "total") && strings.Contains(w, "amount") && strings.Contains(w, "amount_usd") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one naming field %q and both expressions %q / %q",
+			warnings, "total", "amount", "amount_usd")
+	}
+
+	b, err := os.ReadFile(filepath.Join(out, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f osiFile
+	if err := yaml.Unmarshal(b, &f); err != nil {
+		t.Fatalf("emitted YAML does not parse: %v", err)
+	}
+	fields := f.SemanticModel[0].Datasets[0].Fields
+	if len(fields) != 1 {
+		t.Fatalf("want 1 field (first occurrence kept), got %d: %+v", len(fields), fields)
+	}
+	if fields[0].Name != "total" {
+		t.Errorf("field name = %q, want total", fields[0].Name)
+	}
+	if got := fieldExprText(fields[0]); got != "amount" {
+		t.Errorf("kept field expression = %q, want the first (Dimensions) occurrence %q", got, "amount")
+	}
+}
