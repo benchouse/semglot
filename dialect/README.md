@@ -97,7 +97,10 @@ and nao dimensions carry a structured `values:` list
   column name, so a multi-column key has nowhere to go and degrades to a note.
 - **Synonyms and enum values in `lightdash`.** Lightdash has no synonym or
   allowed-values slot on a dimension, so both fold into the column description
-  (`≈`), as they do for the nao dialects.
+  (`≈`), as they do for the nao dialects. A metric's synonyms fold the same way,
+  into the metric's own `description:` — which carries the source's description
+  for every metric and measure that becomes one, not only for the components
+  semglot mints.
 - **Filtered and compound aggregates in `lightdash`.** A Lightdash metric is
   either an aggregation of one column or a `type: number` expression over other
   metrics by name. There is no place for a filtered aggregate

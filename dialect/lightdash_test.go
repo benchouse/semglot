@@ -726,3 +726,82 @@ func TestLightdashReferencedMintedMetricIsNotAnOrphan(t *testing.T) {
 		t.Errorf("aov should be emitted over its minted components:\n%s", b)
 	}
 }
+
+// TestLightdashCarriesSourceMetricDescriptions: ldMetric has a description key,
+// and semglot filled it only for the components it MINTED itself — so a metric
+// nobody authored explained itself while the author's own metric, description
+// and synonyms went out bare and unreported. Lightdash has no synonym key, so
+// those fold into the same description, as a dimension's already do.
+//
+// Covers all three routes a metric takes into the file: a column-level simple
+// metric, a model-level derived one, and a raw ir.Measure (which
+// databricks-metric-view has always emitted with its comment, so lightdash was
+// the outlier).
+func TestLightdashCarriesSourceMetricDescriptions(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+		Measures: []ir.Measure{{
+			Field: ir.Field{
+				Name: "shipments", Expr: "shipment_count",
+				Description: "Shipments raised for the order.",
+				Synonyms:    []string{"deliveries"},
+			},
+			Agg: "sum",
+		}},
+		Metrics: []ir.Metric{
+			{
+				Name:        "net_revenue",
+				Description: "Net booked revenue.",
+				Synonyms:    []string{"net sales", "booked revenue"},
+				Def:         ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}},
+			},
+			{
+				Name: "order_count",
+				Def:  ir.Agg{Func: "count_distinct", Table: "orders", Arg: ir.Col{Table: "orders", Name: "order_id"}},
+			},
+			{
+				Name:        "aov",
+				Description: "Average order value.",
+				Synonyms:    []string{"basket size"},
+				Def: ir.Binary{Op: "/",
+					Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "order_count"}},
+			},
+		},
+	}}}
+	got := emitLightdash(t, m, Options{})
+	var doc ldDoc
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("parse emitted schema: %v\n%s", err, got)
+	}
+	found := map[string]ldMetric{}
+	for name, met := range doc.Models[0].Meta.Metrics {
+		found[name] = met
+	}
+	for _, c := range doc.Models[0].Columns {
+		for name, met := range c.Meta.Metrics {
+			found[name] = met
+		}
+	}
+	for name, want := range map[string][]string{
+		"net_revenue": {"Net booked revenue.", "net sales", "booked revenue"},
+		"aov":         {"Average order value.", "basket size"},
+		"shipments":   {"Shipments raised for the order.", "deliveries"},
+	} {
+		met, ok := found[name]
+		if !ok {
+			t.Errorf("metric %s not emitted at all:\n%s", name, got)
+			continue
+		}
+		for _, w := range want {
+			if !strings.Contains(met.Description, w) {
+				t.Errorf("metric %s: description %q does not carry %q", name, met.Description, w)
+			}
+		}
+	}
+	// A metric the source did not describe stays bare rather than gaining an
+	// empty or invented description.
+	if met := found["order_count"]; met.Description != "" {
+		t.Errorf("order_count has no source description; got %q", met.Description)
+	}
+}

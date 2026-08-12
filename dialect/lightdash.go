@@ -99,14 +99,28 @@ type ldDimension struct {
 
 // ldMetric is a Lightdash metric definition. Description is the metric's
 // `description:` key, which Lightdash shows beside the metric in the explore.
-// It is set only for a metric semglot MINTED (agg_names.go's hoist): such a
-// metric appears in the layer under a name nobody authored, so without its
-// synthesizedNote a reader has no way to tell it from a hand-written one, or
-// to find the metric it was minted for.
+// It carries the SOURCE's own description for every metric and measure that
+// becomes one, plus (via ldMetricText) the synonyms Lightdash has no slot for;
+// and, for a metric semglot MINTED (agg_names.go's hoist), the synthesizedNote
+// instead — such a metric appears in the layer under a name nobody authored, so
+// without it a reader has no way to tell it from a hand-written one.
 type ldMetric struct {
 	Type        string `yaml:"type"`
 	Description string `yaml:"description,omitempty"`
 	SQL         string `yaml:"sql,omitempty"`
+}
+
+// ldMetricText renders what a Lightdash metric's `description:` carries: the
+// source's own description, with the metric's synonyms folded in behind it.
+//
+// Lightdash has a description key on a metric but no synonym key, so the
+// synonyms fold into prose exactly as a dimension's do (see ldColumnSet.
+// dimension) and as the nao dialects, supersimple and databricks fold what
+// their format cannot hold structurally. Folding rather than warning keeps the
+// phrasings an agent matches a question against in front of that agent, which
+// is the only reason they exist.
+func ldMetricText(description string, synonyms []string) string {
+	return appendClause(description, synonymClause(synonyms))
 }
 
 // ldColumnSet builds the ordered columns[] list, keyed by physical column name,
@@ -278,7 +292,7 @@ func simpleColumnMetric(mt ir.Metric) (string, ldMetric, bool) {
 	if !ok {
 		return "", ldMetric{}, false
 	}
-	return col.Name, ldMetric{Type: typ}, true
+	return col.Name, ldMetric{Type: typ, Description: ldMetricText(mt.Description, mt.Synonyms)}, true
 }
 
 // ldAggType maps an IR aggregation function to a Lightdash column-metric type.
@@ -377,7 +391,7 @@ func derivedModelMetric(mt ir.Metric, simple map[string]bool) (ldMetric, bool) {
 			return ldMetric{}, false
 		}
 	}
-	return ldMetric{Type: "number", SQL: sql}, true
+	return ldMetric{Type: "number", SQL: sql, Description: ldMetricText(mt.Description, mt.Synonyms)}, true
 }
 
 // derivedRepresentable reports whether mt would emit as a model-level derived
@@ -620,8 +634,11 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 				continue
 			}
 			if isSimple {
+				// met.Description is already the metric's own (a minted
+				// component's IS its synthesizedNote — see simpleColumnMetric);
+				// this only records the component so an unreferenced one can be
+				// reported below.
 				if hoist.synthesisedName(mt.Name) {
-					met.Description = mt.Description // synthesizedNote
 					mintedEmitted = append(mintedEmitted, mintedComponent{mt.Name, t.Name})
 				}
 				cols.metric(col, mt.Name, met)
@@ -694,7 +711,8 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 				notes = append(notes, keyCollisionNote(ms.Name, t.Name))
 				continue
 			}
-			cols.metric(col, ms.Name, ldMetric{Type: typ})
+			cols.metric(col, ms.Name, ldMetric{
+				Type: typ, Description: ldMetricText(ms.Description, ms.Synonyms)})
 			emitted[ms.Name] = true
 			usedExprs[key] = true
 		}
