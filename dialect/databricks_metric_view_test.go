@@ -776,3 +776,54 @@ func TestDatabricksMetricViewFieldSurvivesWhenNamesDiffer(t *testing.T) {
 		}
 	}
 }
+
+// TestDatabricksMetricViewQuerySourceWarnedOnce pins the dedup. Every view
+// resolves the physical source of every table it joins as well as its own, so
+// one unusable source is reached once per referencing view (and twice more for
+// a role-playing dimension, which joins the same table twice). The warning
+// names the table and the source, so repeats carry nothing new — the CLI must
+// print it once.
+func TestDatabricksMetricViewQuerySourceWarnedOnce(t *testing.T) {
+	source := "SELECT * FROM prod.raw.customer WHERE deleted = false"
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "orders",
+				Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+			},
+			{
+				Name:       "customer",
+				Source:     source,
+				Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
+			},
+		},
+		Relationships: []ir.Relationship{
+			// A role-playing dimension: orders references customer twice, so
+			// buildView(orders) resolves customer's source twice on its own,
+			// and buildView(customer) resolves it a third time.
+			{Left: "orders", Right: "customer", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
+			{Left: "orders", Right: "customer", Columns: []ir.ColumnPair{{Left: "billing_customer_id", Right: "customer_id"}}},
+		},
+	}
+	files, warnings := emitDbxW(t, m)
+	n := 0
+	for _, w := range warnings {
+		if strings.Contains(w, source) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("query-source warning emitted %d times, want exactly 1: %v", n, warnings)
+	}
+	// Each artifact still carries it, since a reader of one file must see why
+	// that file's source was reconstructed — and once per file, not twice.
+	for _, name := range []string{"orders.yaml", "customer.yaml"} {
+		got, ok := files[name]
+		if !ok {
+			t.Fatalf("expected %s, got %v", name, keysOfDbx(files))
+		}
+		if c := strings.Count(got, source); c != 1 {
+			t.Errorf("%s carries the query-source note %d times, want 1:\n%s", name, c, got)
+		}
+	}
+}

@@ -132,6 +132,20 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
 		return nil, err
 	}
 	var warnings []string
+	// Every view resolves the physical source of every table it joins, so a
+	// joined table with an unusable source is reported by its own view AND by
+	// each view that joins it — the same sentence about the same table, once
+	// per referencing view. Each view's artifact comment still carries it (a
+	// reader of one file must see why its join source was reconstructed), but
+	// the CLI's warning list is per BUILD, so it is emitted once there.
+	seenWarning := map[string]bool{}
+	addWarning := func(w string) {
+		if seenWarning[w] {
+			return
+		}
+		seenWarning[w] = true
+		warnings = append(warnings, w)
+	}
 	for _, t := range m.Tables {
 		mv, own := d.buildView(m, t, resolve, metricOwner, tableByName, catalog, schema)
 		if len(mv.Fields) == 0 {
@@ -139,11 +153,20 @@ func (d databricksMetricView) Emit(m *ir.Model, dir string) ([]string, error) {
 			// suppressed by colliding with a measure name (see the seen-seeding in
 			// buildView); a metric view requires at least one dimension, so the
 			// whole table is dropped rather than emitted invalid or dimension-less.
-			warnings = append(warnings, fmt.Sprintf(
+			addWarning(fmt.Sprintf(
 				"table %q skipped: all its dimensions collided with measure names, leaving none for a metric view (which requires at least one dimension)", t.Name))
+			// The view this table's notes would have hung in is not written,
+			// so they reach the reader only here. Kept rather than discarded
+			// with the view: each names a further source construct that did
+			// not survive, which the one-line skip warning does not restate.
+			for _, w := range own {
+				addWarning(w)
+			}
 			continue
 		}
-		warnings = append(warnings, own...)
+		for _, w := range own {
+			addWarning(w)
+		}
 		var buf bytes.Buffer
 		enc := yaml.NewEncoder(&buf)
 		enc.SetIndent(2)
@@ -178,7 +201,20 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// addNote records a degrade note both in the artifact's comment text
 	// (notes) and in this table's own returned warnings (own), keeping the two
 	// in lockstep without duplicating every call site.
+	//
+	// Repeats are collapsed. One view resolves a physical source more than
+	// once — its own, plus every joined table's — and a role-playing dimension
+	// joins the same table twice, so an unusable source would otherwise be
+	// reported once per resolution. The text names the table and the source it
+	// is about, so a second copy carries no information the first does not.
+	// (Emit collapses the same text ACROSS views, where the same joined table
+	// is resolved again by each view that joins it.)
+	seenNote := map[string]bool{}
 	addNote := func(n string) {
+		if seenNote[n] {
+			return
+		}
+		seenNote[n] = true
 		notes = append(notes, n)
 		own = append(own, n)
 	}
