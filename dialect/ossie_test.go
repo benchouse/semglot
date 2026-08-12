@@ -359,6 +359,150 @@ semantic_model:
 	}
 }
 
+// TestOssieMetricRawArgQualifiedByOwnTable covers a cross-table metric whose
+// non-home operand is a Raw fragment (a CASE expression): the Raw's Columns
+// must come from the table the fragment actually references, not the
+// metric's overall home table.
+func TestOssieMetricRawArgQualifiedByOwnTable(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+      - name: customers
+        source: s.p.customers
+        fields:
+          - name: active
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: active}]
+    metrics:
+      - name: active_rate
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount) / COUNT(CASE WHEN active THEN 1 END)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	if len(orders.Metrics) != 1 {
+		t.Fatalf("want 1 metric on orders, got %d", len(orders.Metrics))
+	}
+	bin, ok := orders.Metrics[0].Def.(ir.Binary)
+	if !ok {
+		t.Fatalf("Def = %#v, want ir.Binary", orders.Metrics[0].Def)
+	}
+	left, ok := bin.Left.(ir.Agg)
+	if !ok || left.Table != "orders" {
+		t.Errorf("Left = %#v, want an ir.Agg homed on orders", bin.Left)
+	}
+	right, ok := bin.Right.(ir.Agg)
+	if !ok {
+		t.Fatalf("Right = %#v, want ir.Agg", bin.Right)
+	}
+	if right.Table != "customers" {
+		t.Errorf("Right.Table = %q, want customers (the table `active` is declared on), not orders", right.Table)
+	}
+	raw, ok := right.Arg.(ir.Raw)
+	if !ok {
+		t.Fatalf("Right.Arg = %#v, want ir.Raw", right.Arg)
+	}
+	if !reflect.DeepEqual(raw.Columns, []string{"active"}) {
+		t.Errorf("Raw.Columns = %v, want [active] (customers' columns, not orders')", raw.Columns)
+	}
+}
+
+// TestOssieMetricUnattributableSubExpressionNoted covers a cross-table metric
+// whose non-home operand references a column declared nowhere: it must be
+// left unqualified (Table == "") and a note must name the metric and the
+// unattributable sub-expression, rather than silently inheriting the metric's
+// home table.
+func TestOssieMetricUnattributableSubExpressionNoted(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: amount
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount}]
+    metrics:
+      - name: weird_ratio
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(orders.amount) / COUNT(CASE WHEN mystery THEN 1 END)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	if len(orders.Metrics) != 1 {
+		t.Fatalf("want 1 metric on orders, got %d", len(orders.Metrics))
+	}
+	bin, ok := orders.Metrics[0].Def.(ir.Binary)
+	if !ok {
+		t.Fatalf("Def = %#v, want ir.Binary", orders.Metrics[0].Def)
+	}
+	right, ok := bin.Right.(ir.Agg)
+	if !ok {
+		t.Fatalf("Right = %#v, want ir.Agg", bin.Right)
+	}
+	if right.Table != "" {
+		t.Errorf("Right.Table = %q, want empty (unattributable), not silently inherited from the home table", right.Table)
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "weird_ratio") && strings.Contains(n, "mystery") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note naming the metric and the unattributable sub-expression, got %v", m.Notes)
+	}
+}
+
+// TestOssieMetricUnqualifiedColumnGetsTable covers Apache Ossie's own
+// Databricks fixtures, which write an unqualified aggregate argument (e.g.
+// SUM(o_totalprice)): once resolved unambiguously to a single dataset, the
+// Col arg must have its Table filled in, matching the always-qualified Col
+// invariant dbt.go maintains and databricks_metric_view.go relies on.
+func TestOssieMetricUnqualifiedColumnGetsTable(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_totalprice
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_totalprice}]
+    metrics:
+      - name: total_price
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(o_totalprice)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	want := ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "o_totalprice"}}
+	if len(orders.Metrics) != 1 || !reflect.DeepEqual(orders.Metrics[0].Def, want) {
+		t.Errorf("Def = %#v, want %#v", orders.Metrics[0].Def, want)
+	}
+}
+
 // tableByName fetches a table by name or fails the test.
 func tableByName(t *testing.T, m *ir.Model, name string) ir.Table {
 	t.Helper()

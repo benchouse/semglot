@@ -375,7 +375,7 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"metric %q references unknown dataset %q; skipped", mt.Name, home))
 			continue
 		}
-		def = setAggTable(def, home, colsByTable[home])
+		def = resolveAggTables(def, mt.Name, owner, colsByTable, &out.Notes)
 		// A plain aggregation over one column is also a column-backed measure.
 		if agg, col, isSimple := simpleAgg(def); isSimple {
 			out.Tables[idx].Measures = append(out.Tables[idx].Measures, ir.Measure{
@@ -455,25 +455,74 @@ func metricHome(e ir.Expr, owner map[string]string) (string, bool) {
 	return "", false
 }
 
-// setAggTable stamps the owning table onto every Agg node and fills a Raw arg's
-// Columns, which renderSQL needs to qualify the fragment at emit time.
-func setAggTable(e ir.Expr, table string, cols []string) ir.Expr {
+// resolveAggTables homes each Agg node in e independently, rather than
+// stamping one metric-level table onto every node. A cross-table expression
+// like `SUM(orders.amount) / COUNT(CASE WHEN customers.active THEN 1 END)`
+// has two Agg nodes belonging to two different tables; stamping both with the
+// metric's overall home table (as an earlier version of this function did)
+// silently mis-qualifies whichever operand isn't on the home table — e.g. a
+// CASE fragment referencing another table's column rendered with the wrong
+// table's Columns list, with the operand ending up entirely unqualified in
+// the emitted SQL and no trace of the mistake.
+//
+// For each Agg node, it re-runs metricHome against that node's own Arg. When
+// it resolves: Agg.Table is stamped, a Raw arg's Columns is filled from that
+// table's column list, and a bare (unqualified) Col arg has its own Table
+// filled in too — matching the always-qualified Col invariant the rest of the
+// codebase relies on (dbt.go always sets Table on the Col args it
+// constructs; see databricks_metric_view.go's qualifier stripping, which
+// assumes every Col/Raw arg it renders is qualified). When it does not
+// resolve (the column is declared by no dataset, or by more than one and so
+// is ambiguous per colOwner), the node's Table and its Col arg's Table are
+// left empty and a note is appended to *notes naming metricName and the
+// unattributable sub-expression, rather than falling back to any table
+// silently.
+func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, colsByTable map[string][]string, notes *[]string) ir.Expr {
 	switch n := e.(type) {
 	case ir.Agg:
+		if n.Arg == nil {
+			return n // COUNT(*) has no column to qualify
+		}
+		table, ok := metricHome(n.Arg, owner)
+		if !ok {
+			*notes = append(*notes, fmt.Sprintf(
+				"metric %q: sub-expression %q could not be attributed to a dataset (unknown or ambiguous column); left unqualified",
+				metricName, aggArgText(n.Arg)))
+			return n
+		}
 		n.Table = table
-		if raw, ok := n.Arg.(ir.Raw); ok {
-			raw.Columns = cols
-			n.Arg = raw
-		} else if n.Arg != nil {
-			n.Arg = setAggTable(n.Arg, table, cols)
+		switch a := n.Arg.(type) {
+		case ir.Raw:
+			a.Columns = colsByTable[table]
+			n.Arg = a
+		case ir.Col:
+			if a.Table == "" {
+				a.Table = table
+				n.Arg = a
+			}
 		}
 		return n
 	case ir.Binary:
-		n.Left = setAggTable(n.Left, table, cols)
-		n.Right = setAggTable(n.Right, table, cols)
+		n.Left = resolveAggTables(n.Left, metricName, owner, colsByTable, notes)
+		n.Right = resolveAggTables(n.Right, metricName, owner, colsByTable, notes)
 		return n
 	}
 	return e
+}
+
+// aggArgText renders an Agg argument as readable text for a note when it
+// cannot be homed.
+func aggArgText(e ir.Expr) string {
+	switch a := e.(type) {
+	case ir.Col:
+		if a.Table != "" {
+			return a.Table + "." + a.Name
+		}
+		return a.Name
+	case ir.Raw:
+		return a.SQL
+	}
+	return ""
 }
 
 // simpleAgg reports the measure a plain aggregation over one column implies:
