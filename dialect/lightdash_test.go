@@ -14,6 +14,13 @@ import (
 // emitted schema.yml as a string.
 func emitLightdash(t *testing.T, m *ir.Model, opts Options) string {
 	t.Helper()
+	// These tests assert WHAT is emitted, not which key path it nests under, and
+	// ldDoc reads the `meta:` shape. Default them to the legacy path so a change
+	// of default does not break every content test. Placement is covered by
+	// TestLightdashConfigDbtMetaKeyPath; the golden covers the real default.
+	if opts.DbtMetaKeyPath == "" {
+		opts.DbtMetaKeyPath = "meta"
+	}
 	e := lightdash{}.WithOptions(opts)
 	dir := t.TempDir()
 	if _, err := e.Emit(m, dir); err != nil {
@@ -441,13 +448,28 @@ func TestLightdashConfigDbtMetaKeyPath(t *testing.T) {
 		},
 	}}}
 
-	// default style: meta directly under model and column.
-	def := emitLightdash(t, m, Options{Name: "ecommerce"})
-	if !strings.Contains(def, "\n    meta:\n") {
-		t.Errorf("default style should nest under meta:, got:\n%s", def)
+	// Default (an unset DbtMetaKeyPath) is config.meta, dbt's preferred form
+	// since 1.10. Built directly, not via emitLightdash, which overrides the
+	// default for the content tests.
+	dir := t.TempDir()
+	if _, err := (lightdash{}.WithOptions(Options{Name: "ecommerce"})).Emit(m, dir); err != nil {
+		t.Fatalf("emit: %v", err)
 	}
-	if strings.Contains(def, "config:") {
-		t.Errorf("default style must not emit config:, got:\n%s", def)
+	b, err := os.ReadFile(filepath.Join(dir, "schema.yml"))
+	if err != nil {
+		t.Fatalf("read schema.yml: %v", err)
+	}
+	if def := string(b); !strings.Contains(def, "config:") {
+		t.Errorf("default should nest under config.meta:, got:\n%s", def)
+	}
+
+	// Explicit "meta" opts back into top-level meta, for dbt 1.9 and earlier.
+	legacy := emitLightdash(t, m, Options{Name: "ecommerce", DbtMetaKeyPath: "meta"})
+	if !strings.Contains(legacy, "\n    meta:\n") {
+		t.Errorf("DbtMetaKeyPath=meta should nest under meta:, got:\n%s", legacy)
+	}
+	if strings.Contains(legacy, "config:") {
+		t.Errorf("DbtMetaKeyPath=meta must not emit config:, got:\n%s", legacy)
 	}
 
 	// config.meta style: meta nested under config.

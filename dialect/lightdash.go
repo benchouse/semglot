@@ -21,14 +21,13 @@ type lightdash struct {
 	ModelName   string
 	Description string
 	// DbtMetaKeyPath is the YAML key path the Lightdash meta block is written
-	// under: "" or "meta" for `meta:` (dbt 1.9 and earlier), "config.meta" for
-	// `config.meta:` (dbt 1.10 and later, where top-level meta is deprecated).
+	// under. Empty or "config.meta" writes `config.meta:`, dbt's preferred form
+	// since 1.10 (2025-06-16); "meta" writes top-level `meta:`, which 1.10
+	// deprecated and which only a project pinned to dbt 1.9 or earlier needs.
 	//
 	// This cannot be derived. semglot writes a file that someone else's dbt
 	// parses later, so the emitting process never sees the dbt that will read
-	// it. Top-level meta still parses without warning on dbt 1.11, so "" stays
-	// the default; when dbt removes it, flip the default to "config.meta" and
-	// this option becomes vestigial.
+	// it — hence a config rather than detection.
 	DbtMetaKeyPath string
 }
 
@@ -480,7 +479,11 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	var notes []string
 	notes = append(notes, m.Notes...)
 
-	configMeta := l.DbtMetaKeyPath == "config.meta"
+	// Default to config.meta: it has been dbt's preferred form since 1.10
+	// (2025-06-16) and top-level meta is deprecated there. Only an explicit
+	// "meta" opts back into the legacy form, for a project pinned to dbt 1.9
+	// or earlier.
+	configMeta := l.DbtMetaKeyPath != "meta"
 	f := ldFile{Version: 2}
 	for _, t := range m.Tables {
 		cols := newColumnSet()
