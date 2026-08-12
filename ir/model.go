@@ -16,7 +16,12 @@ type Model struct {
 
 // Table is one grain/entity in the layer.
 type Table struct {
-	Name        string
+	Name string
+	// Source is the physical table this entity reads, as the source dialect
+	// declared it (e.g. "PROD.SALES.orders_v1"). Empty when the source has no
+	// physical address of its own — dbt models resolve theirs through ref() —
+	// in which case emitters reconstruct it from the profile's database/schema.
+	Source      string
 	Description string
 	// Synonyms are alternative names for the entity itself, as distinct from a
 	// field's synonyms. Sourced from a model-level meta.synonyms (dbt) or a

@@ -69,7 +69,22 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	var tables, rels, dims, metrics []string
 	for _, t := range m.Tables {
 		u := strings.ToUpper(t.Name)
-		line := fmt.Sprintf("%s as %s.%s.%s", u, s.Database, schema, u)
+		// Prefer the source dialect's own declared physical address (see
+		// cortex.go's identical rule): the TABLES clause needs a
+		// database.schema.table reference, which only a clean three-part
+		// Source can supply. Anything else falls back to the profile
+		// reconstruction with a warning rather than half-applying it.
+		physDB, physSchema, physTable := s.Database, schema, u
+		if t.Source != "" {
+			if db, sch, tbl, ok := splitSource(t.Source); ok {
+				physDB, physSchema, physTable = db, sch, tbl
+			} else {
+				note := unsplittableSourceWarning("snowflake-semantic-view", t.Name, t.Source)
+				notes = append(notes, note)
+				own = append(own, note)
+			}
+		}
+		line := fmt.Sprintf("%s as %s.%s.%s", u, physDB, physSchema, physTable)
 		if len(t.PrimaryKey) > 0 {
 			line += fmt.Sprintf(" primary key (%s)", strings.Join(upperAll(t.PrimaryKey), ","))
 		}

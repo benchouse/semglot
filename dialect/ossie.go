@@ -350,7 +350,15 @@ func mergeModel(out *ir.Model, sm osiModel) {
 	for _, ds := range sm.Datasets {
 		dsSubject := fmt.Sprintf("dataset %q", ds.Name)
 		t := ir.Table{
-			Name:        ds.Name,
+			Name: ds.Name,
+			// Source is a fully-qualified physical address the OSI spec's
+			// author, not semglot, chose — unlike dbt's model: ref(), which
+			// dbt itself resolves, nothing downstream can recover this if it
+			// is discarded. Consumed by every emitter that builds a physical
+			// table reference (ossie_emit.go's tableSource and its peers in
+			// cortex.go, snowflake_semantic_view.go,
+			// databricks_metric_view.go, and supersimple.go).
+			Source:      ds.Source,
 			Description: ds.Description,
 			Synonyms:    ds.AIContext.synonyms(),
 			PrimaryKey:  ds.PrimaryKey,
@@ -544,6 +552,14 @@ func mergeModel(out *ir.Model, sm osiModel) {
 // otherwise kept with a note on disagreement, so a merge never invents a
 // composite key or a spliced description out of two conflicting sources.
 func mergeTable(dst *ir.Table, src ir.Table, notes *[]string) {
+	switch {
+	case dst.Source == "":
+		dst.Source = src.Source
+	case src.Source != "" && src.Source != dst.Source:
+		*notes = append(*notes, fmt.Sprintf(
+			"dataset %q is declared more than once with different sources; kept %q and dropped %q",
+			dst.Name, dst.Source, src.Source))
+	}
 	switch {
 	case dst.Description == "":
 		dst.Description = src.Description

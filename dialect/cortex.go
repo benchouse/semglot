@@ -123,11 +123,28 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 	resolve := metricResolver(m)
 	var degradeNotes []string
 	for _, t := range m.Tables {
+		// Prefer the source dialect's own declared physical address over the
+		// profile-reconstructed one: an ossie-declared source (e.g.
+		// "PROD.SALES.orders_v1") is a fully-qualified physical reference
+		// nothing downstream can recover if it is discarded. cortexBaseTable
+		// needs it split into separate Database/Schema/Table fields, so only
+		// a clean three-part reference can be used; anything else (a
+		// two-part name, or a source that is a query, which the OSI spec
+		// explicitly permits) falls back to the profile reconstruction WITH
+		// a warning, rather than silently half-applying it.
+		baseTable := cortexBaseTable{Database: c.Database, Schema: schema, Table: strings.ToUpper(t.Name)}
+		if t.Source != "" {
+			if db, sch, tbl, ok := splitSource(t.Source); ok {
+				baseTable = cortexBaseTable{Database: db, Schema: sch, Table: tbl}
+			} else {
+				degradeNotes = append(degradeNotes, unsplittableSourceWarning("cortex", t.Name, t.Source))
+			}
+		}
 		ct := cortexTable{
 			Name:        t.Name,
 			Description: t.Description,
 			Synonyms:    t.Synonyms,
-			BaseTable:   cortexBaseTable{Database: c.Database, Schema: schema, Table: strings.ToUpper(t.Name)},
+			BaseTable:   baseTable,
 		}
 		if len(t.PrimaryKey) > 0 {
 			ct.PrimaryKey = &cortexPK{Columns: upperAll(t.PrimaryKey)}

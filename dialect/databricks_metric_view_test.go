@@ -192,6 +192,62 @@ func TestDatabricksMetricViewOrders(t *testing.T) {
 	}
 }
 
+// TestDatabricksMetricViewPrefersDeclaredSource covers task 16's defect: a
+// declared ossie `source` is a fully-qualified physical address that nothing
+// downstream can recover if it is discarded. `source:` must use it verbatim
+// rather than relocating the table to the profile's catalog/schema under the
+// IR's logical name.
+func TestDatabricksMetricViewPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Source:     "PROD.SALES.orders_v1",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	for _, w := range warnings {
+		if strings.Contains(w, "orders") {
+			t.Errorf("unexpected warning for a cleanly-splittable source: %q", w)
+		}
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: PROD.SALES.orders_v1") {
+		t.Errorf("source must be the declared PROD.SALES.orders_v1, not analytics.main.orders:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewUnsplittableSourceFallsBackAndWarns covers the
+// wrinkle: `source:` needs a clean catalog.schema.table reference. A source
+// that does not split into exactly three non-empty parts (a two-part name
+// here) must fall back to the profile reconstruction AND warn, rather than
+// half-applying it into a plausible but wrong, unwarned address.
+func TestDatabricksMetricViewUnsplittableSourceFallsBackAndWarns(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Source:     "public.orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, `table "orders"`) && strings.Contains(w, "public.orders") && strings.Contains(w, "databricks-metric-view") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the table, source, and databricks-metric-view; got %v", warnings)
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: analytics.main.orders") {
+		t.Errorf("must fall back to the profile-reconstructed reference, not half-apply the source:\n%s", got)
+	}
+}
+
 // TestDatabricksMetricViewNoDimensionFile: a pure dimension table (no metrics,
 // no measures) still gets its own metric view — a Databricks metric view
 // requires >=1 measure, so one is synthesised as a row count. This mirrors the

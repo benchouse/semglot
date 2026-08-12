@@ -128,3 +128,35 @@ func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
 	}
 	return strings.Join(cols, "_")
 }
+
+// splitSource splits an ir.Table.Source into its three dot-separated parts
+// (database, schema, table). ok is false unless source has EXACTLY three
+// non-empty parts — a two-part name, or a source that is a query rather than
+// a table reference (which the OSI spec explicitly permits), is not a
+// physical address any of the targets that call this can safely reassemble.
+// Callers must not half-apply a failed split (e.g. treating the last segment
+// as the table name and inventing the rest) — that produces a plausible,
+// wrong, unwarned address. Fall back to profile reconstruction instead, and
+// warn via unsplittableSourceWarning.
+func splitSource(source string) (database, schema, table string, ok bool) {
+	parts := strings.Split(source, ".")
+	if len(parts) != 3 {
+		return "", "", "", false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return "", "", "", false
+		}
+	}
+	return parts[0], parts[1], parts[2], true
+}
+
+// unsplittableSourceWarning reports that table's declared Source could not be
+// expressed in target's database/schema/table shape, so the emitter fell back
+// to reconstructing a physical reference from the profile instead of silently
+// half-applying it.
+func unsplittableSourceWarning(target, table, source string) string {
+	return fmt.Sprintf(
+		"table %q: declared source %q could not be expressed as %s's database/schema/table shape; reconstructed from the profile instead",
+		table, source, target)
+}

@@ -31,9 +31,9 @@ import (
 // fails to match any allowedLoss entry and is reported as unplanned loss.
 type lossLine struct {
 	Table    string
-	Category string // "dimensions", "time dimensions", "measures", "metrics", "primary key", "synonyms", "grain", "table", "relationships"
-	Dir      string // "gained" or "lost"; "" for grain/table/relationships
-	Name     string // the item name gained/lost; "" for grain/table/relationships
+	Category string // "dimensions", "time dimensions", "measures", "metrics", "primary key", "synonyms", "grain", "source", "table", "relationships"
+	Dir      string // "gained" or "lost"; "" for grain/source/table/relationships
+	Name     string // the item name gained/lost; "" for grain/source/table/relationships
 	Text     string // human-readable rendering, for t.Logf and error messages
 }
 
@@ -75,6 +75,20 @@ func lossReport(before, after *ir.Model) []lossLine {
 			out = append(out, lossLine{
 				Table: bt.Name, Category: "grain",
 				Text: fmt.Sprintf("table %s grain: %q -> %q", bt.Name, bt.Grain, at.Grain),
+			})
+		}
+		// Only flagged when the BEFORE model actually declared a source
+		// (bt.Source != ""): a dbt-sourced model has no physical source of
+		// its own (dbt's model: ref() is resolved by dbt itself), so every
+		// emitter reconstructs one from the profile — an empty-before,
+		// populated-after pair there is the documented, pre-existing
+		// fallback this task's brief guards (see ir.Table.Source), not new
+		// loss. What this comparison exists to catch is an ossie-declared
+		// source failing to survive a round-trip unchanged.
+		if bt.Source != "" && bt.Source != at.Source {
+			out = append(out, lossLine{
+				Table: bt.Name, Category: "source",
+				Text: fmt.Sprintf("table %s source: %q -> %q", bt.Name, bt.Source, at.Source),
 			})
 		}
 	}

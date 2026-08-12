@@ -33,6 +33,18 @@ func (o ossie) osiSource(table string) string {
 	}
 }
 
+// tableSource returns t's `source`: t.Source verbatim when the parsed model
+// declared one — an OSI source is a fully-qualified physical address, and
+// nothing downstream can recover it once discarded — else the profile-
+// reconstructed reference osiSource built all along (the dbt path, which has
+// no physical address of its own).
+func (o ossie) tableSource(t ir.Table) string {
+	if t.Source != "" {
+		return t.Source
+	}
+	return o.osiSource(t.Name)
+}
+
 // ansi wraps a SQL string in the single-dialect expression object OSI requires.
 func ansi(expr string) osiExpression {
 	return osiExpression{Dialects: []osiDialectExpr{{Dialect: "ANSI_SQL", Expression: expr}}}
@@ -179,7 +191,7 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 		ds := osiDataset{
 			Name:        t.Name,
-			Source:      o.osiSource(t.Name),
+			Source:      o.tableSource(t),
 			PrimaryKey:  t.PrimaryKey,
 			Description: desc,
 			AIContext:   aiContext("", t.Synonyms),

@@ -117,6 +117,42 @@ func TestOssieEmitUnqualifiedSource(t *testing.T) {
 	}
 }
 
+// TestOssieEmitPrefersDeclaredSource covers task 16's defect: an OSI model
+// declaring distinct physical sources must emit those SAME sources on the way
+// back out, not profile-reconstructed ones fabricated from Options{Database,
+// Schema} + the table name. Two tables with different databases prove the
+// profile's single Database/Schema pair is never consulted when Source is set.
+func TestOssieEmitPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{
+		{Name: "orders", Source: "PROD.SALES.orders_v1"},
+		{Name: "customer_master", Source: "OTHERDB.CRM.customer_master"},
+	}}
+	f, _ := emitOssie(t, m, Options{Database: "WAREHOUSE", Schema: "PUBLIC", Name: "sales"})
+	byName := map[string]osiDataset{}
+	for _, ds := range f.SemanticModel[0].Datasets {
+		byName[ds.Name] = ds
+	}
+	if got := byName["orders"].Source; got != "PROD.SALES.orders_v1" {
+		t.Errorf("orders source = %q, want the declared PROD.SALES.orders_v1, not a WAREHOUSE.PUBLIC reconstruction", got)
+	}
+	if got := byName["customer_master"].Source; got != "OTHERDB.CRM.customer_master" {
+		t.Errorf("customer_master source = %q, want the declared OTHERDB.CRM.customer_master, not a WAREHOUSE.PUBLIC reconstruction", got)
+	}
+}
+
+// TestOssieEmitDbtSourcedModelReconstructsFromProfile guards the fallback this
+// task's safety net depends on: a table with no Source (the dbt path — a dbt
+// model has no physical address of its own, since model: ref() is resolved by
+// dbt itself) must still degrade to today's Options{Database,Schema}+name
+// reconstruction, unchanged.
+func TestOssieEmitDbtSourcedModelReconstructsFromProfile(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders"}}} // Source left zero-value, as dbt.Parse leaves it
+	f, _ := emitOssie(t, m, Options{Database: "ANALYTICS", Schema: "MAIN", Name: "sales"})
+	if got := f.SemanticModel[0].Datasets[0].Source; got != "ANALYTICS.MAIN.orders" {
+		t.Errorf("source = %q, want the profile-reconstructed ANALYTICS.MAIN.orders when no Source is declared", got)
+	}
+}
+
 // TestOssieEmitUnmappedDataType covers a SQL type the IR carries but that has
 // no OSI portable-vocabulary equivalent (irToOSIType returns ""). Omitting
 // datatype in that case is correct per spec guidance, but silently dropping

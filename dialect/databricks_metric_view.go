@@ -183,6 +183,19 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 		notes = append(notes, n)
 		own = append(own, n)
 	}
+	// Prefer the source dialect's own declared physical address (see
+	// cortex.go's identical rule): `source:` needs a clean three-part
+	// catalog.schema.table reference. Anything else (a two-part name, or a
+	// source that is a query, which the OSI spec explicitly permits) falls
+	// back to the profile reconstruction with a warning rather than
+	// half-applying it.
+	if t.Source != "" {
+		if db, sch, tbl, ok := splitSource(t.Source); ok {
+			mv.Source = db + "." + sch + "." + tbl
+		} else {
+			addNote(unsplittableSourceWarning("databricks-metric-view", t.Name, t.Source))
+		}
+	}
 
 	// Joins: relationships where this table is the LEFT (referencing) side. A
 	// (Left, Right) pair with more than one relationship is a role-playing

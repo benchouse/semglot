@@ -119,6 +119,35 @@ semantic_model:
 	}
 }
 
+// TestOssieParseSetsSource covers task 16's defect: an OSI dataset's `source`
+// is a fully-qualified physical address (unlike dbt's model: ref(), which dbt
+// itself resolves) that nothing downstream can recover once discarded. Parse
+// must carry it into ir.Table.Source verbatim.
+func TestOssieParseSetsSource(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: PROD.SALES.orders_v1
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 1 {
+		t.Fatalf("want 1 table, got %d", len(m.Tables))
+	}
+	if got := m.Tables[0].Source; got != "PROD.SALES.orders_v1" {
+		t.Errorf("Source = %q, want PROD.SALES.orders_v1", got)
+	}
+}
+
 // TestOssieParseSkipsNonOSI ignores YAML files with no semantic_model key, so a
 // mixed directory works.
 func TestOssieParseSkipsNonOSI(t *testing.T) {
@@ -1093,6 +1122,64 @@ semantic_model:
 		if !strings.Contains(joined, want) {
 			t.Errorf("Notes = %v, want one containing %q", m.Notes, want)
 		}
+	}
+}
+
+// TestOssieParseMergeConflictSourceNoted covers two declarations of the same
+// dataset naming DIFFERENT physical sources — e.g. one file's PROD.SALES.orders
+// and another's STAGING.ARCHIVE.orders_2019. Unlike a merged description or
+// primary key, silently picking one here would splice a production table and
+// an archive snapshot into a single reported address with no record either
+// input said something else, so the disagreement must be noted (the same
+// first-wins-plus-note rule mergeTable already applies to description and
+// primary key).
+func TestOssieParseMergeConflictSourceNoted(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.yaml", `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: prod
+    datasets:
+      - name: orders
+        source: PROD.SALES.orders
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+`)
+	write("b.yaml", `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: staging
+    datasets:
+      - name: orders
+        source: STAGING.ARCHIVE.orders_2019
+        fields:
+          - name: id
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: id}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 1 {
+		t.Fatalf("want 1 merged table, got %d", len(m.Tables))
+	}
+	if got := m.Tables[0].Source; got != "PROD.SALES.orders" {
+		t.Errorf("Source = %q, want the first declaration's PROD.SALES.orders, not a silently-picked or spliced value", got)
+	}
+	joined := strings.Join(m.Notes, "\n")
+	if !strings.Contains(joined, "different sources") ||
+		!strings.Contains(joined, "PROD.SALES.orders") ||
+		!strings.Contains(joined, "STAGING.ARCHIVE.orders_2019") {
+		t.Errorf("Notes = %v, want one naming both conflicting sources", m.Notes)
 	}
 }
 

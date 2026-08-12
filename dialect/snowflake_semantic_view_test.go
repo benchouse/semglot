@@ -65,6 +65,67 @@ func TestSVViewSchemaFallback(t *testing.T) {
 	}
 }
 
+// TestSVEmitPrefersDeclaredSource covers task 16's defect: a declared ossie
+// `source` is a fully-qualified physical address that nothing downstream can
+// recover if it is discarded. The TABLES clause must reference it verbatim
+// rather than relocating the table to the profile's database/schema under
+// the IR's logical name.
+func TestSVEmitPrefersDeclaredSource(t *testing.T) {
+	dir := t.TempDir()
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: "PROD.SALES.orders_v1"}}}
+	e := snowflakeSemanticView{}.WithOptions(Options{Database: "WAREHOUSE", Schema: "PUBLIC", Name: "SV"})
+	warnings, err := e.Emit(m, dir)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings for a cleanly-splittable source: %v", warnings)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "ORDERS as PROD.SALES.orders_v1") {
+		t.Errorf("table line must reference the declared source PROD.SALES.orders_v1, not WAREHOUSE.PUBLIC.ORDERS:\n%s", out)
+	}
+	if strings.Contains(out, "WAREHOUSE.PUBLIC.ORDERS") {
+		t.Errorf("table must not be relocated to the profile's database/schema when a source is declared:\n%s", out)
+	}
+}
+
+// TestSVEmitUnsplittableSourceFallsBackAndWarns covers the wrinkle: the TABLES
+// clause needs a clean database.schema.table reference. A source that does
+// not split into exactly three non-empty parts (a two-part name here) must
+// fall back to the profile reconstruction AND warn, rather than half-applying
+// it into a plausible but wrong, unwarned address.
+func TestSVEmitUnsplittableSourceFallsBackAndWarns(t *testing.T) {
+	dir := t.TempDir()
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: "public.orders"}}}
+	e := snowflakeSemanticView{}.WithOptions(Options{Database: "WAREHOUSE", Schema: "PUBLIC", Name: "SV"})
+	warnings, err := e.Emit(m, dir)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, `table "orders"`) && strings.Contains(w, "public.orders") && strings.Contains(w, "snowflake-semantic-view") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the table, the unsplittable source, and snowflake-semantic-view; got %v", warnings)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "definition.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "ORDERS as WAREHOUSE.PUBLIC.ORDERS") {
+		t.Errorf("must fall back to the profile-reconstructed reference, not half-apply the source:\n%s", out)
+	}
+}
+
 // TestSVEmitsSynonyms verifies dimension and metric synonyms render as a
 // `with synonyms (...)` clause placed before `comment` (Snowflake's required
 // order: AS expr -> WITH SYNONYMS -> COMMENT).
