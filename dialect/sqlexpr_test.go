@@ -56,6 +56,15 @@ func TestParseAggExpr(t *testing.T) {
 			in:   "SUM(CASE WHEN orders.order_id IS NOT NULL THEN 1 ELSE 0 END)",
 			want: ir.Agg{Func: "sum", Arg: ir.Raw{SQL: "CASE WHEN orders.order_id IS NOT NULL THEN 1 ELSE 0 END"}},
 		},
+		{
+			// Only COUNT(DISTINCT x) has a lossless ir.Agg.Func representation
+			// (count_distinct). For every other aggregate the DISTINCT keyword
+			// must be preserved verbatim via the Raw fallback rather than
+			// silently dropped.
+			name: "sum distinct becomes Raw",
+			in:   "SUM(DISTINCT x)",
+			want: ir.Agg{Func: "sum", Arg: ir.Raw{SQL: "DISTINCT x"}},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,7 +80,9 @@ func TestParseAggExpr(t *testing.T) {
 }
 
 func TestParseAggExprRejects(t *testing.T) {
-	for _, in := range []string{"", "SUM(", "SUM(orders.amount", ")", "+ 1"} {
+	// SUM(*) is not valid SQL -- only COUNT(*) is. It must fail to parse
+	// rather than silently accept "*" as an ir.Raw argument.
+	for _, in := range []string{"", "SUM(", "SUM(orders.amount", ")", "+ 1", "SUM(*)"} {
 		if _, ok := parseAggExpr(in); ok {
 			t.Errorf("parseAggExpr(%q) = ok, want failure", in)
 		}

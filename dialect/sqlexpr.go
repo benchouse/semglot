@@ -211,15 +211,22 @@ func (p *exprParser) parseCall() ir.Expr {
 	inner := p.toks[open+1 : closeIdx]
 	p.pos = closeIdx + 1
 
-	// COUNT(*)
+	// COUNT(*) -- only valid for count. SUM(*) etc. is not valid SQL, so reject
+	// it outright rather than let it fall through to the Raw fallback below,
+	// which would otherwise accept it as Agg{Arg: Raw{SQL: "*"}}.
 	if len(inner) == 1 && inner[0].typ == sqlOther && inner[0].val == "*" {
+		if fn != "count" {
+			p.err = true
+			return nil
+		}
 		return ir.Agg{Func: fn, Arg: nil}
 	}
-	// COUNT(DISTINCT x)
-	if len(inner) > 1 && inner[0].typ == sqlIdent && strings.EqualFold(inner[0].val, "distinct") {
-		if fn == "count" {
-			fn = "count_distinct"
-		}
+	// COUNT(DISTINCT x). For any other aggregate, ir.Agg.Func has no distinct
+	// flag, so there is no lossless way to drop the keyword here: leave it in
+	// inner and let the Raw fallback below preserve it verbatim instead of
+	// silently discarding it.
+	if fn == "count" && len(inner) > 1 && inner[0].typ == sqlIdent && strings.EqualFold(inner[0].val, "distinct") {
+		fn = "count_distinct"
 		inner = inner[1:]
 	}
 	if arg, ok := parseColTokens(inner); ok {
