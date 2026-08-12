@@ -253,3 +253,118 @@ func TestOssieEmitFieldDedupDifferentExpr(t *testing.T) {
 		t.Errorf("kept field expression = %q, want the first (Dimensions) occurrence %q", got, "amount")
 	}
 }
+
+func TestOssieEmitMetricsAndRelationships(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "orders",
+				Dimensions: []ir.Field{{Name: "customer_id", Expr: "customer_id"}},
+				Measures: []ir.Measure{
+					{Field: ir.Field{Name: "revenue", Expr: "amount", Description: "Revenue."}, Agg: "sum"},
+				},
+				Metrics: []ir.Metric{
+					{Name: "revenue", Def: ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}}},
+					{Name: "aov", Label: "Average order value", Def: ir.Binary{
+						Op:    "/",
+						Left:  ir.Ref{Metric: "revenue"},
+						Right: ir.Agg{Func: "count", Table: "orders", Arg: nil},
+					}},
+				},
+			},
+			{Name: "customers", Dimensions: []ir.Field{{Name: "id", Expr: "id"}}},
+		},
+		Relationships: []ir.Relationship{
+			{Left: "orders", Right: "customers", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "id"}}},
+		},
+	}
+
+	f, _ := emitOssie(t, m, Options{Database: "A", Schema: "M", Name: "sales"})
+	sm := f.SemanticModel[0]
+
+	if len(sm.Relationships) != 1 {
+		t.Fatalf("want 1 relationship, got %d", len(sm.Relationships))
+	}
+	r := sm.Relationships[0]
+	if r.From != "orders" || r.To != "customers" || r.Name == "" {
+		t.Errorf("relationship = %+v; from must be the many side and name must be set", r)
+	}
+
+	// The measure and the metric share the name "revenue"; only one can occupy
+	// the flat metrics list. The metric is canonical.
+	byName := map[string]osiMetric{}
+	for _, mt := range sm.Metrics {
+		if _, dup := byName[mt.Name]; dup {
+			t.Errorf("duplicate metric name %q in the flat list", mt.Name)
+		}
+		byName[mt.Name] = mt
+	}
+	if len(byName) != 2 {
+		t.Errorf("want 2 metrics (revenue, aov), got %v", sm.Metrics)
+	}
+	rev, ok := byName["revenue"]
+	if !ok {
+		t.Fatal("no revenue metric")
+	}
+	if len(rev.Expression.Dialects) != 1 || rev.Expression.Dialects[0].Dialect != "ANSI_SQL" {
+		t.Errorf("expression = %+v, want a single ANSI_SQL entry", rev.Expression)
+	}
+	if !strings.Contains(rev.Expression.Dialects[0].Expression, "orders.amount") {
+		t.Errorf("revenue expression = %q, want a physical column reference", rev.Expression.Dialects[0].Expression)
+	}
+	// Label has no OSI slot and folds into the description.
+	if !strings.Contains(byName["aov"].Description, "Average order value") {
+		t.Errorf("aov description missing folded label: %q", byName["aov"].Description)
+	}
+}
+
+// TestOssieEmitDegradesWindowMetrics omits a metric with no OSI primitive and
+// returns a warning rather than emitting SQL semglot cannot stand behind.
+func TestOssieEmitDegradesWindowMetrics(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "orders",
+		Metrics: []ir.Metric{{
+			Name: "rolling_revenue",
+			Def:  ir.Window{Base: ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}}, Window: "30 days"},
+		}},
+	}}}
+	e := ossie{}.WithOptions(Options{Name: "sales"})
+	out := t.TempDir()
+	warnings, err := e.Emit(m, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, "rolling_revenue") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the degraded metric, got %v", warnings)
+	}
+}
+
+// TestOssieEmitMetricGrainFoldsIntoDescription covers ir.Metric.Grain, which
+// has no OSI slot. Grain is the metric's agg-time grain (the owning model's
+// agg_time_dimension) — omitting it would silently drop information the IR
+// carries, so it folds into the metric's description as visible prose, the
+// same way Label and Dimensions already do.
+func TestOssieEmitMetricGrainFoldsIntoDescription(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name: "orders",
+		Metrics: []ir.Metric{{
+			Name:  "revenue",
+			Grain: "month",
+			Def:   ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}},
+		}},
+	}}}
+	f, _ := emitOssie(t, m, Options{Name: "sales"})
+	sm := f.SemanticModel[0]
+	if len(sm.Metrics) != 1 {
+		t.Fatalf("want 1 metric, got %d", len(sm.Metrics))
+	}
+	if !strings.Contains(sm.Metrics[0].Description, "month") {
+		t.Errorf("revenue description missing folded grain: %q", sm.Metrics[0].Description)
+	}
+}

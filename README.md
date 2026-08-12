@@ -18,7 +18,8 @@
 Where [`sqlglot`](https://github.com/tobymao/sqlglot) translates across SQL
 dialects, **semglot** translates across **semantic-layer dialects** (dbt
 semantic models, Snowflake Cortex, Snowflake semantic views, Databricks metric
-views, and more) through one neutral intermediate representation (IR).
+views, Apache Ossie, and more) through one neutral intermediate representation
+(IR).
 
 You point it at a source layer, pick a target dialect, and it writes the
 equivalent layer out. Because everything routes through the IR, adding a dialect
@@ -26,8 +27,8 @@ adds every conversion into and out of it, not just one.
 
 ## Semantic Layer Dialects
 
-A **source** is read into the IR; a **target** is written from it. `dbt` is
-both, so `dbt` to `dbt` is a lossless round-trip.
+A **source** is read into the IR; a **target** is written from it. `dbt` and
+`ossie` are both, so `dbt` to `dbt` and `ossie` to `ossie` are round-trips.
 
 | Dialect                   | Source | Target |
 |---------------------------|:------:|:------:|
@@ -39,6 +40,7 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `nao-context-rules`       |        |   ✓    |
 | `databricks-metric-view`  |        |   ✓    |
 | `lightdash`               |        |   ✓    |
+| `ossie`                   |   ✓    |   ✓    |
 
 Adding a dialect is small, self-contained work: implement a `Parser` (dialect
 files to IR), an `Emitter` (IR to dialect files), or both — the interfaces in

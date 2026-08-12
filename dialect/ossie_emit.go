@@ -150,6 +150,76 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 		sm.Datasets = append(sm.Datasets, ds)
 	}
 
+	resolve := metricResolver(m)
+
+	// OSI has one flat, model-level metrics list, so measures and metrics share
+	// a namespace here even though they do not in the IR. Emit metrics first and
+	// let them win a name clash - the metric is the published calculation, and
+	// dialect/README.md records the same precedence for lightdash.
+	seen := map[string]bool{}
+	for _, t := range m.Tables {
+		for _, mt := range t.Metrics {
+			if reason, degrade := cortexDegrade(mt.Def); degrade {
+				warnings = append(warnings, fmt.Sprintf("metric %q not emitted to ossie: %s", mt.Name, reason))
+				continue
+			}
+			desc := mt.Description
+			// Label, agg-time grain, and slice-by dimensions have no OSI slot.
+			if mt.Label != "" {
+				desc = appendClause(desc, "Display name: "+mt.Label+".")
+			}
+			if mt.Grain != "" {
+				desc = appendClause(desc, "Agg-time grain: "+mt.Grain+".")
+			}
+			if len(mt.Dimensions) > 0 {
+				desc = appendClause(desc, "Sliced by: "+strings.Join(mt.Dimensions, ", ")+".")
+			}
+			sm.Metrics = append(sm.Metrics, osiMetric{
+				Name:        mt.Name,
+				Expression:  ansi(renderSQL(mt.Def, resolve)),
+				Description: desc,
+				AIContext:   aiContext("", mt.Synonyms),
+			})
+			seen[mt.Name] = true
+		}
+	}
+	for _, t := range m.Tables {
+		for _, ms := range t.Measures {
+			if seen[ms.Name] {
+				warnings = append(warnings, fmt.Sprintf(
+					"measure %q on table %q not emitted: a metric of the same name occupies OSI's flat metric list", ms.Name, t.Name))
+				continue
+			}
+			sm.Metrics = append(sm.Metrics, osiMetric{
+				Name:        ms.Name,
+				Expression:  ansi(aggExpr(ms.Agg, t.Name+"."+ms.Expr)),
+				Description: ms.Description,
+				DataType:    irToOSIType(ms.DataType),
+				AIContext:   aiContext("", ms.Synonyms),
+			})
+			seen[ms.Name] = true
+		}
+	}
+
+	for _, r := range m.Relationships {
+		if len(r.Columns) == 0 {
+			continue
+		}
+		// OSI requires a unique relationship name. relRoleSuffix disambiguates a
+		// role-playing dimension (two FKs between the same pair) exactly as the
+		// cortex, snowflake-semantic-view and databricks emitters do.
+		relName := r.Left + "_to_" + r.Right
+		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+			relName += "_" + suffix
+		}
+		rel := osiRelationship{Name: relName, From: r.Left, To: r.Right}
+		for _, cp := range r.Columns {
+			rel.FromColumns = append(rel.FromColumns, cp.Left)
+			rel.ToColumns = append(rel.ToColumns, cp.Right)
+		}
+		sm.Relationships = append(sm.Relationships, rel)
+	}
+
 	f := osiFile{Version: osiVersion, SemanticModel: []osiModel{sm}}
 
 	var buf bytes.Buffer
