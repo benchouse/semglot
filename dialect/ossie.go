@@ -96,14 +96,21 @@ type osiMetric struct {
 // hints, a SALESFORCE Tableau/CRM block).
 //
 // The design's "Out of scope" section decided on prose-only degradation: their
-// contents are vendor-private, semglot neither interprets them nor writes a
-// `vendor_name: SEMGLOT` block of its own, so only vendor_name is decoded and
-// nothing is ever emitted (every emit path leaves the slice nil, and omitempty
-// keeps the key out of the document). Out of scope for round-tripping is not
-// the same as invisible, though: parse notes each block's owner and vendor,
-// per this branch's no-silent-drop ruling.
+// contents are vendor-private, semglot neither interprets nor re-emits them,
+// and it never writes a `vendor_name: SEMGLOT` block of its own (every emit
+// path leaves the slice nil, and omitempty keeps the key out of the document).
+// Out of scope for round-tripping is not the same as invisible, though: parse
+// notes each block's owner and vendor, per this branch's no-silent-drop ruling.
+//
+// Both spec properties are decoded even so. Data is read but deliberately
+// never carried into the IR or written back out — decoding it costs nothing
+// and keeps this struct a faithful mirror of the schema's CustomExtension,
+// which TestOssieStructsCoverSchema checks property by property. Leaving it
+// off would make the struct diverge from the spec silently, which is how the
+// relationship ai_context gap this file's history records went unnoticed.
 type osiCustomExtension struct {
 	VendorName string `yaml:"vendor_name,omitempty"`
+	Data       string `yaml:"data,omitempty"`
 }
 
 type osiExpression struct {
