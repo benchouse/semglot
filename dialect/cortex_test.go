@@ -128,7 +128,17 @@ func TestCortexEmitUnsplittableSourceFallsBackAndWarns(t *testing.T) {
 		source string
 	}{
 		{"two-part name", "public.orders"},
-		{"query", "SELECT * FROM raw.orders WHERE deleted_at IS NULL"},
+		// A query carrying a FULLY-QUALIFIED table reference — the canonical
+		// OSI query form, and the shape that actually reaches this path. It
+		// has exactly the two dots a three-part address has, so splitting on
+		// dots alone "succeeds" and yields database "SELECT * FROM prod",
+		// schema "raw", table "orders WHERE deleted = false": a plausible,
+		// wrong, unwarned address emitted at exit 0. The previous probe had a
+		// single dot and so was rejected by the part count before the query
+		// shape was ever considered, which is why it passed against an
+		// emitter that never checked for a query at all.
+		{"query with a fully-qualified reference", "SELECT * FROM prod.raw.orders WHERE deleted = false"},
+		{"query with a single dot", "SELECT * FROM raw.orders WHERE deleted_at IS NULL"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

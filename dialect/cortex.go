@@ -132,11 +132,22 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 		// two-part name, or a source that is a query, which the OSI spec
 		// explicitly permits) falls back to the profile reconstruction WITH
 		// a warning, rather than silently half-applying it.
+		//
+		// The query case is tested FIRST and reported in its own words,
+		// because dot-counting cannot recognise it: `SELECT ... FROM
+		// db.schema.tbl` — the canonical OSI query form — has exactly two
+		// dots, so splitSource would otherwise "succeed" and emit database
+		// "SELECT * FROM db". splitSource refuses a query itself as a
+		// backstop; this branch exists so the warning says a query was
+		// declared rather than that a split failed.
 		baseTable := cortexBaseTable{Database: c.Database, Schema: schema, Table: strings.ToUpper(t.Name)}
 		if t.Source != "" {
-			if db, sch, tbl, ok := splitSource(t.Source); ok {
+			switch db, sch, tbl, ok := splitSource(t.Source); {
+			case looksLikeQuery(t.Source):
+				degradeNotes = append(degradeNotes, querySourceWarning("cortex", t.Name, t.Source))
+			case ok:
 				baseTable = cortexBaseTable{Database: db, Schema: sch, Table: tbl}
-			} else {
+			default:
 				degradeNotes = append(degradeNotes, unsplittableSourceWarning("cortex", t.Name, t.Source))
 			}
 		}

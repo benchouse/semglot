@@ -144,7 +144,18 @@ func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
 // as the table name and inventing the rest) — that produces a plausible,
 // wrong, unwarned address. Fall back to profile reconstruction instead, and
 // warn via unsplittableSourceWarning.
+//
+// A query is rejected outright, before any splitting: dot-counting alone does
+// NOT tell a reference from a query, because the canonical OSI query form
+// `SELECT ... FROM db.schema.tbl` has exactly the two dots a three-part
+// address has. Splitting that yields database "SELECT * FROM db" and table
+// "tbl WHERE ..." — a plausible, wrong, unwarned address, which is precisely
+// what the paragraph above forbids. The check lives here rather than only at
+// the call site so no future caller can reintroduce it.
 func splitSource(source string) (database, schema, table string, ok bool) {
+	if looksLikeQuery(source) {
+		return "", "", "", false
+	}
 	parts := strings.Split(source, ".")
 	if len(parts) != 3 {
 		return "", "", "", false
@@ -200,4 +211,34 @@ func querySourceWarning(target, table, source string) string {
 	return fmt.Sprintf(
 		"table %q: declared source %q is a query, not a table reference; %s needs an address here, so it was reconstructed from the profile instead",
 		table, source, target)
+}
+
+// dbtSchemaSourceWarning reports that table's declared Source has no home at
+// all in a dbt schema file. Used by the two targets that emit one — `dbt`
+// itself and `lightdash`, whose artifact IS a dbt schema.yml.
+//
+// A dbt `models:` entry documents a model dbt already builds; the physical
+// relation it resolves to comes from dbt's own graph (`ref()` plus the
+// model's materialization config), never from the properties file. Lightdash
+// reads that same compiled relation out of dbt's manifest. The one adjacent
+// slot, `config: {database, schema, alias}`, does not DESCRIBE an address —
+// it RELOCATES the table dbt builds, so writing an upstream physical address
+// there would silently rewrite the project rather than record a fact about
+// it. Neither target can carry the address, so both report it lost instead of
+// half-expressing it.
+func dbtSchemaSourceWarning(target, table, source string) string {
+	return fmt.Sprintf(
+		"table %q: declared source %q not emitted: a dbt schema file has no slot for a table's physical address (dbt resolves it through ref()), so %s cannot carry it",
+		table, source, target)
+}
+
+// sourceClause renders a table's declared physical address as a prose clause,
+// for the two targets that carry it as text rather than in a structural slot
+// (nao-yaml's notes:, nao-context-rules' table reference). Deliberately
+// shaped like synonymClause, whose fold into the same prose slots it mirrors.
+func sourceClause(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return ""
+	}
+	return "Physical source: " + source + "."
 }
