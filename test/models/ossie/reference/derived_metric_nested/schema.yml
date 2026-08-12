@@ -1,0 +1,32 @@
+# dbt equivalent of Apache Ossie's TestMetricConversion.test_derived_metric_nested,
+# whose MSI input (converters/dbt/tests/test_msi_to_osi.py) is a single semantic
+# model `orders` with three SUM measures over amount/cost_amount/expense_amount,
+# three simple metrics over them, and two nested derived metrics. The reference
+# converter's output for that input is
+# vendor/reference/derived_metric_nested.yaml.
+version: 2
+
+semantic_models:
+  - name: orders
+    model: ref('orders')
+    measures:
+      - {name: revenue, agg: sum, expr: amount}
+      - {name: cost, agg: sum, expr: cost_amount}
+      - {name: expenses, agg: sum, expr: expense_amount}
+
+metrics:
+  - name: revenue
+    type: simple
+    type_params: {measure: revenue}
+  - name: cost
+    type: simple
+    type_params: {measure: cost}
+  - name: expenses
+    type: simple
+    type_params: {measure: expenses}
+  - name: gross_profit
+    type: derived
+    type_params: {expr: "revenue - cost"}
+  - name: net_profit
+    type: derived
+    type_params: {expr: "gross_profit - expenses"}

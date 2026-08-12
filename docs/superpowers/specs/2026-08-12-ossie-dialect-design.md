@@ -244,6 +244,14 @@ Recorded because the differential tests below must tolerate them:
   `version` and `semantic_model`). semglot does not emit it.
 - Their ratios parenthesize aggressively (`(x) / (y)`); `renderOperand`
   parenthesizes only compounds. Semantically identical, textually different.
+- They uppercase aggregate function names (`SUM(...)`); `renderSQL` emits neutral
+  lowercase SQL. Textual only.
+- They desugar a `COUNT` measure over column `x` into
+  `SUM(CASE WHEN x IS NOT NULL THEN 1 ELSE 0 END)` — both in the metric
+  expression and in the dataset field the measure contributes. semglot emits
+  plain `COUNT(x)`: it is the ANSI spelling of the same aggregate, it is what
+  every other semglot target emits for a dbt `agg: count`, and it is better
+  behaved over an empty input (`COUNT(x)` is 0, their `SUM(CASE …)` is NULL).
 - Their Databricks converter picks the fact table as `source` and folds the rest
   in as `joins`, while semglot's `databricks-metric-view` emitter writes one view
   per table. Their paired `*_metric_view.yaml` files are therefore **not** valid
