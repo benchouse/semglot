@@ -177,7 +177,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	// name — Snowflake requires relationship names to be unique in a semantic
 	// view — so relRoleSuffix disambiguates all of the pair's relationships by
 	// their own left column(s), giving each a distinct, deterministic name.
-	relNames, relWarn := relationshipNames(m.Relationships, "snowflake-semantic-view",
+	relNames, relWarn := relationshipNames(m.Relationships, "snowflake-semantic-view", relHasColumns,
 		func(r ir.Relationship) string {
 			name := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
 			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {

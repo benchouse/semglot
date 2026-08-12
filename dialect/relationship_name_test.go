@@ -277,3 +277,27 @@ func TestUndeclaredRelationshipNameIsUnchangedAndQuiet(t *testing.T) {
 		}
 	}
 }
+
+// TestSkippedRelationshipDoesNotForceFallback: a column-less relationship is
+// written by none of the structural targets, so it occupies no name and must
+// not push a real relationship's declared name onto the fallback path. Before
+// relationshipNames took an emits predicate it counted every relationship,
+// declared name included, so the pair below collided and the surviving join
+// was renamed and warned about over a clash with something never emitted.
+func TestSkippedRelationshipDoesNotForceFallback(t *testing.T) {
+	const shared = "orders_to_customers_named"
+	ghost := ir.Relationship{Name: shared, Left: "orders", Right: "customers"} // no Columns: never emitted
+	real := join(shared)
+	res := emitAll(t, relModel(ghost, real))
+	for _, dialect := range []string{"ossie", "snowflake-semantic-view", "databricks-metric-view"} {
+		r := res[dialect]
+		if !usesAsIdentifier(r.files, shared) {
+			t.Errorf("%s: the one emitted relationship must keep its declared name %q:\n%s", dialect, shared, r.files)
+		}
+		for _, w := range r.warnings {
+			if mentions(w, "unique") {
+				t.Errorf("%s: a relationship that is never emitted cannot collide with one that is; got %q", dialect, w)
+			}
+		}
+	}
+}

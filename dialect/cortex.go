@@ -200,7 +200,7 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 	// customer) would otherwise collide on that generated name for every
 	// relationship in the pair; relRoleSuffix disambiguates all of them by their
 	// own left column(s) so each survives with a distinct, deterministic name.
-	relNames, relWarn := relationshipNames(m.Relationships, "cortex",
+	relNames, relWarn := relationshipNames(m.Relationships, "cortex", nil,
 		func(r ir.Relationship) string {
 			name := r.Left + "_to_" + r.Right
 			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {

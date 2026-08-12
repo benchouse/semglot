@@ -125,7 +125,7 @@ func lossReport(before, after *ir.Model) []lossLine {
 		}
 		if br.Name != "" && br.Name != ar.Name {
 			out = append(out, lossLine{
-				Category: "relationship name", Name: br.Name,
+				Table: relSortKey(br), Category: "relationship name", Name: br.Name,
 				Text: fmt.Sprintf("relationship %s name: %q -> %q", relSortKey(br), br.Name, ar.Name),
 			})
 		}

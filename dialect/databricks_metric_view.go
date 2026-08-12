@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -234,7 +233,7 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// serve as the alias a metric view's join actually is — see dbxJoinName.
 	// Names are resolved against the WHOLE model, not just this view's joins, so
 	// two views cannot disagree about what one relationship is called.
-	relNames, relWarn := relationshipNames(m.Relationships, "databricks-metric-view",
+	relNames, relWarn := relationshipNames(m.Relationships, "databricks-metric-view", relHasColumns,
 		func(r ir.Relationship) string {
 			name := strings.ToLower(r.Right)
 			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
@@ -293,6 +292,25 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// (sum(attributed_revenue)/sum(spend)). Mirrors the identical fix in
 	// snowflake-semantic-view (see its buildView), which resolves the same
 	// collision by treating the computed metric as canonical.
+	// Built from mv.Joins, above, so a measure expression and the join it names
+	// can never disagree: whatever alias the joins loop settled on — generated
+	// or declared — is the alias a qualifier is rewritten to. See
+	// dbxJoinAliases for why this reconciliation has to be explicit.
+	aliases := dbxJoinAliases(mv.Joins)
+	// measureExpr resolves one rendered expression against this view's
+	// relations, reporting the measure as dropped when a qualifier names
+	// something the view does not join. Shared by the metric-derived and raw
+	// passes below: both write into the same `measures:` list, so both have to
+	// satisfy the same invariant.
+	measureExpr := func(kind, name, expr string) (string, bool) {
+		out, unresolved, ok := dbxRewriteQualifiers(expr, t.Name, aliases)
+		if !ok {
+			addNote(kind + " " + name + ": expression references " + unresolved +
+				", which this view does not join exactly once (" + expr + "), skipped")
+			return "", false
+		}
+		return out, true
+	}
 	usedNames := map[string]bool{}
 	for _, mt := range t.Metrics {
 		if reason, degrade := dbxDegrade(mt); degrade {
@@ -313,7 +331,10 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 			addNote("metric " + mt.Name + ": skipped, its name collides with another metric on this table (case-insensitive)")
 			continue
 		}
-		expr := dbxStripSourceQualifier(renderSQL(mt.Def, resolve), t.Name)
+		expr, ok := measureExpr("metric", mt.Name, renderSQL(mt.Def, resolve))
+		if !ok {
+			continue
+		}
 		// A simple metric renders through aggExpr exactly like a raw measure
 		// (see dbxValidMeasureExpr's doc comment): an agg outside the set
 		// aggExpr can render safely produces SQL Databricks rejects, taking the
@@ -340,7 +361,15 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	}
 	for _, ms := range t.Measures {
 		name := strings.ToLower(ms.Name)
-		expr := aggExpr(ms.Agg, strings.ToLower(ms.Expr))
+		// Resolved against the view's relations exactly like a metric's
+		// expression above: a raw measure's Expr is USUALLY a bare column, but
+		// nothing guarantees it (a source dialect may write a qualified or
+		// compound one), and a qualifier that names no relation takes the whole
+		// view down whichever pass emitted it.
+		expr, ok := measureExpr("measure", ms.Name, aggExpr(ms.Agg, strings.ToLower(ms.Expr)))
+		if !ok {
+			continue
+		}
 		if usedNames[name] || usedExprs[strings.ToLower(expr)] {
 			continue
 		}
@@ -451,28 +480,90 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	return mv, own
 }
 
-// dbxStripSourceQualifier removes the source table's own name qualifier from a
-// rendered measure expression. renderSQL qualifies a metric's columns with its
-// owning table exactly as the IR carries it (e.g. "sum(FCT_Orders.order_gross)"
-// when the dbt YAML named the semantic model FCT_Orders), but in a metric view
-// the source relation is the alias `source`, not its physical name — source
-// columns are referenced bare, matching how fields are emitted. Cross-grain
-// metrics (which reference another table) are degraded before rendering, so
-// only the source qualifier can appear in a measure expr here.
+// dbxJoinAliases maps each joined table's lowercased IR name to the alias its
+// join carries in this view, or to "" when the view joins that table more than
+// once (a role-playing dimension: a bare `<table>.<column>` qualifier names no
+// one of the two in particular, so it cannot be resolved).
 //
-// The match is case-insensitive because renderSQL preserves the table's
-// original case while callers here (buildView) pass table names that may
-// differ only in case from what's embedded in the expr — matching case-
-// sensitively would silently leave the qualifier in place for any
-// mixed-/upper-case semantic-model name, which Databricks then cannot resolve
-// (the source relation is aliased `source`), rejecting the entire view. The
-// leading word boundary avoids stripping a partial match inside a longer
-// identifier (e.g. "my_fct_orders."); it does not protect a string literal
-// containing "<table>." verbatim — a known, accepted, deferred weakness that
-// would need a full SQL tokeniser to close, out of scope here.
-func dbxStripSourceQualifier(expr, table string) string {
-	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\.`)
-	return re.ReplaceAllString(expr, "")
+// THIS IS THE COUPLING between a view's `joins:` and its `measures:`. A metric
+// expression arrives qualified with IR TABLE names (renderSQL writes
+// "count(distinct customer.c_customer_sk)"), while inside the view the only
+// relations that exist are `source` and the join ALIASES. The two therefore
+// have to be reconciled, and both sides must read the alias from the same
+// place — dbxJoin.Name, via this function — rather than each recomputing it.
+//
+// They did not, until now. The join alias used to be strings.ToLower(r.Right),
+// which happened to equal the qualifier renderSQL emits, so the reconciliation
+// was a no-op that nobody had to write down. Preferring a DECLARED
+// relationship name broke that accident instantly and silently: the view's
+// joins became store_sales_to_customer while the measure still said
+// customer.c_customer_sk, and Databricks rejects the whole view for the
+// dangling relation. See dbxRewriteQualifiers, and the joins loop in buildView
+// which is the other half of this pair.
+func dbxJoinAliases(joins []dbxJoin) map[string]string {
+	aliases := make(map[string]string, len(joins))
+	count := map[string]int{}
+	for _, j := range joins {
+		count[j.RightTable]++
+		aliases[j.RightTable] = j.Name
+	}
+	for table, n := range count {
+		if n > 1 {
+			aliases[table] = ""
+		}
+	}
+	return aliases
+}
+
+// dbxRewriteQualifiers rewrites every `<table>.<column>` qualifier in a
+// rendered measure expression to the relation that actually exists in this
+// view: self (the view's own base table) is STRIPPED, because the base
+// relation is aliased `source` and its columns are referenced bare, matching
+// how fields are emitted; any other table becomes the alias of the join that
+// pulls it in (see dbxJoinAliases, which is where that alias comes from).
+//
+// ok is false, with unresolved naming the offending qualifier, when a
+// qualifier is neither self nor a table this view joins exactly once. The
+// caller must then DROP the measure with a note: emitting it would reference a
+// relation the view does not declare, and Databricks rejects the entire view
+// for that — every other measure, dimension and join of the file goes with it.
+// dbxCrossGrain does not catch this case; it looks at metric REFERENCES
+// (ir.Ref), not at bare column qualifiers, which is why a metric like
+// `SUM(store_sales.x) / COUNT(DISTINCT customer.y)` reaches this function at
+// all.
+//
+// Tokenised rather than pattern-matched: the previous regex-based strip could
+// not tell a qualifier from the same text inside a string literal, and could
+// only handle the ONE self qualifier. sqlTokens round-trips faithfully, so
+// rebuilding from the token stream preserves the expression exactly apart from
+// the qualifiers rewritten here, and a literal containing "<table>." is a
+// sqlString token that is never inspected.
+func dbxRewriteQualifiers(expr, self string, aliases map[string]string) (out, unresolved string, ok bool) {
+	toks := sqlTokens(expr)
+	var b strings.Builder
+	for i := 0; i < len(toks); i++ {
+		tk := toks[i]
+		qualified := tk.typ == sqlIdent && i+2 < len(toks) &&
+			toks[i+1].typ == sqlOther && toks[i+1].val == "." && toks[i+2].typ == sqlIdent
+		if !qualified {
+			b.WriteString(tk.val)
+			continue
+		}
+		// Self first: a self-join (Left == Right) would also appear in aliases,
+		// and stripping is what this view did for its own table before joins
+		// existed at all. The column token itself is written by the next
+		// iteration in both branches.
+		if strings.EqualFold(tk.val, self) {
+			i++ // skip the "."; the qualifier is dropped with it
+			continue
+		}
+		alias, joined := aliases[strings.ToLower(tk.val)]
+		if !joined || alias == "" {
+			return "", tk.val, false
+		}
+		b.WriteString(alias)
+	}
+	return b.String(), "", true
 }
 
 // dbxJoinName reports whether name can be used as a metric view's join name.

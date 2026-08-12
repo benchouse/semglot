@@ -86,8 +86,16 @@ func (naoContextRules) Emit(m *ir.Model, dir string) ([]string, error) {
 			if c := relIdentityClause(r); c != "" {
 				suffix = " " + c
 			}
-			for _, c := range r.Columns {
-				fmt.Fprintf(&b, "- `%s.%s → %s.%s`%s\n", r.Left, c.Left, r.Right, c.Right, suffix)
+			for i, c := range r.Columns {
+				// One line per column pair, but the identity clause goes on the
+				// FIRST line only: a composite-key join is one join, and
+				// repeating "Join name: X. Synonyms: …" under every column pair
+				// reads as several joins that happen to share a name.
+				line := suffix
+				if i > 0 {
+					line = ""
+				}
+				fmt.Fprintf(&b, "- `%s.%s → %s.%s`%s\n", r.Left, c.Left, r.Right, c.Right, line)
 			}
 		}
 	}

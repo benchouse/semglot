@@ -827,3 +827,194 @@ func TestDatabricksMetricViewQuerySourceWarnedOnce(t *testing.T) {
 		}
 	}
 }
+
+// A metric view's `joins:` and its `measures:` must agree about what each
+// joined relation is CALLED. renderSQL qualifies a cross-table column with the
+// IR TABLE name ("count(distinct customer.c_customer_sk)"); the view's only
+// relations are `source` and the join aliases. That reconciliation used to be
+// an accident — the alias was strings.ToLower(r.Right), byte-identical to the
+// qualifier — and preferring a DECLARED relationship name broke it silently:
+// the join became `store_sales_to_customer` while the measure still said
+// `customer.…`, and Databricks rejects the ENTIRE view for the dangling
+// relation. The tests below pin the coupling from both ends.
+
+// dbxMeasureQualifiers returns every `<relation>.` qualifier appearing in a
+// view's measure expressions, and the view's join names, so a test can assert
+// the first is a subset of the second.
+func dbxMeasureQualifiers(t *testing.T, file string) (quals, joins []string) {
+	t.Helper()
+	var v struct {
+		Joins []struct {
+			Name string `yaml:"name"`
+		} `yaml:"joins"`
+		Measures []struct {
+			Expr string `yaml:"expr"`
+		} `yaml:"measures"`
+	}
+	if err := yaml.Unmarshal([]byte(file), &v); err != nil {
+		t.Fatalf("parse emitted view: %v\n%s", err, file)
+	}
+	for _, j := range v.Joins {
+		joins = append(joins, j.Name)
+	}
+	re := regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]`)
+	for _, ms := range v.Measures {
+		for _, m := range re.FindAllStringSubmatch(ms.Expr, -1) {
+			quals = append(quals, m[1])
+		}
+	}
+	return quals, joins
+}
+
+// assertMeasureQualifiersResolve is the invariant itself: every relation a
+// measure expression names must be one this view actually declares. `source`
+// is the base relation's own alias and is always valid.
+func assertMeasureQualifiersResolve(t *testing.T, name, file string) {
+	t.Helper()
+	quals, joins := dbxMeasureQualifiers(t, file)
+	known := map[string]bool{"source": true}
+	for _, j := range joins {
+		known[j] = true
+	}
+	for _, q := range quals {
+		if !known[q] {
+			t.Errorf("%s: measure expression references relation %q, but the view declares only %v; Databricks rejects the whole view for this:\n%s",
+				name, q, append([]string{"source"}, joins...), file)
+		}
+	}
+}
+
+// dbxCrossTableModel is a fact with a metric whose denominator counts a column
+// on the JOINED table — the shape of TPC-DS's customer_lifetime_value, which is
+// where this regression surfaced.
+func dbxCrossTableModel(relName string) *ir.Model {
+	return &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "store_sales",
+				Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+				Metrics: []ir.Metric{{
+					Name: "clv",
+					Def: ir.Binary{
+						Op:   "/",
+						Left: ir.Agg{Func: "sum", Table: "store_sales", Arg: ir.Col{Table: "store_sales", Name: "ss_ext_sales_price"}},
+						Right: ir.Agg{Func: "count_distinct", Table: "customer",
+							Arg: ir.Col{Table: "customer", Name: "c_customer_sk"}},
+					},
+				}},
+			},
+			{
+				Name:       "customer",
+				Dimensions: []ir.Field{{Name: "c_customer_sk", Expr: "c_customer_sk"}},
+			},
+		},
+		Relationships: []ir.Relationship{{
+			Name: relName, Left: "store_sales", Right: "customer",
+			Columns: []ir.ColumnPair{{Left: "ss_customer_sk", Right: "c_customer_sk"}},
+		}},
+	}
+}
+
+// TestDatabricksCrossTableQualifierFollowsJoinAlias: whatever the join ends up
+// called, the measure expression must name that same alias. Run with a
+// declared name (the case that broke) and without one (the case that used to
+// work by accident), so the test fails if the two ever diverge again.
+func TestDatabricksCrossTableQualifierFollowsJoinAlias(t *testing.T) {
+	for _, tc := range []struct {
+		declared  string
+		wantAlias string
+	}{
+		{"store_sales_to_customer", "store_sales_to_customer"},
+		{"", "customer"},
+	} {
+		name := tc.declared
+		if name == "" {
+			name = "(anonymous)"
+		}
+		t.Run(name, func(t *testing.T) {
+			files := emitDbx(t, dbxCrossTableModel(tc.declared))
+			got, ok := files["store_sales.yaml"]
+			if !ok {
+				t.Fatalf("expected store_sales.yaml, got %v", keysOfDbx(files))
+			}
+			assertMeasureQualifiersResolve(t, "store_sales.yaml", got)
+			if !strings.Contains(got, "name: "+tc.wantAlias+"\n") {
+				t.Errorf("want join named %q:\n%s", tc.wantAlias, got)
+			}
+			if !strings.Contains(got, "count(distinct "+tc.wantAlias+".c_customer_sk)") {
+				t.Errorf("measure must qualify the joined column with the join alias %q:\n%s", tc.wantAlias, got)
+			}
+			// The IR table name must not survive as a qualifier once it differs
+			// from the alias — that is exactly the dangling relation.
+			if tc.wantAlias != "customer" && strings.Contains(got, "customer.c_customer_sk)") &&
+				!strings.Contains(got, tc.wantAlias+".c_customer_sk)") {
+				t.Errorf("measure still qualifies with the IR table name:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestDatabricksUnjoinableQualifierDegrades: a metric qualifying a table this
+// view does not join has no valid rendering at all. It must be dropped and
+// noted, never emitted with a relation the view does not declare — one bad
+// measure takes every other measure, dimension and join of the file with it.
+func TestDatabricksUnjoinableQualifierDegrades(t *testing.T) {
+	m := dbxCrossTableModel("store_sales_to_customer")
+	m.Relationships = nil // the metric still references customer; nothing joins it now
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	// assertMeasureQualifiersResolve is the check that matters here: it looks
+	// at the measure EXPRESSIONS only. The note itself legitimately quotes the
+	// rejected expression (that is how a reader knows what was dropped), so a
+	// whole-file substring check would match its own explanation.
+	assertMeasureQualifiersResolve(t, "store_sales.yaml", got)
+	if strings.Contains(got, "expr: sum(store_sales.ss_ext_sales_price)") {
+		t.Errorf("the degraded metric must not be emitted as a measure at all:\n%s", got)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "clv") && strings.Contains(w, "customer") && strings.Contains(w, "does not join") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note naming the metric and the unjoinable relation; got %v", warnings)
+	}
+	// The view still stands: the degraded metric leaves it measure-less, so the
+	// synthesised row count keeps it valid rather than dropping the table.
+	if !strings.Contains(got, "name: row_count") {
+		t.Errorf("want the synthesised row-count measure:\n%s", got)
+	}
+}
+
+// TestDatabricksRolePlayingQualifierIsAmbiguous: two joins to the same table
+// (ship-to vs bill-to) mean a bare `customer.x` qualifier names neither. The
+// old alias-equals-table-name accident did not hold here either — both joins
+// are suffixed — so this closes a case that was already broken, silently.
+func TestDatabricksRolePlayingQualifierIsAmbiguous(t *testing.T) {
+	m := dbxCrossTableModel("")
+	m.Relationships = append(m.Relationships, ir.Relationship{
+		Left: "store_sales", Right: "customer",
+		Columns: []ir.ColumnPair{{Left: "ss_bill_customer_sk", Right: "c_customer_sk"}},
+	})
+	files, warnings := emitDbxW(t, m)
+	assertMeasureQualifiersResolve(t, "store_sales.yaml", files["store_sales.yaml"])
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "clv") && strings.Contains(w, "exactly once") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note that the qualifier cannot be resolved to one join; got %v", warnings)
+	}
+}
+
+// TestDatabricksEveryEmittedViewResolvesItsQualifiers sweeps the shared test
+// model, so any future change that reintroduces a dangling qualifier anywhere
+// in the fixture fails here rather than in a Databricks deploy log.
+func TestDatabricksEveryEmittedViewResolvesItsQualifiers(t *testing.T) {
+	for name, file := range emitDbx(t, dbxTestModel()) {
+		assertMeasureQualifiersResolve(t, name, file)
+	}
+}

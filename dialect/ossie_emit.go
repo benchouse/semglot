@@ -282,7 +282,7 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 	// collision can cost one. The generated fallback keeps relRoleSuffix, which
 	// disambiguates a role-playing dimension (two FKs between the same pair)
 	// exactly as the cortex, snowflake-semantic-view and databricks emitters do.
-	relNames, relWarn := relationshipNames(m.Relationships, "ossie",
+	relNames, relWarn := relationshipNames(m.Relationships, "ossie", relHasColumns,
 		func(r ir.Relationship) string {
 			name := r.Left + "_to_" + r.Right
 			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {

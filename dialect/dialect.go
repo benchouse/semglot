@@ -162,14 +162,27 @@ func relRoleSuffix(all []ir.Relationship, r ir.Relationship) string {
 // join aliases, and two names differing only in case would collide there even
 // though they differ here. A declared name equal to its OWN generated name is
 // not a collision.
-func relationshipNames(all []ir.Relationship, target string, fallback func(ir.Relationship) string, valid func(string) bool) (names, warn []string) {
+//
+// emits reports whether a relationship reaches target's artifact at all; a nil
+// emits means every one does. Only emitted relationships take part in the
+// collision counts, and a skipped one is never warned about: a relationship the
+// target drops (ossie, snowflake-semantic-view and databricks-metric-view all
+// skip a column-less one — see relHasColumns) occupies no name, so counting it
+// would push a perfectly usable declared name onto the fallback path and warn
+// about a clash with something that was never written.
+func relationshipNames(all []ir.Relationship, target string, emits func(ir.Relationship) bool, fallback func(ir.Relationship) string, valid func(string) bool) (names, warn []string) {
 	names = make([]string, len(all))
 	warn = make([]string, len(all))
 	generated := make([]string, len(all))
+	emitted := make([]bool, len(all))
 	declaredCount := map[string]int{}
 	generatedCount := map[string]int{}
 	for i, r := range all {
 		generated[i] = fallback(r)
+		emitted[i] = emits == nil || emits(r)
+		if !emitted[i] {
+			continue
+		}
 		generatedCount[strings.ToLower(generated[i])]++
 		if n := strings.TrimSpace(r.Name); n != "" {
 			declaredCount[strings.ToLower(n)]++
@@ -177,6 +190,14 @@ func relationshipNames(all []ir.Relationship, target string, fallback func(ir.Re
 	}
 	for i, r := range all {
 		names[i] = generated[i]
+		if !emitted[i] {
+			// Not written, so nothing is at stake: keep the declared name in
+			// names[i] for any caller that reads it anyway, and stay silent.
+			if n := strings.TrimSpace(r.Name); n != "" {
+				names[i] = n
+			}
+			continue
+		}
 		n := strings.TrimSpace(r.Name)
 		if n == "" {
 			continue
@@ -272,7 +293,13 @@ func relSynonymsWarning(target, name string, r ir.Relationship) string {
 		relLabel(name, r), r.Synonyms, target)
 }
 
-// splitSource splits an ir.Table.Source into its three dot-separated parts
+// relHasColumns reports whether r has at least one column pair, i.e. whether
+// it describes a join at all. It is the emits predicate (see
+// relationshipNames) of every target that skips a column-less relationship
+// rather than writing a join with no ON condition.
+func relHasColumns(r ir.Relationship) bool { return len(r.Columns) > 0 }
+
+// splitSource splits an ir.Table.Source into its three dot-separated parts into its three dot-separated parts
 // (database, schema, table). ok is false unless source has EXACTLY three
 // non-empty parts. This is cortex's OWN requirement, not a general one:
 // cortexBaseTable has separate Database/Schema/Table YAML fields, so only a
