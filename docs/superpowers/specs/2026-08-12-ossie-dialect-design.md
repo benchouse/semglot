@@ -103,9 +103,13 @@ Notes on the mechanics:
 - `svSynonyms` (`snowflake_semantic_view.go:205`) already documents that Snowflake
   accepts synonyms "on tables, dimensions, facts, and metrics" and renders the
   clause; the table case is just not called yet.
-- `cortexTable` has no `synonyms` field today while `cortexCol` does. Confirm
-  table-level support against Snowflake's Cortex Analyst YAML spec before adding
-  the key; if unsupported, `cortex` degrades to prose with the rest.
+- `cortexTable` had no `synonyms` field while `cortexCol` did. **Verified**
+  against `Snowflake-Labs/semantic-model-generator`'s
+  `semantic_model_generator/protos/semantic_model.proto`, whose `Table`
+  message carries a `repeated string synonyms` field alongside Cortex Analyst's
+  own docs ("a table or field can have more than one" synonym) — table-level
+  synonyms are supported, so `cortexTable` gained the field structurally
+  (`synonyms:` on the table, `<->` not needed since `cortex` is emit-only).
 - `dbtModel` has no `Meta` field at all — only `dbtColumn` does. Add one carrying
   `synonyms`, mirroring the existing column convention, and honour the
   `DbtMetaKeyPath` option (`meta:` vs `config.meta:`) exactly as the column path
@@ -297,10 +301,26 @@ entry appearing is a regression signal.
 
 ### C. Round-trip information-loss report
 
-A differ over two `*ir.Model` values returning a structured loss report, driving
-assertions for `dbt → ossie → dbt` and `ossie → dbt → ossie` against a documented
-allowlist (unpublished measures becoming published, enum structure, grain, field
-labels).
+A differ over two `*ir.Model` values (`lossReport`, `test/loss_test.go`)
+returning a structured loss report, driving assertions for `dbt → ossie → dbt`
+(`TestDBTToOssieLoss`) and `ossie → ossie` (`TestOssieRoundTrip`, per-fixture
+against each vendored document) against a documented allowlist.
+
+As implemented, the allowlist covers: unpublished measures/metrics becoming
+published (`metrics: gained` / `measures: gained`); a measure's OSI field
+declaration (named after the measure, per "Measures emit as both a field and
+a metric" above) resurfacing as a plain dimension on reparse, since OSI's
+`fields[]` has no marker distinguishing a metric-operand-only field from a
+real one (`dimensions: gained`); a measure whose expression is not a single
+bare column losing its measure identity on round-trip, since OSI's flat
+metrics list can only infer a measure back out of the narrowest case — a
+single, unfiltered aggregate over a plain column (`measures: lost`); and
+`Table.Grain` folding into the dataset description (`grain:`). Three of the
+four vendored fixtures write a metric whose aggregate argument is never
+declared under `fields:` on any dataset, so `metricHome` cannot attribute it
+and the metric is skipped at parse — before it ever reaches the IR the loss
+report compares, so `TestOssieRoundTrip` has nothing to assert about those
+metrics one way or the other.
 
 This generalizes beyond ossie: `ir/model.go`'s package comment already
 anticipates the IR being "the unit of the fairness index", and this is that

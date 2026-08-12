@@ -13,16 +13,15 @@ behind it. For what each IR field *means*, read the types in
 
 ## Direction
 
-`dbt` is currently the only **source** (it parses to the IR), and it is also a
-target, so its constructs are read and written (marked `<->` below). Every other
-dialect is **emit-only** (IR -> dialect). So the "to IR" direction is a dbt-only
-column today; the "from IR" direction is every dialect.
+`dbt` and `ossie` are **sources** (they parse to the IR) and also targets, so
+their constructs are read and written (marked `<->` below). Every other
+dialect is **emit-only** (IR -> dialect).
 
 Each emitter writes:
 
 | Dialect | Output |
 |---|---|
-| `dbt` | `<model-name>.yml` (models + semantic_models + metrics); the only source dialect |
+| `dbt` | `<model-name>.yml` (models + semantic_models + metrics); a source dialect as well as a target |
 | `cortex` | `semantic_model.yaml` |
 | `snowflake-semantic-view` | `definition.md` (a `create or replace semantic view` block) |
 | `supersimple` | one `<TABLE>.yaml` per model, plus `NOTES.md` for anything deferred |
@@ -30,27 +29,29 @@ Each emitter writes:
 | `nao-context-rules` | `RULES.md` (prose) |
 | `databricks-metric-view` | one `<table>.yaml` metric view per model table, with direct joins to referenced tables (requires Databricks Runtime 17.2+; `display_name`/`synonyms` require 17.3+) |
 | `lightdash` | `schema.yml` — a dbt schema file carrying Lightdash `meta:` blocks, so Lightdash compiles it into explores. A `dbt-meta-key-path` profile option switches `meta:` (dbt <= 1.9) to `config.meta:` (dbt >= 1.10) |
+| `ossie` | `semantic_model.yaml` (Apache Ossie core-spec 0.2.0.dev0); a source dialect as well as a target |
 
 ## Mapping
 
-Cells name the construct the IR concept becomes. Notation: `<->` dbt reads it
-back into the IR too; `text` the value survives only as prose folded into a
-description or comment; `--` not emitted (see [Gaps vs. limits](#gaps-vs-limits)).
+Cells name the construct the IR concept becomes. Notation: `<->` dbt (and,
+where marked, ossie) reads it back into the IR too; `text` the value survives
+only as prose folded into a description or comment; `--` not emitted (see
+[Gaps vs. limits](#gaps-vs-limits)).
 
-| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` |
-|---|---|---|---|---|---|---|---|---|
-| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | `source` (+ `joins[].source` for referenced tables) | `models[]` entry |
-| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | `fields[]` | column + `meta.dimension` |
-| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | plain `fields[]` entry (not marked as time) | column + `meta.dimension type: date/timestamp` |
-| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | `--` | `meta.dimension.type` only where confidently inferable, else omitted |
-| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | `--` | `meta.primary_key` (single column only; composite degrades) |
-| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | `joins[]` (quoted `"on":` condition) | `meta.joins[]` (`sql_on` with `${table.col}` refs) |
-| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | `comment` (field/measure/view) | `description` |
-| Table synonyms | model `meta.synonyms` `<->` | `synonyms:` on the table | `with synonyms (...)` on the table | `text` (into the model description) | `text` (into `notes:`) | `text` (into the Table reference entry) | `text` (into the view `comment`) | `text` (into the model description) |
-| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `synonyms:` (capped at 10) | `text` (into the column description) |
-| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | `text` (into comment) | `text` (into the column description) |
-| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | `measures[]` | column-level `meta.metrics` |
-| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL | inline SQL in `measures[].expr` | model-level `meta.metrics` `type: number` (reference-only; filtered/compound aggregates and cross-table refs degrade) |
+| IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` | `ossie` |
+|---|---|---|---|---|---|---|---|---|---|
+| Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | `source` (+ `joins[].source` for referenced tables) | `models[]` entry | `datasets[]` `<->` |
+| Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | `fields[]` | column + `meta.dimension` | `fields[]` with `dimension.is_time: false` `<->` |
+| Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | plain `fields[]` entry (not marked as time) | column + `meta.dimension type: date/timestamp` | `fields[]` with `dimension.is_time: true` `<->` |
+| Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | `--` | `meta.dimension.type` only where confidently inferable, else omitted | `datatype` (logical enum) `<->` |
+| Primary key | `primary_key` constraint + primary entity `<->` | `primary_key` | `primary key (...)` | `primary_key` | `--` | `--` | `--` | `meta.primary_key` (single column only; composite degrades) | `primary_key: []` (composite supported) `<->` |
+| Relationship / join | `relationships` test on the FK column `<->` | `relationships[]` | `relationships (...) references` | `relations` (hasMany, join_key) | `--` | "Joins & routing" | `joins[]` (quoted `"on":` condition) | `meta.joins[]` (`sql_on` with `${table.col}` refs) | `relationships[]` (`from`/`to`, composite supported) `<->` |
+| Description | `description` `<->` | `description` | `comment='...'` | `description` | `description` (field/metric) | prose | `comment` (field/measure/view) | `description` | `description` `<->` |
+| Table synonyms | model `meta.synonyms` `<->` | `synonyms:` on the table | `with synonyms (...)` on the table | `text` (into the model description) | `text` (into `notes:`) | `text` (into the Table reference entry) | `text` (into the view `comment`) | `text` (into the model description) | `ai_context.synonyms` on the dataset `<->` |
+| Synonyms | `meta.synonyms` on the column `<->` | `synonyms:` | `with synonyms (...)` | `--` (gap) | `text` (into description) | `text` (into description) | `synonyms:` (capped at 10) | `text` (into the column description) | `ai_context.synonyms` `<->` |
+| Enum / allowed values | `accepted_values` test + `meta.enum` `<->` | `sample_values` + `text` | `text` (into comment) | `text` (into description) | `values:` | "Allowed values" | `text` (into comment) | `text` (into the column description) | `text` (into the field description) |
+| Simple metric (aggregation) | `measures` + `metrics type: simple` `<->` | `facts[]` | `metrics (...)` | metric aggregation | metric `source{table,column,aggregation}` | "Key metrics reference" | `measures[]` | column-level `meta.metrics` | model-level `metrics[]` + a `fields[]` entry for the column `<->` |
+| Ratio / derived metric | `type: ratio` / `type: derived` `<->` | `expr` (rendered SQL) | inline SQL in `metrics (...)` | division ratio -> pipeline; other arithmetic -> `NOTES.md` | `type: derived`, `formula` | rendered SQL | inline SQL in `measures[].expr` | model-level `meta.metrics` `type: number` (reference-only; filtered/compound aggregates and cross-table refs degrade) | model-level `metrics[]` (rendered SQL) `<->` |
 
 ## Gaps vs. limits
 
@@ -101,6 +102,15 @@ and nao dimensions carry a structured `values:` list
   metrics by name. There is no place for a filtered aggregate
   (`sum(case when ... end)`), and a `type: number` expression can only reference
   metrics on the SAME model, so a cross-table derived metric degrades too.
+- **No measure concept in `ossie`.** OSI has one flat, model-level `metrics:`
+  list and no separate measure construct, so a measure that no metric
+  publishes comes back from a round-trip as a published metric. `dbt` →
+  `ossie` → `dbt` is therefore lossy in a way `dbt` → `dbt` is not.
+- **No table grain, metric label, field label, or enum slot in `ossie`.** All
+  four fold into the nearest `description`.
+- **No source-table identity in `ossie` on parse.** A dataset's `source`
+  (`db.schema.table`) has no IR counterpart; emit reconstructs it from the
+  profile's `database`/`schema`.
 
 ### A note the `--` notation cannot express: name collisions
 

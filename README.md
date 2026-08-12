@@ -154,8 +154,8 @@ profiles:
 ## Dialect support
 
 Every dialect maps to the same neutral IR, but targets differ in how much of it
-they can express. This is what each **target** emits today (`dbt` is currently
-the only source).
+they can express. This is what each **target** emits today (`dbt` and `ossie`
+are also sources; see [Semantic Layer Dialects](#semantic-layer-dialects) above).
 
 | Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` |
 |-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:------------------------:|:-----------:|

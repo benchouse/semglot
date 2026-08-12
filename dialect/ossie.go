@@ -339,6 +339,7 @@ func mergeModel(out *ir.Model, sm osiModel) {
 	}
 
 	owner := colOwner(sm)
+	tables := datasetNames(sm)
 	colsByTable := map[string][]string{}
 	for _, ds := range sm.Datasets {
 		cols := make([]string, 0, len(ds.Fields))
@@ -363,7 +364,7 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"metric %q not transpiled: expression %q could not be parsed as an aggregate expression", mt.Name, expr))
 			continue
 		}
-		home, ok := metricHome(def, owner)
+		home, ok := metricHome(def, owner, tables)
 		if !ok {
 			out.Notes = append(out.Notes, fmt.Sprintf(
 				"metric %q not transpiled: could not determine the dataset its expression belongs to", mt.Name))
@@ -375,7 +376,7 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"metric %q references unknown dataset %q; skipped", mt.Name, home))
 			continue
 		}
-		def = resolveAggTables(def, mt.Name, owner, colsByTable, &out.Notes)
+		def = resolveAggTables(def, mt.Name, owner, tables, colsByTable, &out.Notes)
 		// A plain aggregation over one column is also a column-backed measure.
 		if agg, col, isSimple := simpleAgg(def); isSimple {
 			out.Tables[idx].Measures = append(out.Tables[idx].Measures, ir.Measure{
@@ -417,11 +418,25 @@ func colOwner(sm osiModel) map[string]string {
 	return owner
 }
 
+// datasetNames indexes sm's dataset names by lowercased name, so a Raw SQL
+// fragment's `table.column` qualifier can be recognised as naming a dataset
+// directly (see metricHome's ir.Raw case) rather than only ever falling back
+// to colOwner's column-name lookup, which is ambiguous whenever two datasets
+// declare a same-named column (e.g. an is_refunded copied onto a wide/OBT
+// table by a join) even though the SQL text already disambiguates it.
+func datasetNames(sm osiModel) map[string]string {
+	names := map[string]string{}
+	for _, ds := range sm.Datasets {
+		names[strings.ToLower(ds.Name)] = ds.Name
+	}
+	return names
+}
+
 // metricHome returns the table a parsed metric belongs to: the first qualified
 // column's table, else the sole dataset declaring the first unqualified column.
 // Mirrors dbt.go's rule that a cross-table metric homes on its first resolvable
 // operand's table.
-func metricHome(e ir.Expr, owner map[string]string) (string, bool) {
+func metricHome(e ir.Expr, owner map[string]string, tables map[string]string) (string, bool) {
 	switch n := e.(type) {
 	case ir.Col:
 		if n.Table != "" {
@@ -435,11 +450,22 @@ func metricHome(e ir.Expr, owner map[string]string) (string, bool) {
 		if n.Arg == nil {
 			return "", false // COUNT(*) names no column
 		}
-		return metricHome(n.Arg, owner)
+		return metricHome(n.Arg, owner, tables)
 	case ir.Raw:
-		for _, tk := range tokenize(n.SQL) {
+		toks := tokenize(n.SQL)
+		for i, tk := range toks {
 			if tk.typ != sqlIdent {
 				continue
+			}
+			// A `table.column` qualifier names its dataset directly and wins
+			// over colOwner, whose column-name lookup is ambiguous whenever
+			// more than one dataset declares a same-named column — the
+			// qualifier already disambiguates it, so it must not be
+			// discarded down to a bare identifier scan.
+			if i+2 < len(toks) && toks[i+1].typ == sqlOther && toks[i+1].val == "." && toks[i+2].typ == sqlIdent {
+				if name, ok := tables[strings.ToLower(tk.val)]; ok {
+					return name, true
+				}
 			}
 			if t := owner[strings.ToLower(tk.val)]; t != "" {
 				return t, true
@@ -447,10 +473,10 @@ func metricHome(e ir.Expr, owner map[string]string) (string, bool) {
 		}
 		return "", false
 	case ir.Binary:
-		if t, ok := metricHome(n.Left, owner); ok {
+		if t, ok := metricHome(n.Left, owner, tables); ok {
 			return t, true
 		}
-		return metricHome(n.Right, owner)
+		return metricHome(n.Right, owner, tables)
 	}
 	return "", false
 }
@@ -477,13 +503,13 @@ func metricHome(e ir.Expr, owner map[string]string) (string, bool) {
 // left empty and a note is appended to *notes naming metricName and the
 // unattributable sub-expression, rather than falling back to any table
 // silently.
-func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, colsByTable map[string][]string, notes *[]string) ir.Expr {
+func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tables map[string]string, colsByTable map[string][]string, notes *[]string) ir.Expr {
 	switch n := e.(type) {
 	case ir.Agg:
 		if n.Arg == nil {
 			return n // COUNT(*) has no column to qualify
 		}
-		table, ok := metricHome(n.Arg, owner)
+		table, ok := metricHome(n.Arg, owner, tables)
 		if !ok {
 			*notes = append(*notes, fmt.Sprintf(
 				"metric %q: sub-expression %q could not be attributed to a dataset (unknown or ambiguous column); left unqualified",
@@ -503,8 +529,8 @@ func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, col
 		}
 		return n
 	case ir.Binary:
-		n.Left = resolveAggTables(n.Left, metricName, owner, colsByTable, notes)
-		n.Right = resolveAggTables(n.Right, metricName, owner, colsByTable, notes)
+		n.Left = resolveAggTables(n.Left, metricName, owner, tables, colsByTable, notes)
+		n.Right = resolveAggTables(n.Right, metricName, owner, tables, colsByTable, notes)
 		return n
 	}
 	return e

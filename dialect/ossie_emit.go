@@ -104,6 +104,43 @@ func fieldExprText(f osiField) string {
 	return f.Expression.Dialects[0].Expression
 }
 
+// qualifyMeasureExpr qualifies expr (a measure's underlying column or raw SQL
+// fragment) with t's name for OSI's model-level flat metrics list, which
+// (unlike a dataset's own dataset-scoped fields) has no implicit table scope.
+// A plain identifier is qualified outright; anything else (e.g. a CASE
+// expression) is qualified per-identifier via qualifyExpr, the same helper
+// renderSQL uses to qualify a published metric's Raw aggregate argument — a
+// naive whole-string "table.expr" prefix would corrupt a compound expression
+// (e.g. "orders.case when x then 1 else 0 end", not valid SQL).
+func qualifyMeasureExpr(t ir.Table, expr string) string {
+	if isIdent(expr) {
+		return t.Name + "." + expr
+	}
+	return qualifyExpr(t.Name, tableColumns(t), expr)
+}
+
+// tableColumns is the lowercased set of physical column identifiers t's own
+// fields are known to reference: every dimension/time-dimension name and its
+// Expr text when that Expr is a plain identifier. qualifyMeasureExpr uses it
+// to recognise which bare identifiers inside a measure's raw expression are
+// real columns to qualify, as opposed to SQL keywords or literals.
+func tableColumns(t ir.Table) map[string]bool {
+	cols := map[string]bool{}
+	add := func(f ir.Field) {
+		cols[strings.ToLower(f.Name)] = true
+		if isIdent(f.Expr) {
+			cols[strings.ToLower(f.Expr)] = true
+		}
+	}
+	for _, f := range t.Dimensions {
+		add(f)
+	}
+	for _, f := range t.TimeDimensions {
+		add(f)
+	}
+	return cols
+}
+
 func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 	name := o.ModelName
 	if name == "" {
@@ -192,7 +229,7 @@ func (o ossie) Emit(m *ir.Model, dir string) ([]string, error) {
 			}
 			sm.Metrics = append(sm.Metrics, osiMetric{
 				Name:        ms.Name,
-				Expression:  ansi(aggExpr(ms.Agg, t.Name+"."+ms.Expr)),
+				Expression:  ansi(aggExpr(ms.Agg, qualifyMeasureExpr(t, ms.Expr))),
 				Description: ms.Description,
 				DataType:    irToOSIType(ms.DataType),
 				AIContext:   aiContext("", ms.Synonyms),
