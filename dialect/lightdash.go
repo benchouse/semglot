@@ -97,9 +97,16 @@ type ldDimension struct {
 	Label string `yaml:"label,omitempty"`
 }
 
+// ldMetric is a Lightdash metric definition. Description is the metric's
+// `description:` key, which Lightdash shows beside the metric in the explore.
+// It is set only for a metric semglot MINTED (agg_names.go's hoist): such a
+// metric appears in the layer under a name nobody authored, so without its
+// synthesizedNote a reader has no way to tell it from a hand-written one, or
+// to find the metric it was minted for.
 type ldMetric struct {
-	Type string `yaml:"type"`
-	SQL  string `yaml:"sql,omitempty"`
+	Type        string `yaml:"type"`
+	Description string `yaml:"description,omitempty"`
+	SQL         string `yaml:"sql,omitempty"`
 }
 
 // ldColumnSet builds the ordered columns[] list, keyed by physical column name,
@@ -501,9 +508,30 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	// degrades loudly: a component homed on another table is a Lightdash limit,
 	// not something this rewrite may paper over.
 	hoist := hoistInlineAggs(m)
+	// A minted component exists only so the metric it was hoisted out of can
+	// be expressed. When that metric degrades anyway (classically Lightdash's
+	// same-model restriction on ${metric} references), the component is still
+	// a valid aggregate and is still emitted — dropping it would lose an
+	// aggregate the source really declared, and on a dimension-only table it
+	// is the difference between one real metric and none. But it is then an
+	// orphan: a metric under a name nobody authored that nothing references.
+	// Emitted WITH its synthesizedNote description and reported below, so the
+	// artifact explains itself either way. Recorded in declaration order, not
+	// in a map, so the note order is deterministic.
+	type mintedComponent struct{ name, table string }
+	var mintedEmitted []mintedComponent
+	referenced := map[string]bool{} // minted names an EMITTED metric refers to
 	f := ldFile{Version: 2}
 	for _, t := range m.Tables {
 		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
+		// ir.Table.Source — the physical address an ossie dataset declares —
+		// has no Lightdash home. The artifact is a dbt schema.yml, and
+		// Lightdash takes each model's relation from dbt's compiled manifest;
+		// its model meta has no address key (see dbtSchemaSourceWarning).
+		// Reported rather than dropped in silence.
+		if t.Source != "" {
+			notes = append(notes, dbtSchemaSourceWarning("lightdash", t.Name, t.Source))
+		}
 		cols := newColumnSet()
 		for _, d := range t.Dimensions {
 			cols.dimension(d, ldDimensionType(d, false))
@@ -564,12 +592,22 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 				continue
 			}
 			if isSimple {
+				if hoist.synthesisedName(mt.Name) {
+					met.Description = mt.Description // synthesizedNote
+					mintedEmitted = append(mintedEmitted, mintedComponent{mt.Name, t.Name})
+				}
 				cols.metric(col, mt.Name, met)
 				continue
 			}
 			if met, ok := derivedModelMetric(mt, simple); ok {
 				if mm.Metrics == nil {
 					mm.Metrics = map[string]ldMetric{}
+				}
+				// Every ref this metric resolves through is now carried by an
+				// emitted metric, so a minted component among them is not an
+				// orphan.
+				for _, r := range metricRefs(mt.Def) {
+					referenced[r] = true
 				}
 				mm.Metrics[mt.Name] = met
 				continue
@@ -682,6 +720,16 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 			}
 		}
 		f.Models = append(f.Models, model)
+	}
+
+	// Minted components left without a referencing metric (see mintedEmitted).
+	for _, mc := range mintedEmitted {
+		if referenced[mc.name] {
+			continue
+		}
+		notes = append(notes, "metric "+mc.name+" on "+mc.table+
+			" is a component semglot minted for a derived metric Lightdash could not emit; "+
+			"it is emitted on its own so the aggregate is not lost, but no metric references it")
 	}
 
 	var buf bytes.Buffer

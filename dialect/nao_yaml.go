@@ -102,6 +102,23 @@ func (n naoYaml) Emit(m *ir.Model, dir string) ([]string, error) {
 		if c := synonymClause(t.Synonyms); c != "" {
 			notes = append(notes, t.Name+": "+c)
 		}
+		// ir.Table.Source — the physical address an ossie dataset declares —
+		// folds into notes: as prose, exactly as table synonyms do above, and
+		// deliberately NOT into a metric's source.table below. That key is
+		// not an address slot: nao pins the database and schema in its own
+		// directory scaffolding
+		// (databases/type=…/database=…/schema=…/table=…/, see
+		// docs/design-context-layer-emitters.md) and source.table selects a
+		// table WITHIN that pinned pair, so a fully-qualified
+		// db.schema.table there would either restate or contradict the
+		// scaffolding — a plausible, wrong address of exactly the kind the
+		// cortex base_table split is guarded against. A source that is a
+		// query (which the OSI spec permits) has no reference form at all.
+		// Prose carries either shape whole, so nothing is lost and nothing is
+		// asserted that nao would resolve differently.
+		if c := sourceClause(t.Source); c != "" {
+			notes = append(notes, t.Name+": "+c)
+		}
 		for _, d := range t.Dimensions {
 			addDim(d, "categorical")
 		}

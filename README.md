@@ -169,6 +169,7 @@ are also sources; see [Semantic Layer Dialects](#semantic-layer-dialects) above)
 | Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |    ✓    |
 | Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |             ✓             |      ~      |    ✓    |
 | Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |             ✓             |      ≈      |    ✓    |
+| Physical table source   |       |    ~     |             ~             |       ~       |     ≈      |          ≈          |             ~             |             |    ✓    |
 | Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |             ≈             |      ≈      |    ≈    |
 
 `✓` structured · `≈` rolled up as text in a description or comment · `~` partial · blank not emitted.
@@ -183,6 +184,14 @@ drops it:
   sample values.
 - **`supersimple`** emits division ratios; other arithmetic is deferred to a
   `NOTES.md` sidecar.
+- **Physical table source** is the address an `ossie` dataset declares
+  (`db.schema.table`, or a query — the spec permits either). A warehouse target
+  uses it verbatim in its own address slot and falls back to the profile's
+  `database`/`schema` **with a warning** when it cannot (a query anywhere; and
+  for `cortex`, anything but a clean three-part reference, since its
+  `base_table` has separate keys). The two nao targets carry it as prose. `dbt`
+  and `lightdash` emit dbt schema files, where the relation is dbt's own to
+  resolve, so they have nowhere to put it and warn instead.
 - **`nao-yaml`** is a flat, model-global document, so it has no table grouping.
 - **`nao-context-rules`** is prose, so it lists only elements that carry a
   description or synonyms.
@@ -197,7 +206,8 @@ drops it:
   native slot and fold into the field's `description`. See
   [`dialect/README.md`](dialect/README.md#mapping) for the full field-level
   mapping and format limits (no measure concept, no table grain/metric
-  label/enum slot, no source-table identity on parse).
+  label/enum slot). A dataset's `source` DOES survive parse — it is
+  `ir.Table.Source` — and is emitted by every target with a slot for it.
 
 ## License
 

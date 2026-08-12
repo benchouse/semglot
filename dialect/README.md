@@ -41,6 +41,7 @@ only as prose folded into a description or comment; `--` not emitted (see
 | IR concept | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` | `ossie` |
 |---|---|---|---|---|---|---|---|---|---|
 | Table | `models:` + `semantic_models:` `<->` | `tables[].base_table` | `tables (...)` | one file per model | `--` | "Table reference" (if described) | `source` (+ `joins[].source` for referenced tables) | `models[]` entry | `datasets[]` `<->` |
+| Table source (physical address) | `--` (warned) | `base_table` `database`/`schema`/`table` (three-part references only) | the `TABLES` clause reference | `table:` | `text` (into `notes:`) | `text` (into the Table reference entry) | `source:` + `joins[].source` | `--` (warned) | `source:` on the dataset `<->` |
 | Column / dimension | column + `dimensions type: categorical` `<->` | `dimensions[]` | `dimensions (...)` | `properties` | `dimensions[]` (deduped) | listed if described | `fields[]` | column + `meta.dimension` | `fields[]` with `dimension.is_time: false` `<->` |
 | Time dimension | `dimensions type: time` + `agg_time_dimension` `<->` | `time_dimensions[]` | plain dimension (not marked as time) | `properties` (Date) | `dimensions type: date` | with dimensions | plain `fields[]` entry (not marked as time) | column + `meta.dimension type: date/timestamp` | `fields[]` with `dimension.is_time: true` `<->` |
 | Data type | column `data_type` `<->` | `data_type` | `--` | property `type` | `--` | `--` | `--` | `meta.dimension.type` only where confidently inferable, else omitted | `datatype` (logical enum) `<->` |
@@ -113,9 +114,28 @@ and nao dimensions carry a structured `values:` list
   field `label:` has no `ir.Field` counterpart at all (only `ir.Metric` has a
   `Label`), so parse folds it into the field's `description` rather than
   dropping it — there is nothing for emit to round-trip back out.
-- **No source-table identity in `ossie` on parse.** A dataset's `source`
-  (`db.schema.table`) has no IR counterpart; emit reconstructs it from the
-  profile's `database`/`schema`.
+- **No place for a physical table address in a dbt schema file.** A dataset's
+  `source` DOES have an IR counterpart (`ir.Table.Source`, since the ossie
+  parser landed), and every target with somewhere to put it emits it — see the
+  "Table source" row above. The two that emit a dbt schema file, `dbt` and
+  `lightdash`, are the exception: a dbt properties file annotates a model dbt
+  already builds and whose relation dbt resolves itself through `ref()`, and
+  Lightdash reads that same compiled relation out of dbt's manifest. The one
+  adjacent slot, `config: {database, schema, alias}`, does not describe an
+  address — it RELOCATES the table dbt builds — so writing an upstream address
+  there would rewrite the project instead of recording a fact about it. Both
+  targets report the address as lost rather than half-express it.
+- **A `source` that is a query, and `cortex`'s three-part `base_table`.** The
+  OSI spec permits `source` to be "either `database_name.schema_name.table_name`
+  or query". No target's address slot can hold a query — a `TABLES` clause, a
+  metric view's `source:` and a supersimple `table:` all expect a reference —
+  so those three fall back to the profile reconstruction and warn. `cortex` is
+  tighter still: `base_table` has separate `database`/`schema`/`table` keys, so
+  only a clean three-part reference reaches it; a two-part name falls back and
+  warns too. Nothing is half-applied — dot-counting alone cannot tell a
+  reference from a query (`SELECT ... FROM db.schema.tbl` has exactly two
+  dots), so `splitSource` refuses a query outright rather than emitting a
+  plausible, wrong address.
 - **Vendor `custom_extensions` in `ossie`.** OSI lets a model, dataset, field,
   relationship, or metric carry vendor-private extension blocks (Apache Ossie's
   own fixtures ship `DATABRICKS`, `SALESFORCE`, and `DBT` ones). Their contents

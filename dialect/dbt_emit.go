@@ -157,6 +157,16 @@ func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 		t.Metrics = hoist.metricsFor(t)
 		t.Measures = hoist.measuresFor(t)
 
+		// ir.Table.Source — the physical address an ossie dataset declares —
+		// has no dbt counterpart. A dbt properties file annotates a model dbt
+		// already builds and resolves through ref(); it never states where
+		// the data lives. See dbtSchemaSourceWarning for why config's
+		// database/schema/alias is not that slot either. Reported rather than
+		// dropped in silence.
+		if t.Source != "" {
+			warnings = append(warnings, dbtSchemaSourceWarning("dbt", t.Name, t.Source))
+		}
+
 		f.Models = append(f.Models, emitModel(m, t, pk, fk))
 		f.SemanticModels = append(f.SemanticModels, emitSemantic(t, pk, fk))
 		metrics, warn := emitMetrics(t)

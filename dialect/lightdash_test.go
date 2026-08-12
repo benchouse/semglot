@@ -595,3 +595,134 @@ func TestLightdashNoRowCountWhenMetricsExist(t *testing.T) {
 		t.Errorf("must not synthesise a row count when a metric exists\n%s", out)
 	}
 }
+
+// ldModelByName returns the parsed model of that name from an emitted doc.
+func ldModelByName(t *testing.T, out, name string) ldDocModel {
+	t.Helper()
+	var doc ldDoc
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, m := range doc.Models {
+		if m.Name == name {
+			return m
+		}
+	}
+	t.Fatalf("model %q not found in:\n%s", name, out)
+	return ldDocModel{}
+}
+
+// crossTableHoistModel is the TPC-DS shape that produces an orphan component:
+// customer_lifetime_value inlines one aggregate per table, so hoistInlineAggs
+// mints a component onto EACH — and Lightdash's ${metric} references may not
+// cross models, so the metric they were minted for degrades anyway, leaving
+// both components emitted with nothing referencing them.
+func crossTableHoistModel() *ir.Model {
+	return &ir.Model{Tables: []ir.Table{
+		{
+			Name:       "store_sales",
+			Dimensions: []ir.Field{{Name: "ss_sold_date", Expr: "ss_sold_date"}},
+			Metrics: []ir.Metric{{
+				Name:        "customer_lifetime_value",
+				Description: "Average spend per distinct customer.",
+				Def: ir.Binary{Op: "/",
+					Left:  ir.Agg{Func: "sum", Table: "store_sales", Arg: ir.Col{Table: "store_sales", Name: "ss_net_paid"}},
+					Right: ir.Agg{Func: "count_distinct", Table: "customer", Arg: ir.Col{Table: "customer", Name: "c_customer_sk"}},
+				},
+			}},
+		},
+		{
+			Name:       "customer",
+			PrimaryKey: []string{"c_customer_sk"},
+			Dimensions: []ir.Field{{Name: "c_customer_sk", Expr: "c_customer_sk"}},
+		},
+	}}
+}
+
+// TestLightdashMintedMetricCarriesDescription pins the fix for a metric under a
+// name nobody authored appearing in the layer with nothing to explain it.
+// Lightdash's metric meta takes a description; the minted metric's
+// synthesizedNote is exactly what belongs there.
+func TestLightdashMintedMetricCarriesDescription(t *testing.T) {
+	out := emitLightdash(t, crossTableHoistModel(), Options{})
+	cust := ldModelByName(t, out, "customer")
+	i, ok := cust.column("c_customer_sk")
+	if !ok {
+		t.Fatalf("customer must keep its c_customer_sk column:\n%s", out)
+	}
+	met, ok := cust.Columns[i].Meta.Metrics["c_customer_sk_count_distinct"]
+	if !ok {
+		t.Fatalf("minted component not emitted on customer:\n%s", out)
+	}
+	if met.Description != synthesizedNote("customer_lifetime_value") {
+		t.Errorf("minted metric description = %q, want the synthesizedNote naming the metric it was minted for", met.Description)
+	}
+}
+
+// TestLightdashOrphanMintedMetricIsReported: the component is kept (it is a
+// real aggregate, and on a dimension-only table the only metric there is), but
+// keeping it silently would leave an unexplained, unreferenced metric in the
+// layer. The choice must be visible either way — this pins the note.
+func TestLightdashOrphanMintedMetricIsReported(t *testing.T) {
+	dir := t.TempDir()
+	warnings, err := lightdash{DbtMetaKeyPath: "meta"}.Emit(crossTableHoistModel(), dir)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	for _, want := range []string{"c_customer_sk_count_distinct", "ss_net_paid_sum"} {
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, want) && strings.Contains(w, "no metric references it") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("want an orphan note for the minted component %q; got %v", want, warnings)
+		}
+	}
+	// The degrade of the metric they were minted for is still reported: the
+	// orphan note explains a consequence, it does not replace the cause.
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "customer_lifetime_value") && strings.Contains(w, "not emitted to Lightdash") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want the referencing metric's own degrade note; got %v", warnings)
+	}
+}
+
+// TestLightdashReferencedMintedMetricIsNotAnOrphan is the control: the same
+// hoist on ONE table produces a derived metric Lightdash can express, so its
+// components are referenced and must NOT be reported as orphans.
+func TestLightdashReferencedMintedMetricIsNotAnOrphan(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+		Metrics: []ir.Metric{{
+			Name: "aov",
+			Def: ir.Binary{Op: "/",
+				Left:  ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}},
+				Right: ir.Agg{Func: "count_distinct", Table: "orders", Arg: ir.Col{Table: "orders", Name: "order_id"}},
+			},
+		}},
+	}}}
+	dir := t.TempDir()
+	warnings, err := lightdash{DbtMetaKeyPath: "meta"}.Emit(m, dir)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "no metric references it") {
+			t.Errorf("component is referenced by the emitted aov metric, so it is no orphan: %q", w)
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "schema.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "${amount_sum} / ${order_id_count_distinct}") {
+		t.Errorf("aov should be emitted over its minted components:\n%s", b)
+	}
+}

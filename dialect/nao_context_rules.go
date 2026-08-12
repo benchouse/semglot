@@ -81,12 +81,21 @@ func (naoContextRules) Emit(m *ir.Model, dir string) ([]string, error) {
 			}
 		}
 	}
-	// Table reference: each table's grain + purpose (its description). NOT
+	// Table reference: each table's grain + purpose (its description), and the
+	// physical address it reads from when the source dialect declared one. NOT
 	// "traps" — this is a glossary, and deliberately carries only what the dbt
 	// model documents; the withheld data-quirk discriminators never appear here.
+	//
+	// ir.Table.Source needs no structural slot here and loses nothing by having
+	// none: this target is prose, so it carries a fully-qualified
+	// db.schema.table and an OSI `source` that is a QUERY equally well, where
+	// every structured target has to choose one shape and degrade the other.
+	// Folding it into the entry body (rather than appending after the emptiness
+	// check) also gives a table that declares only a source an entry of its own.
 	var tables []string
 	for _, t := range m.Tables {
 		body := appendClause(strings.TrimSpace(t.Description), synonymClause(t.Synonyms))
+		body = appendClause(body, sourceClause(t.Source))
 		if body == "" {
 			continue
 		}
