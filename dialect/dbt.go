@@ -34,6 +34,7 @@ type dbtFile struct {
 type dbtModel struct {
 	Name        string          `yaml:"name"`
 	Description string          `yaml:"description"`
+	Meta        dbtColumnMeta   `yaml:"meta"`
 	Constraints []dbtConstraint `yaml:"constraints"`
 	Columns     []dbtColumn     `yaml:"columns"`
 	// TimeSpine, when present, marks a dbt MetricFlow date-spine model —
@@ -359,6 +360,7 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 		} else {
 			t.Description = sm.Description
 		}
+		t.Synonyms = md.Meta.Synonyms
 		t.Grain = sm.Defaults.AggTimeDimension
 
 		used := map[string]bool{}

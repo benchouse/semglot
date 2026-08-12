@@ -26,6 +26,7 @@ type dbtEmitFile struct {
 type dbtEmitModel struct {
 	Name        string          `yaml:"name"`
 	Description string          `yaml:"description,omitempty"`
+	Meta        *dbtEmitMeta    `yaml:"meta,omitempty"`
 	Columns     []dbtEmitColumn `yaml:"columns,omitempty"`
 }
 
@@ -219,6 +220,9 @@ func emitModel(m *ir.Model, t ir.Table, pk, fk map[string]bool) dbtEmitModel {
 	}
 
 	em := dbtEmitModel{Name: t.Name, Description: t.Description}
+	if len(t.Synonyms) > 0 {
+		em.Meta = &dbtEmitMeta{Synonyms: t.Synonyms}
+	}
 	for _, col := range order {
 		c := *info[col]
 		// Enum round-trips as an accepted_values test (ordered value list) plus

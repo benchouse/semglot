@@ -16,8 +16,14 @@ type Model struct {
 
 // Table is one grain/entity in the layer.
 type Table struct {
-	Name           string
-	Description    string
+	Name        string
+	Description string
+	// Synonyms are alternative names for the entity itself, as distinct from a
+	// field's synonyms. Sourced from a model-level meta.synonyms (dbt) or a
+	// dataset's ai_context.synonyms (ossie). Emitters render it structurally
+	// where the target has a table-level slot, else fold it into the table
+	// description.
+	Synonyms       []string
 	PrimaryKey     []string // column exprs
 	Dimensions     []Field  // categorical / id / plain
 	TimeDimensions []Field
