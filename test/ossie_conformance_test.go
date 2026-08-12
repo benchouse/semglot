@@ -30,12 +30,30 @@ const vendorDir = "models/ossie/vendor"
 //
 // Measure counts were derived from simpleAgg's rule (dialect/ossie.go): a
 // parsed metric becomes an ir.Measure only when its top-level expression is a
-// single, unfiltered aggregate call over one column. fixtureA/fixtureB/
-// tpcds_ossie's metrics all fail dataset-home resolution (see the note
-// triage in task-10-report.md) and so never reach measure synthesis at all,
-// giving 0 measures. tpcds_semantic_model.yaml parses 4 metrics: total_sales
-// (SUM(store_sales.ss_ext_sales_price)) and total_profit
-// (SUM(store_sales.ss_net_profit)) and sales_by_brand
+// single, unfiltered aggregate call over one column.
+//
+// fixtureA/fixtureB/tpcds_ossie's metrics reference physical columns no
+// dataset declares under fields:, so metricHome's normal (qualified /
+// colOwner) resolution fails — but each of these three fixtures has an
+// unambiguous fact table (the dataset with no incoming relationship: orders,
+// lineitem, store_sales respectively — Apache Ossie's own documented
+// convention, see fixtureA_ossie.yaml's own comment), so task 14's
+// metricHomeOrFact fallback now homes every one of them there instead of
+// skipping them:
+//   - fixtureA: total_revenue (SUM(o_totalprice), a plain Col arg) becomes a
+//     measure; order_count (COUNT(*), Arg == nil) does not, since simpleAgg
+//     requires a Col arg — 1 measure.
+//   - fixtureB: revenue (SUM(l_extendedprice * (1 - l_discount)), a compound
+//     Raw arg) does not become a measure; order_count
+//     (COUNT(DISTINCT l_orderkey), a plain Col arg) does — 1 measure.
+//   - tpcds_ossie: total_sales (SUM(ss_ext_sales_price)) and total_quantity
+//     (SUM(ss_quantity)) are both plain single-column SUMs — 2 measures.
+//
+// tpcds_semantic_model.yaml is untouched by task 14: every metric there
+// already references a fully qualified column (SUM(store_sales.ss_...)), so
+// metricHome's normal resolution always succeeds and the fallback never
+// fires. It parses 4 metrics: total_sales (SUM(store_sales.ss_ext_sales_price))
+// and total_profit (SUM(store_sales.ss_net_profit)) and sales_by_brand
 // (SUM(store_sales.ss_ext_sales_price)) are each a plain single-column SUM
 // and become measures; customer_lifetime_value is a Binary of two Aggs
 // (SUM(...) / COUNT(DISTINCT ...)) and is not a column-backed measure — 3
@@ -48,9 +66,9 @@ var (
 		"tpcds_semantic_model.yaml": 4,
 	}
 	wantMeasures = map[string]int{
-		"fixtureA_ossie.yaml":       0,
-		"fixtureB_ossie.yaml":       0,
-		"tpcds_ossie.yaml":          0,
+		"fixtureA_ossie.yaml":       1,
+		"fixtureB_ossie.yaml":       1,
+		"tpcds_ossie.yaml":          2,
 		"tpcds_semantic_model.yaml": 3,
 	}
 )
@@ -66,12 +84,18 @@ var (
 // noting things it should not (the notes stop being a reviewable triage list
 // and become noise). Every note below was triaged against the upstream YAML:
 //
-//   - "not transpiled: could not determine the dataset" — fixtureA, fixtureB
-//     and tpcds_ossie write metric arguments over columns (o_totalprice,
-//     l_extendedprice, ss_ext_sales_price, ss_quantity) that no dataset
-//     declares under fields:, so metricHome cannot attribute them. This is the
-//     documented resolution-strategy limit, and it is why those three fixtures
-//     have 0 measures above.
+//   - "attributed to dataset ... because it is the model's fact table" —
+//     fixtureA, fixtureB and tpcds_ossie write metric arguments over columns
+//     (o_totalprice, l_extendedprice, l_discount, l_orderkey,
+//     ss_ext_sales_price, ss_quantity) that no dataset declares under
+//     fields:, so metricHome's normal (qualified / colOwner) resolution
+//     fails. Each fixture has exactly one dataset with no incoming
+//     relationship (orders, lineitem, store_sales respectively — Apache
+//     Ossie's own documented fact-table convention), so task 14's
+//     metricHomeOrFact fallback homes the metric there instead of skipping
+//     it, and notes that the attribution is inferred rather than read from
+//     the file. This is why those three fixtures have measures above instead
+//     of 0.
 //   - "custom_extensions" — real vendor payloads (DATABRICKS formatting and
 //     join hints; a SALESFORCE Tableau/CRM block and a DBT block on the TPC-DS
 //     model). Per the design's "Out of scope", semglot degrades these to prose
@@ -90,22 +114,22 @@ var (
 //     allowlist.
 var wantNotes = map[string][]string{
 	"fixtureA_ossie.yaml": {
-		`metric "order_count" not transpiled: could not determine the dataset its expression belongs to`,
-		`metric "total_revenue" not transpiled: could not determine the dataset its expression belongs to`,
+		`metric "order_count" attributed to dataset "orders" because it is the model's fact table (no incoming relationship); inferred, not declared in the file`,
+		`metric "total_revenue" attributed to dataset "orders" because it is the model's fact table (no incoming relationship); inferred, not declared in the file`,
 	},
 	"fixtureB_ossie.yaml": {
 		`dataset "orders" unique_keys [[o_orderkey]]: no unique-key slot in the IR; dropped`,
 		`field "line_number" on dataset "lineitem" custom_extensions [DATABRICKS]: vendor extensions are not transpiled; dropped`,
-		`metric "order_count" not transpiled: could not determine the dataset its expression belongs to`,
+		`metric "order_count" attributed to dataset "lineitem" because it is the model's fact table (no incoming relationship); inferred, not declared in the file`,
 		`metric "revenue" custom_extensions [DATABRICKS]: vendor extensions are not transpiled; dropped`,
-		`metric "revenue" not transpiled: could not determine the dataset its expression belongs to`,
+		`metric "revenue" attributed to dataset "lineitem" because it is the model's fact table (no incoming relationship); inferred, not declared in the file`,
 		`model "lineitem" custom_extensions [DATABRICKS]: vendor extensions are not transpiled; dropped`,
 		`relationship "lineitem_to_orders" custom_extensions [DATABRICKS]: vendor extensions are not transpiled; dropped`,
 	},
 	"tpcds_ossie.yaml": {
-		`metric "total_quantity" not transpiled: could not determine the dataset its expression belongs to`,
+		`metric "total_quantity" attributed to dataset "store_sales" because it is the model's fact table (no incoming relationship); inferred, not declared in the file`,
 		`metric "total_sales" custom_extensions [DATABRICKS]: vendor extensions are not transpiled; dropped`,
-		`metric "total_sales" not transpiled: could not determine the dataset its expression belongs to`,
+		`metric "total_sales" attributed to dataset "store_sales" because it is the model's fact table (no incoming relationship); inferred, not declared in the file`,
 		`model "tpcds_store_sales" custom_extensions [DATABRICKS]: vendor extensions are not transpiled; dropped`,
 	},
 	"tpcds_semantic_model.yaml": {

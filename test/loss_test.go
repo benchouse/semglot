@@ -196,6 +196,24 @@ var allowedLoss = []lossLine{
 	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "sales_by_brand"},
 	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "total_profit"},
 	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "total_sales"},
+	// Task 14 gives fixtureA_ossie.yaml, fixtureB_ossie.yaml and
+	// tpcds_ossie.yaml's own metrics a home via the fact-table fallback
+	// (dialect/ossie.go's metricHomeOrFact), where before they were skipped
+	// entirely and so never reached the "before" IR that TestOssieRoundTrip
+	// diffs (see the comment above TestOssieRoundTrip). Now that
+	// total_revenue (fixtureA), order_count (fixtureB) and total_quantity
+	// (tpcds_ossie) parse into simple, column-backed measures, they hit the
+	// SAME format limit the entries above already document: OSI's `fields:`
+	// has no discriminator marking a field as metric-operand-only, so
+	// re-emitting the measure's synthesised field (named after the MEASURE,
+	// not its underlying physical column) and reparsing it resurfaces it as
+	// a plain dimension. tpcds_ossie's total_sales measure hits the exact
+	// same tuple already listed above for tpcds_semantic_model.yaml's own
+	// store_sales dataset (allowedLossSet matches on the tuple alone, not
+	// which fixture produced it), so it needs no separate entry here.
+	{Table: "orders", Category: "dimensions", Dir: "gained", Name: "total_revenue"},
+	{Table: "lineitem", Category: "dimensions", Dir: "gained", Name: "order_count"},
+	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "total_quantity"},
 	// The reverse case: a dbt measure whose expression is NOT a single bare
 	// column (`case when is_refunded then 1 else 0 end`) still emits
 	// correctly as an OSI metric, but OSI's Parse only synthesises a measure
@@ -303,14 +321,19 @@ func TestDBTToOssieLoss(t *testing.T) {
 // argument as a column that is never declared under `fields:` on any
 // dataset — e.g. fixtureA's `SUM(o_totalprice)` when the `orders` dataset
 // only declares o_orderkey and o_orderdate. dialect/ossie.go's metricHome
-// cannot attribute such a column to a dataset and skips the metric with a
-// note (see task-10-report.md's note triage), so those metrics never enter
-// the "before" IR in the first place — this test's before/after diff has
-// nothing to say about them one way or the other; the loss already happened
-// between the vendored file and "before", outside what lossReport measures.
-// Only tpcds_semantic_model.yaml declares its metrics' columns as real
-// fields, so it is the only fixture here that actually exercises a
-// metric/measure round-trip.
+// cannot attribute such a column via a qualified reference or colOwner, but
+// each of the three has an unambiguous fact table (the dataset with no
+// incoming relationship — Apache Ossie's own documented convention), so
+// task 14's metricHomeOrFact fallback homes the metric there anyway (see
+// task-14-report.md). Those metrics DO now enter the "before" IR — and, when
+// their aggregate argument is a plain column, synthesise a measure too — so
+// this test's before/after diff exercises them exactly like
+// tpcds_semantic_model.yaml's metrics. The one gap that fallback attribution
+// opens (a measure's synthesised field re-parsing as a plain dimension) is
+// the SAME documented format limit tpcds_semantic_model.yaml's store_sales
+// entries already cover in allowedLoss above; task 14 adds three more exact
+// tuples for it (orders/total_revenue, lineitem/order_count,
+// store_sales/total_quantity) rather than loosening the check.
 func TestOssieRoundTrip(t *testing.T) {
 	p, err := dialect.AsParser("ossie")
 	if err != nil {

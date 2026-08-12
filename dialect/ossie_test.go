@@ -605,6 +605,328 @@ semantic_model:
 	}
 }
 
+// TestOssieMetricHomesOnFactTableFallback covers Apache Ossie's own
+// Databricks fixtures (fixtureA_ossie.yaml et al.): a metric's aggregate
+// argument is a bare column no dataset declares under fields:, so colOwner
+// cannot resolve it. The dataset with no incoming relationship — orders here
+// — is the fact table per Apache Ossie's own convention, and metricHome's
+// fallback must home the metric there, stamping Table on both the Agg and its
+// Col arg, and it must say so: the attribution is inferred, not read from the
+// file, so a note is required.
+func TestOssieMetricHomesOnFactTableFallback(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+      - name: customer
+        source: s.p.customer
+        fields:
+          - name: c_name
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: c_name}]
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(o_totalprice)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	want := ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "o_totalprice"}}
+	if len(orders.Metrics) != 1 {
+		t.Fatalf("want 1 metric on orders, got %d: %#v", len(orders.Metrics), orders.Metrics)
+	}
+	if !reflect.DeepEqual(orders.Metrics[0].Def, want) {
+		t.Fatalf("Def = %#v, want %#v", orders.Metrics[0].Def, want)
+	}
+	if len(orders.Measures) != 1 || orders.Measures[0].Name != "total_revenue" {
+		t.Errorf("want a synthesised measure total_revenue, got %+v", orders.Measures)
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "total_revenue") && strings.Contains(n, "fact table") && strings.Contains(n, "orders") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note recording the fact-table inference, got %v", m.Notes)
+	}
+}
+
+// TestOssieMetricQualifiedReferenceWinsOverFact covers requirement 1: a
+// qualified reference must still win even though it names the NON-fact
+// dataset. The fallback exists only for when resolution fails outright — it
+// must never override information the file actually stated.
+func TestOssieMetricQualifiedReferenceWinsOverFact(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+      - name: customer
+        source: s.p.customer
+        fields:
+          - name: c_name
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: c_name}]
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: distinct_customers
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "COUNT(DISTINCT customer.c_custkey)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customer := tableByName(t, m, "customer")
+	if len(customer.Metrics) != 1 {
+		t.Fatalf("want the metric homed on customer (the qualified table), got orders=%d customer=%d",
+			len(tableByName(t, m, "orders").Metrics), len(customer.Metrics))
+	}
+	for _, n := range m.Notes {
+		if strings.Contains(n, "fact table") {
+			t.Errorf("qualified reference must not trigger the fact-table fallback, got note %q", n)
+		}
+	}
+}
+
+// TestOssieMetricColOwnerWinsOverFact covers the other half of requirement 1:
+// a column declared under fields: on a NON-fact dataset must still resolve
+// through colOwner, not the fact-table fallback, even though the fact table
+// (orders here) exists and could otherwise absorb the metric.
+func TestOssieMetricColOwnerWinsOverFact(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: orders
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+      - name: customer
+        source: s.p.customer
+        fields:
+          - name: loyalty_score
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: loyalty_score}]
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_loyalty
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(loyalty_score)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customer := tableByName(t, m, "customer")
+	if len(customer.Metrics) != 1 {
+		t.Fatalf("want the metric homed on customer (colOwner-resolvable), got orders=%d customer=%d",
+			len(tableByName(t, m, "orders").Metrics), len(customer.Metrics))
+	}
+	for _, n := range m.Notes {
+		if strings.Contains(n, "fact table") {
+			t.Errorf("a colOwner-resolvable column must not trigger the fact-table fallback, got note %q", n)
+		}
+	}
+}
+
+// TestOssieMetricCountStarHomesViaFact covers requirement 2's other failure
+// mode: COUNT(*) names no column at all (ir.Agg.Arg == nil), so metricHome's
+// ir.Agg case returns false before ever consulting colOwner. The fallback
+// must still apply.
+func TestOssieMetricCountStarHomesViaFact(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+      - name: customer
+        source: s.p.customer
+        fields:
+          - name: c_name
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: c_name}]
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: order_count
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	if len(orders.Metrics) != 1 {
+		t.Fatalf("want 1 metric on orders, got %d", len(orders.Metrics))
+	}
+	got, ok := orders.Metrics[0].Def.(ir.Agg)
+	if !ok || got.Func != "count" || got.Arg != nil {
+		t.Errorf("Def = %#v, want Agg{Func: count, Arg: nil}", orders.Metrics[0].Def)
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "order_count") && strings.Contains(n, "fact table") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note recording the fact-table inference for COUNT(*), got %v", m.Notes)
+	}
+}
+
+// TestOssieMetricAmbiguousFactStillSkipped covers requirement 3: when more
+// than one dataset has no incoming relationship, the fact table is genuinely
+// ambiguous, and the fallback must not guess — the metric is noted and
+// skipped exactly as it was before this dataset's fallback existed.
+func TestOssieMetricAmbiguousFactStillSkipped(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+      - name: returns
+        source: s.p.returns
+        fields:
+          - name: r_returnkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: r_returnkey}]
+      - name: customer
+        source: s.p.customer
+        fields:
+          - name: c_name
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: c_name}]
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(o_totalprice)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tb := range m.Tables {
+		if len(tb.Metrics) != 0 {
+			t.Errorf("want the metric skipped (orders and returns both have no incoming relationship), got it homed on %q", tb.Name)
+		}
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "total_revenue") && strings.Contains(n, "not transpiled") && strings.Contains(n, "could not determine") {
+			found = true
+		}
+		if strings.Contains(n, "fact table") {
+			t.Errorf("an ambiguous fact table must not produce a fact-table attribution note, got %q", n)
+		}
+	}
+	if !found {
+		t.Errorf("want the usual note-and-skip message, got %v", m.Notes)
+	}
+}
+
+// TestOssieMetricSingleDatasetNoRelationshipsResolves covers requirement 3's
+// other edge: zero relationships and exactly one dataset is NOT ambiguous —
+// that lone dataset is trivially the fact table.
+func TestOssieMetricSingleDatasetNoRelationshipsResolves(t *testing.T) {
+	dir := writeOSI(t, `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: s.p.orders
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects: [{dialect: ANSI_SQL, expression: "SUM(o_totalprice)"}]
+`)
+	m, err := ossie{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := tableByName(t, m, "orders")
+	want := ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "o_totalprice"}}
+	if len(orders.Metrics) != 1 {
+		t.Fatalf("want 1 metric on orders, got %d: %#v", len(orders.Metrics), orders.Metrics)
+	}
+	if !reflect.DeepEqual(orders.Metrics[0].Def, want) {
+		t.Fatalf("Def = %#v, want %#v", orders.Metrics[0].Def, want)
+	}
+	var found bool
+	for _, n := range m.Notes {
+		if strings.Contains(n, "total_revenue") && strings.Contains(n, "fact table") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note recording the fact-table inference, got %v", m.Notes)
+	}
+}
+
 // TestOssieParseMergesDatasetsByName covers two semantic_model entries — in
 // two separate files, so file-level merging is exercised too — that each
 // declare `orders`. They must fold into ONE ir.Table: two same-named tables

@@ -425,6 +425,7 @@ func mergeModel(out *ir.Model, sm osiModel) {
 
 	owner := colOwner(sm)
 	tables := datasetNames(sm)
+	fact, _ := factTable(sm)
 	colsByTable := map[string][]string{}
 	for _, ds := range sm.Datasets {
 		cols := make([]string, 0, len(ds.Fields))
@@ -455,11 +456,20 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"metric %q not transpiled: expression %q could not be parsed as an aggregate expression", mt.Name, expr))
 			continue
 		}
-		home, ok := metricHome(def, owner, tables)
+		home, ok, viaFact := metricHomeOrFact(def, owner, tables, fact)
 		if !ok {
 			out.Notes = append(out.Notes, fmt.Sprintf(
 				"metric %q not transpiled: could not determine the dataset its expression belongs to", mt.Name))
 			continue
+		}
+		if viaFact {
+			// This is an inference, not something the file stated: say so, per
+			// this branch's no-silent-drop ruling extended to no-silent-WRONG —
+			// an inferred attribution presented as unqualified fact would be
+			// exactly that.
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"metric %q attributed to dataset %q because it is the model's fact table (no incoming relationship); inferred, not declared in the file",
+				mt.Name, home))
 		}
 		idx := tableIndex(out, home)
 		if idx < 0 {
@@ -476,7 +486,22 @@ func mergeModel(out *ir.Model, sm osiModel) {
 				"metric %q on dataset %q is declared more than once; the later declaration was dropped", mt.Name, home))
 			continue
 		}
-		def = resolveAggTables(def, mt.Name, owner, tables, colsByTable, &out.Notes)
+		// factHome is passed only when the metric's OWN top-level home decision
+		// already required the fallback (viaFact) — in that case metricHome's
+		// whole-tree descent has already proven every node fails NORMAL
+		// resolution too (a Binary/Agg's descent tries every branch before
+		// giving up), so defaulting an unresolvable node to factHome silently
+		// completes an inference already disclosed above, rather than making a
+		// NEW, undisclosed one. When viaFact is false, some other branch
+		// resolved normally and a DIFFERENT node failing independently (e.g. a
+		// column no dataset declares in a cross-table expression) is real,
+		// undisclosed ambiguity — factHome stays "" and resolveAggTables keeps
+		// its original behaviour of leaving it unqualified with a note.
+		factHome := ""
+		if viaFact {
+			factHome = home
+		}
+		def = resolveAggTables(def, mt.Name, owner, tables, colsByTable, factHome, &out.Notes)
 		// A plain aggregation over one column is also a column-backed measure.
 		if agg, col, isSimple := simpleAgg(def); isSimple {
 			out.Tables[idx].Measures = append(out.Tables[idx].Measures, ir.Measure{
@@ -625,6 +650,58 @@ func datasetNames(sm osiModel) map[string]string {
 	return names
 }
 
+// factTable identifies sm's fact dataset per Apache Ossie's own documented
+// convention (see fixtureA_ossie.yaml's own comment, and their Databricks
+// converter, which uses the same rule to choose a metric view's source
+// table): the dataset with no incoming relationship, i.e. one that never
+// appears as a relationship's `to`. OSI's fields: is a curated list of
+// group/filter-able attributes, not a complete column index, so a metric's
+// aggregate argument routinely names a physical column no dataset declares —
+// exactly the case metricHomeOrFact's fallback exists for.
+//
+// Exactly one such dataset is unambiguous. Two or more (including the
+// degenerate case of a relationship cycle where every dataset has an
+// incoming edge, leaving zero candidates) is genuinely ambiguous, and so is a
+// model with no relationships at all and more than one dataset — every
+// dataset trivially has "no incoming relationship" then, which is not the
+// same as any one of them being identifiably the fact. A model with no
+// relationships and exactly ONE dataset is the unambiguous edge case: that
+// lone dataset is trivially the fact table.
+func factTable(sm osiModel) (string, bool) {
+	incoming := map[string]bool{}
+	for _, r := range sm.Relationships {
+		incoming[r.To] = true
+	}
+	var candidates []string
+	for _, ds := range sm.Datasets {
+		if !incoming[ds.Name] {
+			candidates = append(candidates, ds.Name)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], true
+	}
+	return "", false
+}
+
+// metricHomeOrFact resolves e via metricHome first — a qualified reference or
+// a column resolvable through colOwner always wins — and only when that
+// fails outright falls back to fact, the model's fact table (empty when
+// factTable found none or an ambiguous set). viaFallback reports whether the
+// fallback fired, so the caller can note the attribution as inferred rather
+// than presenting it as read from the file. Requirement: the fallback must
+// never override information the file actually stated, so it is consulted
+// only after metricHome itself has exhausted every qualified/colOwner path.
+func metricHomeOrFact(e ir.Expr, owner map[string]string, tables map[string]string, fact string) (table string, ok bool, viaFallback bool) {
+	if t, ok := metricHome(e, owner, tables); ok {
+		return t, true, false
+	}
+	if fact != "" {
+		return fact, true, true
+	}
+	return "", false, false
+}
+
 // metricHome returns the table a parsed metric belongs to: the first qualified
 // column's table, else the sole dataset declaring the first unqualified column.
 // Mirrors dbt.go's rule that a cross-table metric homes on its first resolvable
@@ -704,7 +781,21 @@ func metricHome(e ir.Expr, owner map[string]string, tables map[string]string) (s
 // column emitted there names nothing in particular. Skipping this case (as an
 // earlier version did, descending only Agg and Binary) broke the very
 // always-qualified invariant this comment claims, and did it silently.
-func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tables map[string]string, colsByTable map[string][]string, notes *[]string) ir.Expr {
+//
+// factHome is the fact-table fallback default, or "" when none applies. It is
+// deliberately NOT re-derived per node from factTable here — the caller
+// (mergeModel) passes the metric's own already-decided home ONLY when that
+// decision itself required the fallback (metricHomeOrFact's viaFallback).
+// That is safe rather than a new guess: metricHome's whole-tree descent tries
+// every branch before giving up, so if it failed for the WHOLE expression,
+// every node's own metricHome call below is guaranteed to fail too, and
+// defaulting each to factHome completes the SAME already-disclosed inference
+// rather than making an undisclosed new one. When the top-level decision
+// succeeded normally (factHome == ""), a DIFFERENT node failing independently
+// (e.g. a column no dataset declares, deep in a cross-table expression) is
+// real, undisclosed ambiguity, so it keeps the original left-unqualified-and-
+// noted behaviour untouched — see TestOssieMetricUnattributableSubExpressionNoted.
+func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tables map[string]string, colsByTable map[string][]string, factHome string, notes *[]string) ir.Expr {
 	switch n := e.(type) {
 	case ir.Col:
 		if n.Table != "" {
@@ -712,6 +803,10 @@ func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tab
 		}
 		table, ok := metricHome(n, owner, tables)
 		if !ok {
+			if factHome != "" {
+				n.Table = factHome
+				return n
+			}
 			*notes = append(*notes, fmt.Sprintf(
 				"metric %q: column %q could not be attributed to a dataset (unknown or ambiguous column); left unqualified",
 				metricName, n.Name))
@@ -721,14 +816,18 @@ func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tab
 		return n
 	case ir.Agg:
 		if n.Arg == nil {
-			return n // COUNT(*) has no column to qualify
+			n.Table = factHome // "" leaves it exactly as before: unstamped, unqualified
+			return n           // COUNT(*) has no column to qualify
 		}
 		table, ok := metricHome(n.Arg, owner, tables)
 		if !ok {
-			*notes = append(*notes, fmt.Sprintf(
-				"metric %q: sub-expression %q could not be attributed to a dataset (unknown or ambiguous column); left unqualified",
-				metricName, aggArgText(n.Arg)))
-			return n
+			if factHome == "" {
+				*notes = append(*notes, fmt.Sprintf(
+					"metric %q: sub-expression %q could not be attributed to a dataset (unknown or ambiguous column); left unqualified",
+					metricName, aggArgText(n.Arg)))
+				return n
+			}
+			table = factHome
 		}
 		n.Table = table
 		switch a := n.Arg.(type) {
@@ -743,8 +842,8 @@ func resolveAggTables(e ir.Expr, metricName string, owner map[string]string, tab
 		}
 		return n
 	case ir.Binary:
-		n.Left = resolveAggTables(n.Left, metricName, owner, tables, colsByTable, notes)
-		n.Right = resolveAggTables(n.Right, metricName, owner, tables, colsByTable, notes)
+		n.Left = resolveAggTables(n.Left, metricName, owner, tables, colsByTable, factHome, notes)
+		n.Right = resolveAggTables(n.Right, metricName, owner, tables, colsByTable, factHome, notes)
 		return n
 	}
 	return e
