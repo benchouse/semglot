@@ -30,21 +30,24 @@ import (
 // well-formed artifact (databricks-metric-view drops a table with no dimension;
 // supersimple and lightdash want a metric to publish).
 func relModel(rels ...ir.Relationship) *ir.Model {
-	table := func(name, col string) ir.Table {
-		return ir.Table{
-			Name:       name,
-			PrimaryKey: []string{col},
-			Dimensions: []ir.Field{{Name: col, Expr: col}, {Name: "status", Expr: "status"}},
-			Measures:   []ir.Measure{{Field: ir.Field{Name: name + "_amount", Expr: "amount"}, Agg: "sum"}},
-			Metrics: []ir.Metric{{
-				Name: name + "_revenue",
-				Def:  ir.Agg{Func: "sum", Table: name, Arg: ir.Col{Table: name, Name: "amount"}},
-			}},
-		}
-	}
 	return &ir.Model{
-		Tables:        []ir.Table{table("orders", "customer_id"), table("customers", "id")},
+		Tables:        []ir.Table{relTable("orders", "customer_id"), relTable("customers", "id")},
 		Relationships: rels,
+	}
+}
+
+// relTable is one such table: a key column, a plain dimension, a raw measure
+// and a metric, which is the least every emitter needs to write it out.
+func relTable(name, col string) ir.Table {
+	return ir.Table{
+		Name:       name,
+		PrimaryKey: []string{col},
+		Dimensions: []ir.Field{{Name: col, Expr: col}, {Name: "status", Expr: "status"}},
+		Measures:   []ir.Measure{{Field: ir.Field{Name: name + "_amount", Expr: "amount"}, Agg: "sum"}},
+		Metrics: []ir.Metric{{
+			Name: name + "_revenue",
+			Def:  ir.Agg{Func: "sum", Table: name, Arg: ir.Col{Table: name, Name: "amount"}},
+		}},
 	}
 }
 
@@ -107,6 +110,93 @@ func TestEveryEmitterCarriesOrWarnsAboutDeclaredRelationshipName(t *testing.T) {
 	}
 }
 
+// TestEveryEmitterCarriesOrWarnsAboutAnOrphanRelationship is the same sweep for
+// a relationship one of whose ENDPOINTS names no table in the model.
+//
+// The sweep above cannot see this class: relModel declares both endpoints, so
+// every emitter's per-table loop reaches every relationship. Four targets write
+// a join from inside a table loop — databricks-metric-view roots one view per
+// table and carries only the joins leaving it, dbt hangs a `relationships` test
+// on the left model's FK column, lightdash writes meta.joins on the left model,
+// supersimple writes a relation on the PARENT (right) model — so a relationship
+// whose relevant endpoint is missing is iterated by NOTHING there, and the join,
+// its declared name and its synonyms leave no trace in any artifact or warning.
+// databricks-metric-view really did drop it that way (it consults
+// relationshipNames' warnings only inside that loop); supersimple has the
+// mirror-image hole on its right endpoint. Both directions are swept because
+// which endpoint is load-bearing differs per target.
+func TestEveryEmitterCarriesOrWarnsAboutAnOrphanRelationship(t *testing.T) {
+	for _, tc := range orphanCases() {
+		t.Run(tc.what, func(t *testing.T) {
+			for dialect, res := range emitAll(t, relModel(tc.rel)) {
+				for _, want := range []string{orphanName, orphanSynonym} {
+					if mentions(res.files, want) || res.mentionsAll(want) {
+						continue
+					}
+					t.Errorf("%s: %q of a relationship with an %s neither emitted nor warned about; warnings=%v\n--- files ---\n%s",
+						dialect, want, tc.what, res.warnings, res.files)
+				}
+			}
+		})
+	}
+}
+
+const (
+	orphanName    = "orders_to_nowhere"
+	orphanSynonym = "the join to nowhere"
+)
+
+// orphanCases are the two relationships with an endpoint relModel does not
+// declare, each paired with the targets that consequently write NO join for it:
+// the ones whose join is written from inside a table loop keyed on that
+// endpoint. Every other target writes relationships from one model-global list
+// and carries this one (with the dangling endpoint the source document itself
+// declared), so for them nothing is lost and nothing is owed.
+func orphanCases() []struct {
+	what      string
+	rel       ir.Relationship
+	noJoinFor []string
+} {
+	return []struct {
+		what      string
+		rel       ir.Relationship
+		noJoinFor []string
+	}{
+		{"absent left endpoint", ir.Relationship{
+			Name: orphanName, Left: "ghost_fact", Right: "customers", Synonyms: []string{orphanSynonym},
+			Columns: []ir.ColumnPair{{Left: "customer_id", Right: "id"}},
+		}, []string{"dbt", "lightdash", "databricks-metric-view"}},
+		{"absent right endpoint", ir.Relationship{
+			Name: orphanName, Left: "orders", Right: "ghost_dim", Synonyms: []string{orphanSynonym},
+			Columns: []ir.ColumnPair{{Left: "customer_id", Right: "ghost_id"}},
+		}, []string{"supersimple"}},
+	}
+}
+
+// TestNoEmitterWarnsAboutAJoinItNeverWrote is the other half. relNameWarning and
+// relSynonymsWarning both describe a SUB-loss — "the join is there, its declared
+// name/synonyms are not" — so reporting one for a join that was never written
+// tells a reader the join reached the artifact. dbt and lightdash did exactly
+// that: both looped over every m.Relationships before any table filtering.
+func TestNoEmitterWarnsAboutAJoinItNeverWrote(t *testing.T) {
+	presuppose := []string{"no name slot on a join", "no synonym slot on a relationship"}
+	for _, tc := range orphanCases() {
+		t.Run(tc.what, func(t *testing.T) {
+			res := emitAll(t, relModel(tc.rel))
+			for _, dialect := range tc.noJoinFor {
+				for _, w := range res[dialect].warnings {
+					for _, p := range presuppose {
+						if mentions(w, p) && mentions(w, orphanName) {
+							t.Errorf("%s: writes no join for a relationship with an %s, but warns as though it had: %q",
+								dialect, tc.what, w)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestEveryEmitterCarriesOrWarnsAboutRelationshipSynonyms is the same for the
 // join's ai_context.synonyms, which have no home outside ossie and the two
 // prose targets.
@@ -150,6 +240,50 @@ func TestDeclaredRelationshipNameWinsOverGenerated(t *testing.T) {
 				t.Errorf("%s: a usable declared name must not warn; got %q", dialect, w)
 			}
 		}
+	}
+}
+
+// TestDeclaredNameEqualToItsOwnGeneratedNameIsQuiet: the commonest star shape —
+// two facts joining one dimension, one of them declaring the dimension's own
+// name. databricks-metric-view generates a join name from the RIGHT table, so
+// both relationships generate "customers" and the declared name looked like a
+// collision; the emitter then warned `emitted as "customers" instead` while
+// emitting exactly "customers". A warning that fires on conforming input, and
+// names the rejected name as the replacement, teaches readers to ignore
+// warnings.
+//
+// The assertion is target-independent: "emitted as %q instead" always names the
+// generated name, so a warning in which it equals the DECLARED name is false by
+// construction, whichever emitter wrote it.
+func TestDeclaredNameEqualToItsOwnGeneratedNameIsQuiet(t *testing.T) {
+	const declared = "customers"
+	m := &ir.Model{
+		Tables: []ir.Table{
+			relTable("orders", "customer_id"),
+			relTable("web_orders", "customer_id"),
+			relTable("customers", "id"),
+		},
+		Relationships: []ir.Relationship{
+			{
+				Name: declared, Left: "orders", Right: "customers",
+				Columns: []ir.ColumnPair{{Left: "customer_id", Right: "id"}},
+			},
+			{ // anonymous, and generates the same databricks join name
+				Left: "web_orders", Right: "customers",
+				Columns: []ir.ColumnPair{{Left: "customer_id", Right: "id"}},
+			},
+		},
+	}
+	res := emitAll(t, m)
+	for dialect, r := range res {
+		for _, w := range r.warnings {
+			if mentions(w, `emitted as "`+declared+`" instead`) {
+				t.Errorf("%s: warns that a name was replaced by itself: %q", dialect, w)
+			}
+		}
+	}
+	if got := res["databricks-metric-view"].files; !strings.Contains(got, "name: customers\n") {
+		t.Errorf("databricks-metric-view: the declared name must still be the join alias:\n%s", got)
 	}
 }
 

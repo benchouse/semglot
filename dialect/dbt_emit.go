@@ -153,10 +153,30 @@ func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 	// slot for the join's own declared name or its synonyms, so both are
 	// reported here rather than dropped in silence — the same posture
 	// dbtSchemaSourceWarning takes for ir.Table.Source below.
+	//
+	// Reported only for the relationships this file actually CONTAINS.
+	// emitModel writes that data test from inside the table loop, gated on
+	// r.Left == t.Name and on the relationship having column pairs, so a
+	// relationship failing either test reaches the artifact not at all — and
+	// "its name has no slot on a join" would then describe a join that was
+	// never written. Those are reported as the whole loss they are.
+	models := map[string]bool{}
+	for _, t := range m.Tables {
+		models[t.Name] = true
+	}
 	for _, r := range m.Relationships {
-		for _, w := range []string{relNameWarning("dbt", r), relSynonymsWarning("dbt", r.Name, r)} {
-			if w != "" {
-				warnings = append(warnings, w)
+		switch {
+		case !models[r.Left]:
+			warnings = append(warnings, relNotEmittedWarning("dbt", r, relEndpointMissing(r.Left,
+				"a dbt `relationships` test hangs off a foreign-key column of the model the join leaves")))
+		case len(r.Columns) == 0:
+			warnings = append(warnings, relNotEmittedWarning("dbt", r,
+				"it declares no join columns, and a dbt `relationships` test is written on the foreign-key column"))
+		default:
+			for _, w := range []string{relNameWarning("dbt", r), relSynonymsWarning("dbt", r.Name, r)} {
+				if w != "" {
+					warnings = append(warnings, w)
+				}
 			}
 		}
 	}

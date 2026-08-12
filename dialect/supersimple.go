@@ -151,6 +151,25 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 	global := map[string]simpleInfo{}
 	var degradeNotes []string
 
+	// A supersimple relation is written on the PARENT (Right) model, from
+	// inside the table loop below, so a relationship whose parent names no
+	// table in the model is iterated by nothing: no relation, and with it no
+	// relNameWarning and no relSynonymsWarning, since both are reported from
+	// that same loop. Reported here instead — the mirror image of the
+	// left-endpoint case dbt, lightdash and databricks-metric-view report,
+	// which supersimple does not have because it hangs the relation off the
+	// other end.
+	models := map[string]bool{}
+	for _, t := range m.Tables {
+		models[t.Name] = true
+	}
+	for _, r := range m.Relationships {
+		if !models[r.Right] {
+			degradeNotes = append(degradeNotes, relNotEmittedWarning("supersimple", r, relEndpointMissing(r.Right,
+				"a supersimple relation is written on the parent model the join points at")))
+		}
+	}
+
 	// A supersimple ratio resolves each operand through `global`, which only
 	// holds metrics it registered as simple aggregations, so an aggregate
 	// inlined in the arithmetic cannot be an operand. Naming those aggregates

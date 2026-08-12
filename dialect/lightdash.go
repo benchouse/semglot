@@ -501,7 +501,22 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	// or its synonyms. Both are reported rather than dropped in silence. (These
 	// go into notes, which lightdash both returns and writes into the emitted
 	// schema.yml, so a reader of the artifact sees them too.)
+	//
+	// Reported only for the relationships this file actually CONTAINS: meta.joins
+	// is written from inside the table loop below, gated on r.Left == t.Name, so
+	// a relationship leaving a table the model does not declare produces no join
+	// — and saying "its name has no slot on a join" would describe a join that
+	// was never written. That one is reported as the whole loss it is.
+	models := map[string]bool{}
+	for _, t := range m.Tables {
+		models[t.Name] = true
+	}
 	for _, r := range m.Relationships {
+		if !models[r.Left] {
+			notes = append(notes, relNotEmittedWarning("lightdash", r, relEndpointMissing(r.Left,
+				"a Lightdash join is meta.joins on the model the join leaves")))
+			continue
+		}
 		for _, w := range []string{relNameWarning("lightdash", r), relSynonymsWarning("lightdash", r.Name, r)} {
 			if w != "" {
 				notes = append(notes, w)
