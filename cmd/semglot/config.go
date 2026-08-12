@@ -28,15 +28,16 @@ func (s *sourcePaths) UnmarshalYAML(node *yaml.Node) error {
 
 // profile is one named build in semglot.yaml.
 type profile struct {
-	Source        sourcePaths `yaml:"source"`
-	SourceDialect string      `yaml:"source-dialect"`
-	TargetDialect string      `yaml:"target-dialect"`
-	Output        string      `yaml:"output"`
-	Database      string      `yaml:"database"`
-	Schema        string      `yaml:"schema"`
-	ViewSchema    string      `yaml:"view-schema"`
-	ModelName     string      `yaml:"model-name"`
-	Description   string      `yaml:"description"`
+	Source         sourcePaths `yaml:"source"`
+	SourceDialect  string      `yaml:"source-dialect"`
+	TargetDialect  string      `yaml:"target-dialect"`
+	Output         string      `yaml:"output"`
+	Database       string      `yaml:"database"`
+	Schema         string      `yaml:"schema"`
+	ViewSchema     string      `yaml:"view-schema"`
+	ModelName      string      `yaml:"model-name"`
+	Description    string      `yaml:"description"`
+	DbtMetaKeyPath string      `yaml:"dbt-meta-key-path"`
 }
 
 // configFile is the top-level shape of semglot.yaml.
@@ -46,15 +47,16 @@ type configFile struct {
 
 // buildSpec is a fully-resolved build: a validated profile with defaults applied.
 type buildSpec struct {
-	Sources       []string
-	SourceDialect string
-	TargetDialect string
-	Output        string
-	Database      string
-	Schema        string
-	ViewSchema    string
-	ModelName     string
-	Description   string
+	Sources        []string
+	SourceDialect  string
+	TargetDialect  string
+	Output         string
+	Database       string
+	Schema         string
+	ViewSchema     string
+	ModelName      string
+	Description    string
+	DbtMetaKeyPath string
 }
 
 // warehouseTargets emit into a physical warehouse (Snowflake, or a Databricks
@@ -87,15 +89,16 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 		return buildSpec{}, fmt.Errorf("profile %q: output is required", name)
 	}
 	spec := buildSpec{
-		Sources:       []string(p.Source),
-		SourceDialect: p.SourceDialect,
-		TargetDialect: p.TargetDialect,
-		Output:        p.Output,
-		Database:      p.Database,
-		Schema:        p.Schema,
-		ViewSchema:    p.ViewSchema,
-		ModelName:     p.ModelName,
-		Description:   p.Description,
+		Sources:        []string(p.Source),
+		SourceDialect:  p.SourceDialect,
+		TargetDialect:  p.TargetDialect,
+		Output:         p.Output,
+		Database:       p.Database,
+		Schema:         p.Schema,
+		ViewSchema:     p.ViewSchema,
+		ModelName:      p.ModelName,
+		Description:    p.Description,
+		DbtMetaKeyPath: p.DbtMetaKeyPath,
 	}
 	if spec.SourceDialect == "" {
 		spec.SourceDialect = "dbt"

@@ -42,6 +42,9 @@ type Options struct {
 	ViewSchema  string // schema where the emitted view OBJECT is created (Snowflake semantic view); falls back to Schema when empty
 	Name        string
 	Description string
+	// DbtMetaKeyPath selects where Lightdash meta lives: "" / "meta" nests under
+	// meta: (dbt <=1.9); "config.meta" nests under config.meta: (dbt 1.10+).
+	DbtMetaKeyPath string
 }
 
 // Configurable is an Emitter that accepts model/view identity options.

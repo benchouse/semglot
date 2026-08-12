@@ -38,6 +38,7 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `nao-yaml`                |        |   ✓    |
 | `nao-context-rules`       |        |   ✓    |
 | `databricks-metric-view`  |        |   ✓    |
+| `lightdash`               |        |   ✓    |
 
 Adding a dialect is small, self-contained work: implement a `Parser` (dialect
 files to IR), an `Emitter` (IR to dialect files), or both — the interfaces in
@@ -154,19 +155,19 @@ Every dialect maps to the same neutral IR, but targets differ in how much of it
 they can express. This is what each **target** emits today (`dbt` is currently
 the only source).
 
-| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` |
-|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:------------------------:|
-| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |             ✓             |
-| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |             ✓             |
-| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |             ~             |
-| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |
-| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |                          |
-| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |                          |
-| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |             ✓             |
-| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |
-| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |             ✓             |
-| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |             ✓             |
-| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |             ≈             |
+| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` |
+|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:------------------------:|:-----------:|
+| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |             ✓             |      ✓      |
+| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |             ✓             |      ✓      |
+| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |             ~             |      ✓      |
+| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |
+| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |                          |      ~      |
+| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |                          |      ~      |
+| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |             ✓             |      ✓      |
+| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |
+| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |             ✓             |      ~      |
+| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |             ✓             |      ≈      |
+| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |             ≈             |      ≈      |
 
 `✓` structured · `≈` rolled up as text in a description or comment · `~` partial · blank not emitted.
 
@@ -187,6 +188,7 @@ drops it:
   metric-view YAML shape; `display_name` and `synonyms` are emitted whenever
   the IR carries a label or synonyms and require Runtime 17.3+. On an older
   warehouse, a view containing them is rejected.
+- **`lightdash`** emits a dbt `schema.yml` with Lightdash `meta:` blocks (dimensions, metrics, joins). It emits single-column primary keys and reference-only ratios, degrading composite keys, filtered aggregates, and cross-table derived metrics to a leading `# semglot:` comment block. A `dbt-meta-key-path` profile option switches `meta:` (dbt 1.9 and earlier) to `config.meta:` (dbt 1.10 and later).
 
 ## License
 
