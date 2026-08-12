@@ -106,8 +106,13 @@ and nao dimensions carry a structured `values:` list
   list and no separate measure construct, so a measure that no metric
   publishes comes back from a round-trip as a published metric. `dbt` →
   `ossie` → `dbt` is therefore lossy in a way `dbt` → `dbt` is not.
-- **No table grain, metric label, field label, or enum slot in `ossie`.** All
-  four fold into the nearest `description`.
+- **No table grain, metric label, or enum slot in `ossie`.** All three are IR
+  concepts (`Table.Grain`, `Metric.Label`, `Field.Enum`) with no OSI counterpart,
+  so emit folds them into the nearest `description` instead of dropping them.
+- **No field-level label in the IR.** This is the reverse direction: OSI's
+  field `label:` has no `ir.Field` counterpart at all (only `ir.Metric` has a
+  `Label`), so parse folds it into the field's `description` rather than
+  dropping it — there is nothing for emit to round-trip back out.
 - **No source-table identity in `ossie` on parse.** A dataset's `source`
   (`db.schema.table`) has no IR counterpart; emit reconstructs it from the
   profile's `database`/`schema`.

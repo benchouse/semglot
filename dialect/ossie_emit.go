@@ -121,9 +121,22 @@ func qualifyMeasureExpr(t ir.Table, expr string) string {
 
 // tableColumns is the lowercased set of physical column identifiers t's own
 // fields are known to reference: every dimension/time-dimension name and its
-// Expr text when that Expr is a plain identifier. qualifyMeasureExpr uses it
-// to recognise which bare identifiers inside a measure's raw expression are
-// real columns to qualify, as opposed to SQL keywords or literals.
+// Expr text when that Expr is a plain identifier, PLUS every OTHER measure's
+// Expr when it is a plain identifier. qualifyMeasureExpr uses it to recognise
+// which bare identifiers inside a measure's raw expression are real columns
+// to qualify, as opposed to SQL keywords or literals.
+//
+// Without the measures pass, a measure whose raw expression references a
+// column that exists ONLY as another measure's bare-identifier operand (e.g.
+// `sum(case when is_refunded then order_gross else 0 end)`, where
+// order_gross backs a measure and is not independently a dimension) would
+// leave that column unqualified in OSI's cross-dataset metrics list — no
+// warning, silently wrong SQL under the standing no-silent-wrong-result
+// ruling. Mirrors dbt.go's own column-set construction (dbt.go:349-355),
+// which folds in a measure's bare-identifier Expr for the same reason; only
+// the measure's Expr counts here, not its Name, since the Name is the
+// metric-list identity toOSIField's shadow field carries, not a physical
+// column.
 func tableColumns(t ir.Table) map[string]bool {
 	cols := map[string]bool{}
 	add := func(f ir.Field) {
@@ -137,6 +150,11 @@ func tableColumns(t ir.Table) map[string]bool {
 	}
 	for _, f := range t.TimeDimensions {
 		add(f)
+	}
+	for _, ms := range t.Measures {
+		if isIdent(ms.Expr) {
+			cols[strings.ToLower(ms.Expr)] = true
+		}
 	}
 	return cols
 }

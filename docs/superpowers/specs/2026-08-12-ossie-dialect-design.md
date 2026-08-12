@@ -236,7 +236,11 @@ sharing the metric's name — the same shape `dbt.Parse` produces for a
 - No measure concept, so a measure no metric publishes returns from a round-trip
   as a published metric. `dbt → ossie → dbt` is therefore lossy in a way
   `dbt → dbt` is not.
-- No per-table grain, metric label, field label, or enum-value slot.
+- No per-table grain, metric label, or enum-value slot — all three are IR
+  concepts with no OSI counterpart, so emit folds them into `description`.
+- No field-level label in the IR (the reverse direction): OSI's field
+  `label:` has no `ir.Field` counterpart at all, so parse folds it into the
+  field's `description` — there is nothing for emit to round-trip back out.
 - No source-table identity on parse.
 
 ## Divergences from the reference converters

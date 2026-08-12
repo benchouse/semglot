@@ -12,16 +12,49 @@ import (
 	"github.com/benchouse/semglot/ir"
 )
 
-// lossReport lists what a round-trip dropped or changed, as human-readable
-// lines. It compares canonicalized models, so ordering differences never
+// lossLine is one structured entry lossReport produces: a table-scoped
+// field-list membership change (Table+Category+Dir+Name), a table's Grain
+// changing (Table+Category="grain", Dir/Name unused), a whole table
+// appearing/disappearing (Table+Category="table"), or the relationship
+// count changing (Category="relationships", Table unused).
+//
+// allowedLoss matches on these fields directly — the exact tuple a
+// documented format limit is expected to produce for a specific table in a
+// specific fixture — rather than matching a substring of the formatted
+// text. Substring matching let a same-shaped-but-wrong regression hide
+// behind an unrelated, already-expected line: "dimensions: gained" is a
+// substring of "time dimensions: gained" (so a mutant that fabricated a
+// spurious parsed time dimension went unnoticed), and "measures: lost"
+// matched ANY lost measure regardless of which one (so a mutant that made
+// EVERY measure fail to reconstruct also went unnoticed). Exact-tuple
+// matching closes both holes: an unexpected Category or an unexpected Name
+// fails to match any allowedLoss entry and is reported as unplanned loss.
+type lossLine struct {
+	Table    string
+	Category string // "dimensions", "time dimensions", "measures", "metrics", "primary key", "synonyms", "grain", "table", "relationships"
+	Dir      string // "gained" or "lost"; "" for grain/table/relationships
+	Name     string // the item name gained/lost; "" for grain/table/relationships
+	Text     string // human-readable rendering, for t.Logf and error messages
+}
+
+func (l lossLine) String() string { return l.Text }
+
+// key is the tuple identity unexpected() matches on: everything but Text,
+// which is derived and carries no independent information.
+func (l lossLine) key() lossLine {
+	return lossLine{Table: l.Table, Category: l.Category, Dir: l.Dir, Name: l.Name}
+}
+
+// lossReport lists what a round-trip dropped or changed, as structured
+// entries. It compares canonicalized models, so ordering differences never
 // register as loss. This is the measurement ir/model.go's package comment
 // anticipates when it calls the IR "the unit of the fairness index".
-func lossReport(before, after *ir.Model) []string {
+func lossReport(before, after *ir.Model) []lossLine {
 	b, a := *before, *after
 	canonicalizeModel(&b)
 	canonicalizeModel(&a)
 
-	var out []string
+	var out []lossLine
 	afterTables := map[string]ir.Table{}
 	for _, t := range a.Tables {
 		afterTables[t.Name] = t
@@ -29,23 +62,29 @@ func lossReport(before, after *ir.Model) []string {
 	for _, bt := range b.Tables {
 		at, ok := afterTables[bt.Name]
 		if !ok {
-			out = append(out, "table "+bt.Name+": lost")
+			out = append(out, lossLine{Table: bt.Name, Category: "table", Dir: "lost", Text: "table " + bt.Name + ": lost"})
 			continue
 		}
-		out = append(out, diffNames("table "+bt.Name+" dimensions", fieldNames(bt.Dimensions), fieldNames(at.Dimensions))...)
-		out = append(out, diffNames("table "+bt.Name+" time dimensions", fieldNames(bt.TimeDimensions), fieldNames(at.TimeDimensions))...)
-		out = append(out, diffNames("table "+bt.Name+" measures", measureNames(bt.Measures), measureNames(at.Measures))...)
-		out = append(out, diffNames("table "+bt.Name+" metrics", metricNames(bt.Metrics), metricNames(at.Metrics))...)
-		out = append(out, diffNames("table "+bt.Name+" primary key", bt.PrimaryKey, at.PrimaryKey)...)
-		out = append(out, diffNames("table "+bt.Name+" synonyms", bt.Synonyms, at.Synonyms)...)
+		out = append(out, diffNames(bt.Name, "dimensions", fieldNames(bt.Dimensions), fieldNames(at.Dimensions))...)
+		out = append(out, diffNames(bt.Name, "time dimensions", fieldNames(bt.TimeDimensions), fieldNames(at.TimeDimensions))...)
+		out = append(out, diffNames(bt.Name, "measures", measureNames(bt.Measures), measureNames(at.Measures))...)
+		out = append(out, diffNames(bt.Name, "metrics", metricNames(bt.Metrics), metricNames(at.Metrics))...)
+		out = append(out, diffNames(bt.Name, "primary key", bt.PrimaryKey, at.PrimaryKey)...)
+		out = append(out, diffNames(bt.Name, "synonyms", bt.Synonyms, at.Synonyms)...)
 		if bt.Grain != at.Grain {
-			out = append(out, fmt.Sprintf("table %s grain: %q -> %q", bt.Name, bt.Grain, at.Grain))
+			out = append(out, lossLine{
+				Table: bt.Name, Category: "grain",
+				Text: fmt.Sprintf("table %s grain: %q -> %q", bt.Name, bt.Grain, at.Grain),
+			})
 		}
 	}
 	if len(b.Relationships) != len(a.Relationships) {
-		out = append(out, fmt.Sprintf("relationships: %d -> %d", len(b.Relationships), len(a.Relationships)))
+		out = append(out, lossLine{
+			Category: "relationships",
+			Text:     fmt.Sprintf("relationships: %d -> %d", len(b.Relationships), len(a.Relationships)),
+		})
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Text < out[j].Text })
 	return out
 }
 
@@ -76,8 +115,9 @@ func metricNames(ms []ir.Metric) []string {
 	return out
 }
 
-// diffNames reports names present before but absent after, and vice versa.
-func diffNames(label string, before, after []string) []string {
+// diffNames reports names present before but absent after, and vice versa,
+// as lossLine entries scoped to table/category.
+func diffNames(table, category string, before, after []string) []lossLine {
 	have := map[string]bool{}
 	for _, n := range after {
 		have[n] = true
@@ -86,77 +126,115 @@ func diffNames(label string, before, after []string) []string {
 	for _, n := range before {
 		had[n] = true
 	}
-	var out []string
+	var out []lossLine
 	for _, n := range before {
 		if !have[n] {
-			out = append(out, label+": lost "+n)
+			out = append(out, lossLine{
+				Table: table, Category: category, Dir: "lost", Name: n,
+				Text: fmt.Sprintf("table %s %s: lost %s", table, category, n),
+			})
 		}
 	}
 	for _, n := range after {
 		if !had[n] {
-			out = append(out, label+": gained "+n)
+			out = append(out, lossLine{
+				Table: table, Category: category, Dir: "gained", Name: n,
+				Text: fmt.Sprintf("table %s %s: gained %s", table, category, n),
+			})
 		}
 	}
 	return out
 }
 
-// allowedLoss is what dbt -> ossie -> dbt is EXPECTED to lose or gain, each
-// entry a documented format limit from the design doc. A line the report
-// produces that is not matched by one of these substrings is unplanned loss.
-var allowedLoss = []string{
-	// OSI has no measure concept. Every measure is emitted as a model-level
-	// metric, so on the way back an unpublished measure returns as a PUBLISHED
-	// metric: the metric list gains names it did not have.
-	"metrics: gained",
-	// Symmetrically, every OSI metric that is a plain aggregation synthesises a
-	// measure on parse, so a dbt metric that had no measure of its own name
-	// gains one. Both directions are the same missing distinction.
-	"measures: gained",
+// allowedLoss is what a round-trip is EXPECTED to lose or gain: the exact
+// (table, category, direction, name) tuple a documented format limit
+// produces for the fixtures TestDBTToOssieLoss and TestOssieRoundTrip use.
+// A reported lossLine whose key() does not exactly match one of these is
+// unplanned loss. Grouped by the format limit each traces to; every limit
+// here is a face of the SAME root cause — OSI has one flat, model-level
+// `metrics:` list and no separate measure concept, recorded in
+// dialect/README.md's "No measure concept in ossie" and the design doc's
+// "Format limits" — not four independent gaps.
+var allowedLoss = []lossLine{
+	// OSI has no measure concept: every measure is emitted as a model-level
+	// metric, so on the way back an unpublished measure returns as a
+	// PUBLISHED metric — the metric list gains a name it did not have.
+	{Table: "fct_order_lines", Category: "metrics", Dir: "gained", Name: "net_line_revenue"},
+	{Table: "fct_order_lines", Category: "metrics", Dir: "gained", Name: "quantity"},
+	{Table: "fct_orders", Category: "metrics", Dir: "gained", Name: "order_gross_amount"},
+	{Table: "fct_orders", Category: "metrics", Dir: "gained", Name: "order_net_booked_amount"},
+	{Table: "fct_orders", Category: "metrics", Dir: "gained", Name: "orders_count"},
+	{Table: "fct_orders", Category: "metrics", Dir: "gained", Name: "refunded_orders_count"},
+	{Table: "obt_sales", Category: "metrics", Dir: "gained", Name: "obt_net_revenue_line"},
+	{Table: "obt_sales", Category: "metrics", Dir: "gained", Name: "obt_units_sold"},
+	// Symmetrically, an OSI metric that is a plain aggregation synthesises a
+	// same-named measure on parse, so a dbt metric that had no measure of its
+	// own name gains one.
+	{Table: "fct_order_lines", Category: "measures", Dir: "gained", Name: "units_sold"},
+	{Table: "fct_orders", Category: "measures", Dir: "gained", Name: "gross_revenue"},
+	{Table: "fct_orders", Category: "measures", Dir: "gained", Name: "net_revenue"},
+	{Table: "fct_orders", Category: "measures", Dir: "gained", Name: "orders"},
 	// A measure's column must be declared as a dataset field for OSI's
 	// "fields are the operands of metric expressions" convention (the same
 	// shape Ossie's own dbt converter produces, pinned by
 	// TestOssieAgreesWithReferenceConverter). That field is named after the
 	// MEASURE ("order_gross_amount"), not the physical column it wraps
-	// ("order_gross") — the same measure/metric conflation "metrics: gained"
-	// and "measures: gained" already describe, just visible from the fields
-	// list instead. OSI's `fields:` has no discriminator marking a field as
-	// "exists only to satisfy a metric operand" versus "a real business
-	// dimension" (the only per-field flag is dimension.is_time), so on
-	// reparse this field is indistinguishable from a genuine dimension and
-	// resurfaces as one.
-	"dimensions: gained",
+	// ("order_gross") — the same measure/metric conflation the two groups
+	// above already describe, just visible from the fields list instead.
+	// OSI's `fields:` has no discriminator marking a field as "exists only
+	// to satisfy a metric operand" versus "a real business dimension" (the
+	// only per-field flag is dimension.is_time), so on reparse this field is
+	// indistinguishable from a genuine dimension and resurfaces as one.
+	{Table: "fct_order_lines", Category: "dimensions", Dir: "gained", Name: "net_line_revenue"},
+	{Table: "fct_order_lines", Category: "dimensions", Dir: "gained", Name: "quantity"},
+	{Table: "fct_orders", Category: "dimensions", Dir: "gained", Name: "order_gross_amount"},
+	{Table: "fct_orders", Category: "dimensions", Dir: "gained", Name: "order_net_booked_amount"},
+	{Table: "fct_orders", Category: "dimensions", Dir: "gained", Name: "orders_count"},
+	{Table: "fct_orders", Category: "dimensions", Dir: "gained", Name: "refunded_orders_count"},
+	{Table: "obt_sales", Category: "dimensions", Dir: "gained", Name: "obt_net_revenue_line"},
+	{Table: "obt_sales", Category: "dimensions", Dir: "gained", Name: "obt_units_sold"},
+	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "sales_by_brand"},
+	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "total_profit"},
+	{Table: "store_sales", Category: "dimensions", Dir: "gained", Name: "total_sales"},
 	// The reverse case: a dbt measure whose expression is NOT a single bare
-	// column (e.g. `case when is_refunded then 1 else 0 end`) still emits
+	// column (`case when is_refunded then 1 else 0 end`) still emits
 	// correctly as an OSI metric, but OSI's Parse only synthesises a measure
 	// back out of a metric whose top-level shape is a single, unfiltered
 	// aggregate over a plain column (dialect/ossie.go's simpleAgg) — the
 	// narrowest, unambiguous case. A compound-expression measure has no
 	// structural marker distinguishing it from an equally-shaped metric that
 	// was never a measure at all, so it round-trips as a metric only, and
-	// its measure identity is lost. Same root cause as the two entries
-	// above: OSI's one flat metrics list cannot carry the measure/metric
-	// distinction except by narrow, best-effort inference.
-	"measures: lost",
+	// its measure identity is lost.
+	{Table: "fct_orders", Category: "measures", Dir: "lost", Name: "refunded_orders_count"},
 	// Table.Grain has no OSI slot; it folds into the dataset description and
 	// does not come back structurally.
-	"grain:",
+	{Table: "obt_sales", Category: "grain"},
 }
 
-func unexpected(report []string) []string {
-	var out []string
+var allowedLossSet = func() map[lossLine]bool {
+	m := make(map[lossLine]bool, len(allowedLoss))
+	for _, a := range allowedLoss {
+		m[a.key()] = true
+	}
+	return m
+}()
+
+func unexpected(report []lossLine) []lossLine {
+	var out []lossLine
 	for _, line := range report {
-		ok := false
-		for _, allow := range allowedLoss {
-			if strings.Contains(line, allow) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
+		if !allowedLossSet[line.key()] {
 			out = append(out, line)
 		}
 	}
 	return out
+}
+
+func joinLines(lines []lossLine) string {
+	s := make([]string, len(lines))
+	for i, l := range lines {
+		s[i] = l.Text
+	}
+	return strings.Join(s, "\n  ")
 }
 
 // TestDBTToOssieLoss measures what a dbt -> ossie -> dbt round-trip costs, and
@@ -197,7 +275,7 @@ func TestDBTToOssieLoss(t *testing.T) {
 		t.Logf("loss: %s", line)
 	}
 	if bad := unexpected(report); len(bad) > 0 {
-		t.Errorf("undocumented information loss in dbt -> ossie -> ossie-parse:\n  %s", strings.Join(bad, "\n  "))
+		t.Errorf("undocumented information loss in dbt -> ossie -> ossie-parse:\n  %s", joinLines(bad))
 	}
 }
 
@@ -286,7 +364,7 @@ func TestOssieRoundTrip(t *testing.T) {
 			// TestDBTToOssieLoss tolerates, not a defect specific to this
 			// test, so the same allowlist applies here.
 			if bad := unexpected(report); len(bad) > 0 {
-				t.Errorf("ossie -> ossie has undocumented information loss:\n  %s", strings.Join(bad, "\n  "))
+				t.Errorf("ossie -> ossie has undocumented information loss:\n  %s", joinLines(bad))
 			}
 		})
 	}
