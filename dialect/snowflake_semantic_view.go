@@ -72,7 +72,13 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 	}
 
-	var tables, rels, dims, metrics []string
+	// components holds the synthesised leaf aggregates. The metrics () clause is
+	// ONE flat list built table by table, so a component homed on a later table
+	// would otherwise trail the metric referring to it. Whether Snowflake
+	// requires definition-before-reference here is not documented either way;
+	// emitting components first removes the question at no cost, and is safe
+	// because a component is always a leaf aggregate that refers to nothing.
+	var tables, rels, dims, components, metrics []string
 	for _, t := range m.Tables {
 		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
 		u := strings.ToUpper(t.Name)
@@ -138,7 +144,11 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 			if mt.Description != "" {
 				ml += fmt.Sprintf(" comment='%s'", sqlQuote(mt.Description))
 			}
-			metrics = append(metrics, ml)
+			if hoist.synthesisedName(mt.Name) {
+				components = append(components, ml)
+			} else {
+				metrics = append(metrics, ml)
+			}
 			seen[name] = true
 		}
 		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
@@ -192,7 +202,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	writeSection(&b, "tables", tables)
 	writeSection(&b, "relationships", rels)
 	writeSection(&b, "dimensions", dims)
-	writeSection(&b, "metrics", metrics)
+	writeSection(&b, "metrics", append(components, metrics...))
 	var commentParts []string
 	if s.Description != "" {
 		commentParts = append(commentParts, s.Description)

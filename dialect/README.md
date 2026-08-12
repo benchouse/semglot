@@ -154,12 +154,25 @@ only the five SQL-expression targets can render — it synthesises a metric per
 leaf so the four name-referencing targets (dbt, snowflake-semantic-view,
 lightdash, supersimple) can express the metric at all. The name is
 `<column>_<agg>` when the aggregate is over one bare column and `<metric>_<agg>`
-otherwise, checked against that table's metric names AND every dimension and
-measure name *and physical column*, with a `_2`, `_3`, … fallback. Reserving the
-physical column spelling is the point: Lightdash's `columns[]` is keyed by
-column, so a carelessly minted name would collide there and delete the very
-metric it was minted to rescue. An aggregate the model already publishes under a
-name reuses it rather than minting a synonym beside it.
+otherwise, with a `_2`, `_3`, … fallback. It is checked against two namespaces,
+at the scope each target actually uses:
+
+- **model-wide**, every metric name in the whole model. dbt's `metrics:` is one
+  flat project-wide list, a semantic view's `metrics ()` clause is one namespace
+  (and `metricTableOf` is keyed by bare name, last-wins), and supersimple
+  resolves ratio operands through one global map. Minting per table instead
+  would let one table's component shadow another table's published metric —
+  a silent drop in supersimple, an ambiguous numerator in dbt, a misqualified
+  reference in Snowflake.
+- **per table**, every dimension and measure name *and physical column*. Those
+  really are per-model in all four targets. Reserving the physical column
+  spelling is the point: Lightdash's `columns[]` is keyed by column, so a
+  carelessly minted name would collide there and delete the very metric it was
+  minted to rescue.
+
+An aggregate the model already publishes under a name reuses it rather than
+minting a synonym beside it, and a component is emitted ahead of the metric that
+references it so no target sees a forward reference.
 
 `ossie` has the mirror-image problem on the way IN. OSI requires a dataset name
 to be unique within a model and a field name unique within its dataset, but a

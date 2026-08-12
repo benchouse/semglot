@@ -44,15 +44,17 @@ func TestHoistInlineAggsNamesLeaves(t *testing.T) {
 	h := hoistInlineAggs(m)
 	got := h.metricsFor(m.Tables[0])
 
+	// The component is emitted BEFORE the metric referencing it, so no target
+	// ever sees a forward reference.
+	if names := metricNamesOf(got); !reflect.DeepEqual(names, []string{"revenue", "cost_sum", "margin_rate"}) {
+		t.Fatalf("metrics = %v, want the synthesised cost_sum ahead of margin_rate", names)
+	}
 	want := ir.Binary{Op: "/", Left: ir.Ref{Metric: "revenue"}, Right: ir.Ref{Metric: "cost_sum"}}
-	if !reflect.DeepEqual(got[1].Def, want) {
-		t.Errorf("margin_rate def = %+v, want %+v", got[1].Def, want)
+	if !reflect.DeepEqual(got[2].Def, want) {
+		t.Errorf("margin_rate def = %+v, want %+v", got[2].Def, want)
 	}
-	if len(got) != 3 || got[2].Name != "cost_sum" {
-		t.Fatalf("metrics = %v, want revenue, margin_rate and a synthesised cost_sum", metricNamesOf(got))
-	}
-	if !strings.Contains(got[2].Description, "margin_rate") {
-		t.Errorf("synthesised metric description = %q, want it to name the metric it was minted for", got[2].Description)
+	if !strings.Contains(got[1].Description, "margin_rate") {
+		t.Errorf("synthesised metric description = %q, want it to name the metric it was minted for", got[1].Description)
 	}
 	wantMeasures := []ir.Measure{
 		{Field: ir.Field{Name: "revenue", Expr: "amount"}, Agg: "sum"},
@@ -94,7 +96,7 @@ func TestHoistInlineAggsAvoidsNameCollisions(t *testing.T) {
 			m := inlinedAggModel()
 			m.Tables[0].Dimensions = append(m.Tables[0].Dimensions, tc.taken)
 			got := hoistInlineAggs(m).metricsFor(m.Tables[0])
-			if n := got[len(got)-1].Name; n != "cost_sum_2" {
+			if n := mintedNameOf(t, got); n != "cost_sum_2" {
 				t.Errorf("minted name = %q, want cost_sum_2 (cost_sum is taken)", n)
 			}
 		})
@@ -121,9 +123,74 @@ func TestHoistInlineAggsHomesLeavesOnTheirOwnTable(t *testing.T) {
 	if got := metricNamesOf(h.metricsFor(m.Tables[1])); !reflect.DeepEqual(got, []string{"customer_id_count_distinct"}) {
 		t.Errorf("customers metrics = %v, want the count_distinct operand homed there", got)
 	}
-	if got := metricNamesOf(h.metricsFor(m.Tables[0])); !reflect.DeepEqual(got, []string{"per_customer", "amount_sum"}) {
+	if got := metricNamesOf(h.metricsFor(m.Tables[0])); !reflect.DeepEqual(got, []string{"amount_sum", "per_customer"}) {
 		t.Errorf("orders metrics = %v, want only the sum operand homed there", got)
 	}
+}
+
+// TestHoistInlineAggsReservesMetricNamesModelWide is the model-global half of
+// the collision check. dbt's metrics: list, a Snowflake semantic view's
+// metrics () clause and supersimple's ratio-operand map are all ONE namespace
+// across tables, so minting a name a DIFFERENT table already publishes
+// shadows that metric — a silent drop in supersimple, an ambiguous numerator
+// in dbt, and a misqualified reference in Snowflake, whose metricTableOf is
+// keyed by bare name and last-wins.
+func TestHoistInlineAggsReservesMetricNamesModelWide(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{
+		{
+			Name:       "orders",
+			Dimensions: []ir.Field{{Name: "amount", Expr: "amount"}},
+			Measures:   []ir.Measure{{Field: ir.Field{Name: "amount_sum", Expr: "amount"}, Agg: "sum"}},
+			Metrics: []ir.Metric{{Name: "amount_sum",
+				Def: ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}}}},
+		},
+		{
+			Name:       "lineitem",
+			Dimensions: []ir.Field{{Name: "amount", Expr: "amount"}, {Name: "qty", Expr: "qty"}},
+			Metrics: []ir.Metric{{Name: "avg_line_amount", Def: ir.Binary{Op: "/",
+				Left:  ir.Agg{Func: "sum", Table: "lineitem", Arg: ir.Col{Table: "lineitem", Name: "amount"}},
+				Right: ir.Agg{Func: "sum", Table: "lineitem", Arg: ir.Col{Table: "lineitem", Name: "qty"}},
+			}}},
+		},
+	}}
+	h := hoistInlineAggs(m)
+	got := metricNamesOf(h.metricsFor(m.Tables[1]))
+	for _, n := range got {
+		if n == "amount_sum" {
+			t.Fatalf("minted %q onto lineitem, shadowing the metric orders already publishes", n)
+		}
+	}
+	if !reflect.DeepEqual(got, []string{"amount_sum_2", "qty_sum", "avg_line_amount"}) {
+		t.Errorf("lineitem metrics = %v, want amount_sum_2 and qty_sum ahead of avg_line_amount", got)
+	}
+	// The whole model must still hold each metric name exactly once.
+	seen := map[string]int{}
+	for _, tb := range m.Tables {
+		for _, mt := range h.metricsFor(tb) {
+			seen[mt.Name]++
+		}
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("metric %q appears %d times model-wide", name, n)
+		}
+	}
+}
+
+// mintedNameOf returns the name of the single metric the hoist synthesised in
+// ms, identified by the description only a synthesised metric carries.
+func mintedNameOf(t *testing.T, ms []ir.Metric) string {
+	t.Helper()
+	var found []string
+	for _, mt := range ms {
+		if strings.Contains(mt.Description, "named by semglot") {
+			found = append(found, mt.Name)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one synthesised metric, got %v in %v", found, metricNamesOf(ms))
+	}
+	return found[0]
 }
 
 // TestDBTEmitInlinedAggsRoundTrip is the end-to-end claim: a metric dbt used to

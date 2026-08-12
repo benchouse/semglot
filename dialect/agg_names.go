@@ -61,6 +61,10 @@ import (
 type aggHoist struct {
 	metrics  map[string][]ir.Metric
 	measures map[string][]ir.Measure
+	// minted holds every name this hoist synthesised, so an emitter whose
+	// output is one flat list spanning tables can order components ahead of the
+	// metrics referencing them.
+	minted map[string]bool
 }
 
 // metricsFor returns t's metric list with inlined aggregates named, or t's own
@@ -80,6 +84,11 @@ func (h aggHoist) measuresFor(t ir.Table) []ir.Measure {
 	}
 	return t.Measures
 }
+
+// synthesisedName reports whether name was minted by this hoist rather than
+// declared by the source. A synthesised metric is always a leaf aggregate and
+// so references nothing, which is what makes "components first" a valid order.
+func (h aggHoist) synthesisedName(name string) bool { return h.minted[name] }
 
 // hoistInlineAggs names every aggregate a metric inlines inside arithmetic, and
 // gives every top-level aggregate a backing measure. It does not mutate m.
@@ -104,16 +113,36 @@ func hoistInlineAggs(m *ir.Model) aggHoist {
 		metrics:  make(map[string][]ir.Metric, len(m.Tables)),
 		measures: make(map[string][]ir.Measure, len(m.Tables)),
 	}
+
+	// Metric names are MODEL-global for three of the four consumers: dbt's
+	// metrics: list is one flat project-wide block, a Snowflake semantic view's
+	// metrics () clause is one namespace (and metricTableOf is keyed by bare
+	// name), and supersimple resolves ratio operands through one global map
+	// keyed by metric name. Reserving only against the table being minted on
+	// would let a second table mint a name the first already publishes —
+	// shadowing that metric in supersimple's map (a silent DROP, and the
+	// survivor then means another table's aggregate), duplicating a name in
+	// dbt's flat list (an ambiguous numerator), and mis-qualifying a derived
+	// metric in Snowflake (last-wins). One set, shared by every table's minter,
+	// closes all three. Lightdash scopes metrics per model and is indifferent,
+	// so a model-wide reservation costs it nothing.
+	globalMetrics := map[string]bool{}
+	for _, t := range m.Tables {
+		for _, mt := range t.Metrics {
+			globalMetrics[minterKey(mt.Name)] = true
+		}
+	}
 	st := &hoistState{
-		known:      make(map[string]bool, len(m.Tables)),
-		minters:    make(map[string]*nameMinter, len(m.Tables)),
-		byLeaf:     make(map[string]map[string]string, len(m.Tables)),
-		newMetrics: map[string][]ir.Metric{},
-		newMeasure: map[string][]ir.Measure{},
+		known:       make(map[string]bool, len(m.Tables)),
+		minters:     make(map[string]*nameMinter, len(m.Tables)),
+		byLeaf:      make(map[string]map[string]string, len(m.Tables)),
+		foreign:     map[string][]ir.Metric{},
+		newMeasure:  map[string][]ir.Measure{},
+		synthesised: map[string]bool{},
 	}
 	for _, t := range m.Tables {
 		st.known[t.Name] = true
-		st.minters[t.Name] = newNameMinter(t)
+		st.minters[t.Name] = newNameMinter(t, globalMetrics)
 		// Seed the leaf index with the table's OWN simple metrics, so an
 		// inlined aggregate the source has already published under a name
 		// reuses that name instead of minting a synonym beside it: TPC-DS's
@@ -140,7 +169,14 @@ func hoistInlineAggs(m *ir.Model) aggHoist {
 			switch def := mt.Def.(type) {
 			case ir.Binary:
 				rewritten := mt
+				st.own = nil
 				rewritten.Def = st.rewrite(def, mt, t)
+				// A component is emitted BEFORE the metric that references it,
+				// so no target sees a forward reference. Whether Snowflake's
+				// metrics () clause requires definition-before-reference is not
+				// documented either way; ordering them costs nothing and
+				// removes the question.
+				out = append(out, st.own...)
 				out = append(out, rewritten)
 			case ir.Agg:
 				st.backTopLevel(mt, def, t)
@@ -153,21 +189,31 @@ func hoistInlineAggs(m *ir.Model) aggHoist {
 	}
 
 	for _, t := range m.Tables {
-		h.metrics[t.Name] = concatMetrics(kept[t.Name], st.newMetrics[t.Name])
+		// A component minted onto ANOTHER table leads that table's list for the
+		// same reason. It can still trail its referencing metric when its table
+		// is declared later, since each target groups metrics by table; the
+		// snowflake-semantic-view emitter closes that last gap by emitting
+		// every component first, via synthesisedName.
+		h.metrics[t.Name] = concatMetrics(st.foreign[t.Name], kept[t.Name])
 		h.measures[t.Name] = concatMeasures(t.Measures, st.newMeasure[t.Name])
 	}
+	h.minted = st.synthesised
 	return h
 }
 
 // hoistState is hoistInlineAggs' working state: the model's table names, one
 // name minter and one leaf-dedup index per table, and the metrics/measures
-// synthesised onto each table so far.
+// synthesised so far. `own` collects the components minted for the metric
+// currently being rewritten onto its OWN table, so the caller can place them
+// immediately before it; `foreign` collects those minted onto another table.
 type hoistState struct {
-	known      map[string]bool
-	minters    map[string]*nameMinter
-	byLeaf     map[string]map[string]string // table -> rendered leaf SQL -> minted name
-	newMetrics map[string][]ir.Metric
-	newMeasure map[string][]ir.Measure
+	known       map[string]bool
+	minters     map[string]*nameMinter
+	byLeaf      map[string]map[string]string // table -> rendered leaf SQL -> minted name
+	own         []ir.Metric
+	foreign     map[string][]ir.Metric
+	newMeasure  map[string][]ir.Measure
+	synthesised map[string]bool
 }
 
 // rewrite replaces every nameable ir.Agg leaf of an arithmetic tree with an
@@ -210,11 +256,13 @@ func (st *hoistState) nameLeaf(leaf ir.Agg, mt ir.Metric, owner ir.Table) (strin
 		return "", false
 	}
 	name := st.minters[home].mint(aggBaseName(leaf, mt.Name))
-	st.newMetrics[home] = append(st.newMetrics[home], ir.Metric{
-		Name:        name,
-		Description: synthesizedNote(mt.Name),
-		Def:         leaf,
-	})
+	component := ir.Metric{Name: name, Description: synthesizedNote(mt.Name), Def: leaf}
+	if home == owner.Name {
+		st.own = append(st.own, component)
+	} else {
+		st.foreign[home] = append(st.foreign[home], component)
+	}
+	st.synthesised[name] = true
 	// The measure carries NO description on purpose. dbt's measure block has no
 	// description field, so the only place one would surface is emitModel's
 	// columns[] — where it would document the PHYSICAL COLUMN as "component
@@ -310,12 +358,18 @@ func synthesizedNote(metric string) string {
 		", named by semglot so a derived metric can reference it."
 }
 
-// nameMinter mints collision-free names on one table. The two namespaces are
+// nameMinter mints collision-free names for one table. The two namespaces are
 // tracked separately because a synthesised name occupies both: dbt keeps metric
 // names and semantic-model member names (entities, dimensions, measures) apart,
 // so one minted name can serve both the simple metric and its backing measure —
 // which is also what ossie's parser does — while a measure minted on its own
 // (backTopLevel) only needs to clear the member namespace.
+//
+// `metrics` is SHARED by every table's minter and holds every metric name in
+// the model, because dbt, snowflake-semantic-view and supersimple all keep
+// metric names in one model-wide namespace (see hoistInlineAggs). `fields` is
+// genuinely per-table: dimensions, measures and physical columns are scoped to
+// their own semantic model in all four targets.
 //
 // `fields` deliberately holds BOTH the IR name and the physical expression of
 // every dimension and measure. dbt and snowflake-semantic-view collide on the
@@ -328,15 +382,12 @@ func synthesizedNote(metric string) string {
 // Matching is case-insensitive: snowflake-semantic-view uppercases every name
 // it emits, so two names differing only in case are one name there.
 type nameMinter struct {
-	metrics map[string]bool
-	fields  map[string]bool
+	metrics map[string]bool // model-wide, shared across tables
+	fields  map[string]bool // this table's members and physical columns
 }
 
-func newNameMinter(t ir.Table) *nameMinter {
-	n := &nameMinter{metrics: map[string]bool{}, fields: map[string]bool{}}
-	for _, mt := range t.Metrics {
-		n.metrics[minterKey(mt.Name)] = true
-	}
+func newNameMinter(t ir.Table, modelMetrics map[string]bool) *nameMinter {
+	n := &nameMinter{metrics: modelMetrics, fields: map[string]bool{}}
 	reserve := func(fs ...ir.Field) {
 		for _, f := range fs {
 			n.fields[minterKey(f.Name)] = true
