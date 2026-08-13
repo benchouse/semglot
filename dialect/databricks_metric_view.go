@@ -367,11 +367,27 @@ func (d databricksMetricView) buildView(m *ir.Model, t ir.Table, resolve func(st
 	// passes below: both write into the same `measures:` list, so both have to
 	// satisfy the same invariant.
 	measureExpr := func(kind, name, expr string) (string, bool) {
-		out, unresolved, ok := dbxRewriteQualifiers(expr, t.Name, aliases, tableByName)
+		out, unresolved, ambiguous, ok := dbxRewriteQualifiers(expr, t.Name, aliases, tableByName)
 		if !ok {
 			addNote(kind + " " + name + ": expression references " + unresolved +
 				", which this view does not join exactly once (" + expr + "), skipped")
 			return "", false
+		}
+		// Each ambiguous qualifier is a fresh `a.b` dbxRewriteQualifiers could not
+		// resolve to self, a join, or any table of the model — it went out as a
+		// nested column access, which is the only reading available, but is
+		// exactly as plausible a guess as the dropped case above when it was
+		// really a table reference the model never declared (e.g. a phantom join
+		// qualifier). Unlike that case, this one cannot be dropped: refusing it
+		// would also refuse a legitimate struct/map field access, which the
+		// SAME view's fields: already emit verbatim. So it is reported instead
+		// — named, not silently resolved either way — mirroring the posture
+		// dbxSourceFor's "the model declares no table" note already takes for a
+		// join address it had to guess.
+		for _, q := range ambiguous {
+			addNote(fmt.Sprintf(
+				"%s %q: qualifier %q names no table of the model; kept as a nested column access, which is wrong if it was meant as a table",
+				kind, name, q))
 		}
 		return out, true
 	}
@@ -596,19 +612,31 @@ func dbxJoinAliases(joins []dbxJoin) map[string]string {
 // why a metric like `SUM(store_sales.x) / COUNT(DISTINCT customer.y)` reaches
 // this function at all.
 //
-// A qualifier that names NO table of the model is not a table qualifier at all
-// — it is a struct or map field access (`payload.amount`, `attributes['k'].v`),
-// which Databricks supports and which this view's `fields:` already emit
-// verbatim (`expr: payload.amount`). It is passed through untouched, and only
-// the model's own table names are treated as relations. Refusing every `a.b`
-// instead would drop a measure over a nested column that the same file's
-// dimensions carry happily. The residual ambiguity — a struct column sharing a
-// name with a table of the model — resolves in favour of the table, which is
-// the reading that can produce an INVALID view if guessed wrong. The converse
-// residue is accepted knowingly: a qualifier meant as a table that the model
-// never declares reads here as a nested column and goes out as written, the
-// same exposure the fields: pass has always had for a field expression naming
-// one, and the only reading available when nothing in the model names it.
+// A qualifier that names NO table of the model is not necessarily a table
+// qualifier at all — it may be a struct or map field access (`payload.amount`,
+// `attributes['k'].v`), which Databricks supports and which this view's
+// `fields:` already emit verbatim (`expr: payload.amount`). It is passed
+// through untouched rather than dropped, so a measure over a nested column
+// survives exactly like the same field expression does in `fields:`. But
+// `ir.Col.Table` is assigned purely syntactically wherever a metric expression
+// is parsed (see aggLeaf): a lone, unqualified `a.b` carries no signal telling
+// this function whether "a" was meant as a table or as a struct's own field
+// name, and a table the model's author meant but never declared reads exactly
+// like a struct root. Silently guessing "struct" is how a phantom qualifier
+// used to escape unwarned and take Databricks' whole-file validation down with
+// it (every other measure, dimension and join in the same view rejected for
+// one dangling relation): unlike a name that IS a table of the model (handled
+// above, where dropping is the only safe move), there is no drop that helps
+// here — refusing every unresolved `a.b` would also refuse the legitimate
+// struct case this passthrough exists for. So each one is returned in
+// ambiguous, named but not resolved either way, and the caller reports it
+// rather than staying quiet. Only the FIRST identifier of a dotted run is ever
+// ambiguous this way: once a run's leading segment is known to name a real
+// relation (self, stripped, or a join alias), every further dotted segment in
+// the SAME run is unambiguously a nested column on that relation's row — not a
+// fresh qualifier candidate — and is written through with no report, which is
+// what lets a genuinely nested `SUM(store_sales.payload.amount)` still emit as
+// `sum(payload.amount)` without noise.
 //
 // Tokenised rather than pattern-matched: the previous regex-based strip could
 // not tell a qualifier from the same text inside a string literal, and could
@@ -616,15 +644,25 @@ func dbxJoinAliases(joins []dbxJoin) map[string]string {
 // rebuilding from the token stream preserves the expression exactly apart from
 // the qualifiers rewritten here, and a literal containing "<table>." is a
 // sqlString token that is never inspected.
-func dbxRewriteQualifiers(expr, self string, aliases map[string]string, tables map[string]ir.Table) (out, unresolved string, ok bool) {
+func dbxRewriteQualifiers(expr, self string, aliases map[string]string, tables map[string]ir.Table) (out, unresolved string, ambiguous []string, ok bool) {
 	toks := sqlTokens(expr)
 	var b strings.Builder
+	// chainContinuation is true for as long as the current run of dotted
+	// identifiers descends from a segment already resolved to a real relation
+	// (self or a join alias) or already reported as ambiguous — see the
+	// "Only the FIRST identifier" paragraph above. It survives a "." token
+	// untouched (connecting tissue within the same run) and is cleared by
+	// anything else: an operator, paren, comma, or the run simply ending.
+	chainContinuation := false
 	for i := 0; i < len(toks); i++ {
 		tk := toks[i]
 		qualified := tk.typ == sqlIdent && i+2 < len(toks) &&
 			toks[i+1].typ == sqlOther && toks[i+1].val == "." && toks[i+2].typ == sqlIdent
 		if !qualified {
 			b.WriteString(tk.val)
+			if tk.val != "." {
+				chainContinuation = false
+			}
 			continue
 		}
 		// Self first: a self-join (Left == Right) would also appear in aliases,
@@ -633,25 +671,34 @@ func dbxRewriteQualifiers(expr, self string, aliases map[string]string, tables m
 		// iteration in both branches.
 		if strings.EqualFold(tk.val, self) {
 			i++ // skip the "."; the qualifier is dropped with it
+			chainContinuation = true
 			continue
 		}
 		key := strings.ToLower(tk.val)
 		if alias, joined := aliases[key]; joined {
 			if alias == "" {
-				return "", tk.val, false // role-playing: joined more than once, so ambiguous
+				return "", tk.val, nil, false // role-playing: joined more than once, so ambiguous
 			}
 			b.WriteString(alias)
+			chainContinuation = true
 			continue
 		}
 		if _, isTable := tables[key]; isTable {
-			return "", tk.val, false // a table of the model this view does not join
+			return "", tk.val, nil, false // a table of the model this view does not join
 		}
-		// Not a relation of any kind: a struct/map field access. Written as
-		// it stands, with the "." and the field written by the next
-		// iterations, exactly as the fields: pass emits a nested column.
+		// Not self, not a join, not a table of the model: written through as a
+		// struct/map field access, with the "." and the field written by the
+		// next iterations, exactly as the fields: pass emits a nested column.
+		// Reported only when it is NOT already a continuation of a resolved
+		// run (see chainContinuation's doc above) — a fresh, unresolved head
+		// is where the table/struct ambiguity actually lives.
+		if !chainContinuation {
+			ambiguous = append(ambiguous, tk.val)
+		}
 		b.WriteString(tk.val)
+		chainContinuation = true
 	}
-	return b.String(), "", true
+	return b.String(), "", ambiguous, true
 }
 
 // dbxJoinName reports whether name can be used as a metric view's join name.
