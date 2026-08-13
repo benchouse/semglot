@@ -1020,11 +1020,17 @@ func TestDatabricksEveryEmittedViewResolvesItsQualifiers(t *testing.T) {
 }
 
 // TestDatabricksNestedColumnAccessSurvives: `payload.amount` inside a measure is
-// a struct/map field access, not a table qualifier. Treating every `a.b` as a
-// qualifier dropped the whole measure with a note, while the SAME view's
-// `fields:` emitted `expr: payload.amount` happily — the format supports it, so
-// refusing it in one half of the file and accepting it in the other was a
-// capability regression, not a format limit.
+// EITHER a struct/map field access OR a qualifier naming a table the model
+// never declared — dbxRewriteQualifiers cannot tell the two apart from the text
+// alone (ir.Col.Table is assigned purely syntactically wherever a metric
+// expression is parsed), so it keeps the only reading that also works for the
+// struct case: pass it through unresolved, exactly as the SAME view's `fields:`
+// already emit `expr: payload.amount` verbatim. Treating every `a.b` as a
+// table qualifier used to drop the whole measure with a note; passing every
+// unresolved `a.b` through with no report at all would silently mis-resolve a
+// genuine phantom table qualifier the other way (see
+// TestDatabricksPhantomTableQualifierIsWarned) — so this still emits, but now
+// also reports the ambiguity rather than staying quiet about it.
 //
 // dbxMeasureQualifiers/assertMeasureQualifiersResolve deliberately do not run
 // here: their regex reads any `ident.` as a relation, which a nested column is
@@ -1046,13 +1052,95 @@ func TestDatabricksNestedColumnAccessSurvives(t *testing.T) {
 	if !strings.Contains(got, "expr: payload.amount") {
 		t.Errorf("the same nested column must still emit as a field:\n%s", got)
 	}
+	// A bare, unqualified-by-self `payload.amount` is exactly as ambiguous as a
+	// phantom table qualifier (neither carries any signal telling this apart
+	// from a table reference the model never declared), so it must be reported
+	// — naming the measure and the qualifier — rather than resolved silently
+	// either way.
+	found := false
 	for _, w := range warnings {
 		if strings.Contains(w, "struct_sum") {
-			t.Errorf("a nested column is not an unresolved relation; got %q", w)
+			found = true
+			if !strings.Contains(w, `"payload"`) {
+				t.Errorf("want the warning to name the ambiguous qualifier %q; got %q", "payload", w)
+			}
 		}
+	}
+	if !found {
+		t.Errorf("want a warning naming struct_sum's ambiguous qualifier; got %v", warnings)
 	}
 	if strings.Contains(got, "row_count") {
 		t.Errorf("the measure survived, so nothing should have been synthesised:\n%s", got)
+	}
+}
+
+// TestDatabricksSelfQualifiedNestedColumnSurvivesQuietly: once a dotted run's
+// leading segment is explicitly self (stripped, exactly as any other
+// self-qualified column is), every further segment in that SAME run is
+// unambiguously a nested column on self's own row — there is no table
+// reading left to guess wrong, so — unlike the bare `payload.amount` case in
+// TestDatabricksNestedColumnAccessSurvives — this must emit with NO warning.
+// A warning on every legitimate struct access would be noise that trains
+// users to ignore warnings, which would be its own failure.
+func TestDatabricksSelfQualifiedNestedColumnSurvivesQuietly(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "store_sales",
+		Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+		Metrics: []ir.Metric{{
+			Name: "struct_sum",
+			Def: ir.Agg{Func: "sum", Table: "store_sales",
+				Arg: ir.Raw{SQL: "store_sales.payload.amount"}},
+		}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	if !strings.Contains(got, "expr: sum(payload.amount)") {
+		t.Errorf("want the self-qualified nested column stripped of its self prefix and emitted verbatim:\n%s", got)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "struct_sum") {
+			t.Errorf("a nested column following an explicit self qualifier is not ambiguous; got %q", w)
+		}
+	}
+}
+
+// TestDatabricksPhantomTableQualifierIsWarned reproduces the regression this
+// task closes: a measure expression qualifying a table the model does not
+// declare at all (not self, not a table of the model under any name) used to
+// be silently rewritten as if it were a nested column access, with zero
+// warnings — trading a noted single-measure drop for an unwarned qualifier
+// that Databricks cannot resolve, which rejects the ENTIRE view (every other
+// measure, dimension and join in the file goes with it). The expression must
+// still emit exactly as before (see dbxRewriteQualifiers' doc comment for why
+// dropping it is not an option — that would also refuse a legitimate struct
+// access), but the ambiguity must now be reported.
+func TestDatabricksPhantomTableQualifierIsWarned(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "store_sales",
+		Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+		Metrics: []ir.Metric{{
+			Name: "mixed_phantom",
+			Def: ir.Binary{
+				Op:   "/",
+				Left: ir.Agg{Func: "sum", Table: "store_sales", Arg: ir.Col{Table: "store_sales", Name: "amount"}},
+				Right: ir.Agg{Func: "count_distinct", Table: "nonexistent_table",
+					Arg: ir.Col{Table: "nonexistent_table", Name: "col"}},
+			},
+		}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	if !strings.Contains(got, "expr: sum(amount) / count(distinct nonexistent_table.col)") {
+		t.Errorf("want the metric emitted with its self qualifier stripped and the phantom qualifier kept verbatim:\n%s", got)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "mixed_phantom") && strings.Contains(w, `"nonexistent_table"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming mixed_phantom and its unresolved qualifier nonexistent_table; got %v", warnings)
 	}
 }
 
