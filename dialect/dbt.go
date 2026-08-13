@@ -17,7 +17,12 @@ func init() { Register(dbt{}) }
 // model properties (`models:` — table/column descriptions, data types, key and
 // relationship constraints/tests) and the semantic layer (`semantic_models:` +
 // `metrics:` — measures, aggregations, metrics). Either may be present alone.
-type dbt struct{}
+type dbt struct{ opts Options }
+
+// WithOptions makes dbt Configurable so a consumer-specific binding (Hex's
+// config.meta.hex.table) and the physical table prefix can be supplied per
+// build rather than baked in.
+func (d dbt) WithOptions(o Options) Emitter { d.opts = o; return d }
 
 func (dbt) Name() string { return "dbt" }
 

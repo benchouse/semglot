@@ -510,3 +510,58 @@ func TestDBTParseLabelAndGrain(t *testing.T) {
 		t.Fatalf("Def = %#v, want %#v", m.Def, wantDef)
 	}
 }
+
+// TestDbtEmitsHexBinding covers Hex's Semantic Model Sync requirement: it parses
+// MetricFlow YAML straight from a repo and cannot resolve which physical table a
+// semantic model reads without config.meta.hex.table. Without the binding the
+// sync imports models that resolve to nothing — the agent then answers about no
+// data, which grades as a wrong answer rather than a setup failure.
+func TestDbtEmitsHexBinding(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_orders",
+		PrimaryKey: []string{"order_id"},
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+		Measures:   []ir.Measure{{Field: ir.Field{Name: "gross", Expr: "gross"}, Agg: "sum"}},
+	}}}
+	dir := t.TempDir()
+	d := dbt{}.WithOptions(Options{Database: "ecomm", TablePrefix: "marts__", DbtHexMeta: true})
+	if _, err := d.Emit(m, dir); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	got := readFile(t, filepath.Join(dir, "ecommerce.yml"))
+	for _, want := range []string{"config:", "meta:", "hex:", "table: ecomm.marts__fct_orders"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("emitted YAML missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestDbtOmitsHexBindingByDefault: the binding is one consumer's key, so a plain
+// dbt build must stay clean. Emitting it unasked would put a vendor's meta into
+// the shared ground-truth reference every arm reads.
+func TestDbtOmitsHexBindingByDefault(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{Name: "fct_orders", PrimaryKey: []string{"order_id"}}}}
+	dir := t.TempDir()
+	if _, err := (dbt{}).Emit(m, dir); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := readFile(t, filepath.Join(dir, "ecommerce.yml")); strings.Contains(got, "hex:") {
+		t.Errorf("default dbt emit must not carry Hex meta:\n%s", got)
+	}
+}
+
+func TestPhysicalTable(t *testing.T) {
+	cases := []struct {
+		opts Options
+		want string
+	}{
+		{Options{Database: "ecomm", TablePrefix: "marts__"}, "ecomm.marts__fct_orders"},
+		{Options{Database: "EVAL_MARTS", Schema: "MAIN"}, "EVAL_MARTS.MAIN.fct_orders"},
+		{Options{}, "fct_orders"},
+	}
+	for _, c := range cases {
+		if got := physicalTable("fct_orders", c.opts); got != c.want {
+			t.Errorf("physicalTable(%+v) = %q, want %q", c.opts, got, c.want)
+		}
+	}
+}

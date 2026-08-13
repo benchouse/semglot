@@ -33,11 +33,21 @@ type profile struct {
 	TargetDialect  string      `yaml:"target-dialect"`
 	Output         string      `yaml:"output"`
 	Database       string      `yaml:"database"`
-	Schema         string      `yaml:"schema"`
+	// Schema is a pointer so an EXPLICIT empty value is distinguishable from an
+	// omitted one. Omitted defaults to MAIN (Snowflake-shaped targets need a
+	// qualified name); explicitly empty means a two-part namespace such as
+	// ClickHouse, where "db.MAIN.table" would not resolve.
+	Schema *string `yaml:"schema"`
 	ViewSchema     string      `yaml:"view-schema"`
 	ModelName      string      `yaml:"model-name"`
 	Description    string      `yaml:"description"`
 	DbtMetaKeyPath string      `yaml:"dbt-meta-key-path"`
+	// TablePrefix maps a logical table name to its physical one (ClickHouse
+	// materialises fct_orders as marts__fct_orders).
+	TablePrefix string `yaml:"table-prefix"`
+	// DbtHexMeta emits Hex's config.meta.hex.table binding on each semantic
+	// model; Hex's Semantic Model Sync cannot resolve the physical table without it.
+	DbtHexMeta bool `yaml:"dbt-hex-meta"`
 }
 
 // configFile is the top-level shape of semglot.yaml.
@@ -57,6 +67,8 @@ type buildSpec struct {
 	ModelName      string
 	Description    string
 	DbtMetaKeyPath string
+	TablePrefix    string
+	DbtHexMeta     bool
 }
 
 // warehouseTargets emit into a physical warehouse (Snowflake, or a Databricks
@@ -94,16 +106,21 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 		TargetDialect:  p.TargetDialect,
 		Output:         p.Output,
 		Database:       p.Database,
-		Schema:         p.Schema,
+		Schema:         "",
 		ViewSchema:     p.ViewSchema,
 		ModelName:      p.ModelName,
 		Description:    p.Description,
 		DbtMetaKeyPath: p.DbtMetaKeyPath,
+		TablePrefix:    p.TablePrefix,
+		DbtHexMeta:     p.DbtHexMeta,
 	}
 	if spec.SourceDialect == "" {
 		spec.SourceDialect = "dbt"
 	}
-	if spec.Schema == "" {
+	switch {
+	case p.Schema != nil:
+		spec.Schema = *p.Schema
+	default:
 		spec.Schema = "MAIN"
 	}
 	if spec.ModelName == "" {
