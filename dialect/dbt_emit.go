@@ -72,10 +72,28 @@ type dbtEmitRelTest struct {
 type dbtEmitSemantic struct {
 	Name       string             `yaml:"name"`
 	Model      string             `yaml:"model"`
+	Config     *dbtEmitSemConfig  `yaml:"config,omitempty"`
 	Defaults   *dbtEmitDefaults   `yaml:"defaults,omitempty"`
 	Entities   []dbtEmitEntity    `yaml:"entities,omitempty"`
 	Dimensions []dbtEmitDimension `yaml:"dimensions,omitempty"`
 	Measures   []dbtEmitMeasure   `yaml:"measures,omitempty"`
+}
+
+// dbtEmitSemConfig carries the `config: meta:` block on a semantic model. Only
+// Hex's binding lives here today; the shape is nested rather than flat so other
+// consumers' meta keys can sit alongside without moving Hex's.
+type dbtEmitSemConfig struct {
+	Meta dbtEmitSemMeta `yaml:"meta"`
+}
+
+type dbtEmitSemMeta struct {
+	Hex *dbtEmitHexMeta `yaml:"hex,omitempty"`
+}
+
+// dbtEmitHexMeta is Hex's semantic-model binding: the fully qualified physical
+// table the model reads.
+type dbtEmitHexMeta struct {
+	Table string `yaml:"table"`
 }
 
 type dbtEmitDefaults struct {
@@ -145,7 +163,7 @@ type dbtEmitConversionParams struct {
 // inlined aggregates are emitted rather than reported; what remains is a
 // genuine dbt limit. It is applied before emitModel too, so a physical column
 // that only a synthesised measure references still gets a columns[] entry.
-func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
+func (d dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 	var f dbtEmitFile
 	var warnings []string
 	// A relationship reaches dbt as a `relationships` data test on the FK
@@ -200,7 +218,7 @@ func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 
 		f.Models = append(f.Models, emitModel(m, t, pk, fk))
-		f.SemanticModels = append(f.SemanticModels, emitSemantic(t, pk, fk))
+		f.SemanticModels = append(f.SemanticModels, emitSemantic(t, pk, fk, d.opts))
 		metrics, warn := emitMetrics(t)
 		f.Metrics = append(f.Metrics, metrics...)
 		warnings = append(warnings, warn...)
@@ -338,12 +356,31 @@ func emitModel(m *ir.Model, t ir.Table, pk, fk map[string]bool) dbtEmitModel {
 	return em
 }
 
+// physicalTable renders the warehouse-qualified name a semantic model reads:
+// [database.][schema.]prefix+name. The IR holds logical names only, so the
+// prefix and container come from Options.
+func physicalTable(name string, opts Options) string {
+	out := opts.TablePrefix + name
+	if opts.Schema != "" {
+		out = opts.Schema + "." + out
+	}
+	if opts.Database != "" {
+		out = opts.Database + "." + out
+	}
+	return out
+}
+
 // emitSemantic builds the semantic_models block: a primary entity per PK column,
 // every non-PK/non-FK dimension as a semantic dimension (FK columns round-trip
 // as plain model columns + the relationship test, so they are NOT re-emitted as
 // entities), and every measure.
-func emitSemantic(t ir.Table, pk, fk map[string]bool) dbtEmitSemantic {
+func emitSemantic(t ir.Table, pk, fk map[string]bool, opts Options) dbtEmitSemantic {
 	sm := dbtEmitSemantic{Name: t.Name, Model: "ref('" + t.Name + "')"}
+	if opts.DbtHexMeta {
+		sm.Config = &dbtEmitSemConfig{Meta: dbtEmitSemMeta{
+			Hex: &dbtEmitHexMeta{Table: physicalTable(t.Name, opts)},
+		}}
+	}
 	if t.Grain != "" {
 		sm.Defaults = &dbtEmitDefaults{AggTimeDimension: t.Grain}
 	}

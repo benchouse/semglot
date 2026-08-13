@@ -72,6 +72,8 @@ func buildCmd(args []string) int {
 			Name:           spec.ModelName,
 			Description:    spec.Description,
 			DbtMetaKeyPath: spec.DbtMetaKeyPath,
+			TablePrefix:    spec.TablePrefix,
+			DbtHexMeta:     spec.DbtHexMeta,
 		})
 	}
 
