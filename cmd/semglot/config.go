@@ -28,20 +28,20 @@ func (s *sourcePaths) UnmarshalYAML(node *yaml.Node) error {
 
 // profile is one named build in semglot.yaml.
 type profile struct {
-	Source         sourcePaths `yaml:"source"`
-	SourceDialect  string      `yaml:"source-dialect"`
-	TargetDialect  string      `yaml:"target-dialect"`
-	Output         string      `yaml:"output"`
-	Database       string      `yaml:"database"`
+	Source        sourcePaths `yaml:"source"`
+	SourceDialect string      `yaml:"source-dialect"`
+	TargetDialect string      `yaml:"target-dialect"`
+	Output        string      `yaml:"output"`
+	Database      string      `yaml:"database"`
 	// Schema is a pointer so an EXPLICIT empty value is distinguishable from an
 	// omitted one. Omitted defaults to MAIN (Snowflake-shaped targets need a
 	// qualified name); explicitly empty means a two-part namespace such as
 	// ClickHouse, where "db.MAIN.table" would not resolve.
-	Schema *string `yaml:"schema"`
-	ViewSchema     string      `yaml:"view-schema"`
-	ModelName      string      `yaml:"model-name"`
-	Description    string      `yaml:"description"`
-	DbtMetaKeyPath string      `yaml:"dbt-meta-key-path"`
+	Schema         *string `yaml:"schema"`
+	ViewSchema     string  `yaml:"view-schema"`
+	ModelName      string  `yaml:"model-name"`
+	Description    string  `yaml:"description"`
+	DbtMetaKeyPath string  `yaml:"dbt-meta-key-path"`
 	// TablePrefix maps a logical table name to its physical one (ClickHouse
 	// materialises fct_orders as marts__fct_orders).
 	TablePrefix string `yaml:"table-prefix"`
