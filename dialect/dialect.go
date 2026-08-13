@@ -56,6 +56,11 @@ type Options struct {
 	// without it, so without this the sync imports models that resolve to
 	// nothing.
 	DbtHexMeta bool
+	// LowerCaseIdentifiers keeps identifiers as the IR spells them instead of
+	// upper-casing. Snowflake folds unquoted identifiers up, so upper-case is
+	// the safe default there; ClickHouse is case-sensitive and would not
+	// resolve them.
+	LowerCaseIdentifiers bool
 }
 
 // Configurable is an Emitter that accepts model/view identity options.

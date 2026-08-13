@@ -25,7 +25,8 @@ models:
         type: hasMany
         model_id: FCT_ORDERS
         join_strategy:
-          join_key: CUSTOMER_SK
+          join_key_on_base: CUSTOMER_SK
+          join_key_on_related: BILLING_CUSTOMER_SK
       orders_customer_sk:
         name: Orders (Customer sk)
         type: hasMany

@@ -48,6 +48,9 @@ type profile struct {
 	// DbtHexMeta emits Hex's config.meta.hex.table binding on each semantic
 	// model; Hex's Semantic Model Sync cannot resolve the physical table without it.
 	DbtHexMeta bool `yaml:"dbt-hex-meta"`
+	// LowerCaseIdentifiers keeps identifiers as spelled rather than upper-casing
+	// them; required for case-sensitive warehouses such as ClickHouse.
+	LowerCaseIdentifiers bool `yaml:"lowercase-identifiers"`
 }
 
 // configFile is the top-level shape of semglot.yaml.
@@ -57,18 +60,19 @@ type configFile struct {
 
 // buildSpec is a fully-resolved build: a validated profile with defaults applied.
 type buildSpec struct {
-	Sources        []string
-	SourceDialect  string
-	TargetDialect  string
-	Output         string
-	Database       string
-	Schema         string
-	ViewSchema     string
-	ModelName      string
-	Description    string
-	DbtMetaKeyPath string
-	TablePrefix    string
-	DbtHexMeta     bool
+	Sources              []string
+	SourceDialect        string
+	TargetDialect        string
+	Output               string
+	Database             string
+	Schema               string
+	ViewSchema           string
+	ModelName            string
+	Description          string
+	DbtMetaKeyPath       string
+	TablePrefix          string
+	DbtHexMeta           bool
+	LowerCaseIdentifiers bool
 }
 
 // warehouseTargets emit into a physical warehouse (Snowflake, or a Databricks
@@ -101,18 +105,19 @@ func loadProfile(configPath, name string) (buildSpec, error) {
 		return buildSpec{}, fmt.Errorf("profile %q: output is required", name)
 	}
 	spec := buildSpec{
-		Sources:        []string(p.Source),
-		SourceDialect:  p.SourceDialect,
-		TargetDialect:  p.TargetDialect,
-		Output:         p.Output,
-		Database:       p.Database,
-		Schema:         "",
-		ViewSchema:     p.ViewSchema,
-		ModelName:      p.ModelName,
-		Description:    p.Description,
-		DbtMetaKeyPath: p.DbtMetaKeyPath,
-		TablePrefix:    p.TablePrefix,
-		DbtHexMeta:     p.DbtHexMeta,
+		Sources:              []string(p.Source),
+		SourceDialect:        p.SourceDialect,
+		TargetDialect:        p.TargetDialect,
+		Output:               p.Output,
+		Database:             p.Database,
+		Schema:               "",
+		ViewSchema:           p.ViewSchema,
+		ModelName:            p.ModelName,
+		Description:          p.Description,
+		DbtMetaKeyPath:       p.DbtMetaKeyPath,
+		TablePrefix:          p.TablePrefix,
+		DbtHexMeta:           p.DbtHexMeta,
+		LowerCaseIdentifiers: p.LowerCaseIdentifiers,
 	}
 	if spec.SourceDialect == "" {
 		spec.SourceDialect = "dbt"

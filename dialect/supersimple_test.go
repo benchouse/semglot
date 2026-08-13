@@ -398,3 +398,21 @@ func TestSupersimpleCrossTableRatioEmit(t *testing.T) {
 		t.Fatal("NOTES.md should not exist when nothing is deferred")
 	}
 }
+
+// TestSupersimpleTwoSidedJoinKey pins the two-sided join form. `join_key` is
+// Supersimple's shorthand for "both sides share this column name"; when the FK
+// and PK differ it addresses the wrong column, and `supersimple validate`
+// rejected three dim_date relations with "references unknown property
+// 'date_day' on related model" because of exactly this.
+func TestSupersimpleTwoSidedJoinKey(t *testing.T) {
+	if got := joinStrategy("date_day", "order_date"); got.JoinKeyOnBase != "date_day" ||
+		got.JoinKeyOnRelated != "order_date" || got.JoinKey != "" {
+		t.Errorf("differing keys must use the two-sided form; got %+v", got)
+	}
+	// Matching keys keep the shorthand, which is what the vendor emits and what
+	// the other 20 relations already validated with.
+	if got := joinStrategy("order_id", "order_id"); got.JoinKey != "order_id" ||
+		got.JoinKeyOnBase != "" {
+		t.Errorf("matching keys should use the shorthand; got %+v", got)
+	}
+}
