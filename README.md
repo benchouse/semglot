@@ -18,7 +18,8 @@
 Where [`sqlglot`](https://github.com/tobymao/sqlglot) translates across SQL
 dialects, **semglot** translates across **semantic-layer dialects** (dbt
 semantic models, Snowflake Cortex, Snowflake semantic views, Databricks metric
-views, and more) through one neutral intermediate representation (IR).
+views, Apache Ossie, and more) through one neutral intermediate representation
+(IR).
 
 You point it at a source layer, pick a target dialect, and it writes the
 equivalent layer out. Because everything routes through the IR, adding a dialect
@@ -26,8 +27,8 @@ adds every conversion into and out of it, not just one.
 
 ## Semantic Layer Dialects
 
-A **source** is read into the IR; a **target** is written from it. `dbt` is
-both, so `dbt` to `dbt` is a lossless round-trip.
+A **source** is read into the IR; a **target** is written from it. `dbt` and
+`ossie` are both, so `dbt` to `dbt` and `ossie` to `ossie` are round-trips.
 
 | Dialect                   | Source | Target |
 |---------------------------|:------:|:------:|
@@ -39,6 +40,7 @@ both, so `dbt` to `dbt` is a lossless round-trip.
 | `nao-context-rules`       |        |   ✓    |
 | `databricks-metric-view`  |        |   ✓    |
 | `lightdash`               |        |   ✓    |
+| `ossie`                   |   ✓    |   ✓    |
 
 Adding a dialect is small, self-contained work: implement a `Parser` (dialect
 files to IR), an `Emitter` (IR to dialect files), or both — the interfaces in
@@ -152,22 +154,23 @@ profiles:
 ## Dialect support
 
 Every dialect maps to the same neutral IR, but targets differ in how much of it
-they can express. This is what each **target** emits today (`dbt` is currently
-the only source).
+they can express. This is what each **target** emits today (`dbt` and `ossie`
+are also sources; see [Semantic Layer Dialects](#semantic-layer-dialects) above).
 
-| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` |
-|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:------------------------:|:-----------:|
-| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |             ✓             |      ✓      |
-| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |             ✓             |      ✓      |
-| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |             ~             |      ✓      |
-| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |
-| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |                          |      ~      |
-| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |                          |      ~      |
-| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |             ✓             |      ✓      |
-| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |
-| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |             ✓             |      ~      |
-| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |             ✓             |      ≈      |
-| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |             ≈             |      ≈      |
+| Feature                 | `dbt` | `cortex` | `snowflake-semantic-view` | `supersimple` | `nao-yaml` | `nao-context-rules` | `databricks-metric-view` | `lightdash` | `ossie` |
+|-------------------------|:-----:|:--------:|:-------------------------:|:-------------:|:----------:|:-------------------:|:------------------------:|:-----------:|:-------:|
+| Tables                  |   ✓   |    ✓     |             ✓             |       ✓       |            |          ~          |             ✓             |      ✓      |    ✓    |
+| Columns                 |   ✓   |    ✓     |             ✓             |       ✓       |     ✓      |          ~          |             ✓             |      ✓      |    ✓    |
+| Time dimensions         |   ✓   |    ✓     |             ~             |       ✓       |     ✓      |          ~          |             ~             |      ✓      |    ✓    |
+| Descriptions            |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |    ✓    |
+| Data types              |   ✓   |    ✓     |                           |       ✓       |            |                     |                          |      ~      |    ✓    |
+| Primary keys            |   ✓   |    ✓     |             ✓             |       ✓       |            |                     |                          |      ~      |    ✓    |
+| Relationships           |   ✓   |    ✓     |             ✓             |       ✓       |            |          ✓          |             ✓             |      ✓      |    ✓    |
+| Metrics (aggregations)  |   ✓   |    ✓     |             ✓             |       ✓       |     ~      |          ✓          |             ✓             |      ✓      |    ✓    |
+| Ratio & derived metrics |   ✓   |    ✓     |             ✓             |       ~       |     ✓      |          ✓          |             ✓             |      ~      |    ✓    |
+| Synonyms                |   ~   |    ✓     |                           |               |     ≈      |          ≈          |             ✓             |      ≈      |    ✓    |
+| Physical table source   |       |    ~     |             ~             |       ~       |     ≈      |          ≈          |             ~             |             |    ✓    |
+| Enums / allowed values  |   ✓   |    ~     |             ≈             |       ≈       |     ✓      |          ✓          |             ≈             |      ≈      |    ≈    |
 
 `✓` structured · `≈` rolled up as text in a description or comment · `~` partial · blank not emitted.
 
@@ -181,6 +184,14 @@ drops it:
   sample values.
 - **`supersimple`** emits division ratios; other arithmetic is deferred to a
   `NOTES.md` sidecar.
+- **Physical table source** is the address an `ossie` dataset declares
+  (`db.schema.table`, or a query — the spec permits either). A warehouse target
+  uses it verbatim in its own address slot and falls back to the profile's
+  `database`/`schema` **with a warning** when it cannot (a query anywhere; and
+  for `cortex`, anything but a clean three-part reference, since its
+  `base_table` has separate keys). The two nao targets carry it as prose. `dbt`
+  and `lightdash` emit dbt schema files, where the relation is dbt's own to
+  resolve, so they have nowhere to put it and warn instead.
 - **`nao-yaml`** is a flat, model-global document, so it has no table grouping.
 - **`nao-context-rules`** is prose, so it lists only elements that carry a
   description or synonyms.
@@ -189,6 +200,14 @@ drops it:
   the IR carries a label or synonyms and require Runtime 17.3+. On an older
   warehouse, a view containing them is rejected.
 - **`lightdash`** emits a dbt `schema.yml` with Lightdash `meta:` blocks (dimensions, metrics, joins). It emits single-column primary keys and reference-only ratios, degrading composite keys, filtered aggregates, and cross-table derived metrics to a leading `# semglot:` comment block. A `dbt-meta-key-path` profile option switches `meta:` (dbt 1.9 and earlier) to `config.meta:` (dbt 1.10 and later).
+- **`ossie`** is a source as well as a target (see [Semantic Layer
+  Dialects](#semantic-layer-dialects) above), reading and writing the Apache
+  Ossie core-spec. Every row above is structured except enums, which have no
+  native slot and fold into the field's `description`. See
+  [`dialect/README.md`](dialect/README.md#mapping) for the full field-level
+  mapping and format limits (no measure concept, no table grain/metric
+  label/enum slot). A dataset's `source` DOES survive parse — it is
+  `ir.Table.Source` — and is emitted by every target with a slot for it.
 
 ## License
 

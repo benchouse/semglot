@@ -151,15 +151,60 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 	global := map[string]simpleInfo{}
 	var degradeNotes []string
 
+	// A supersimple relation is written on the PARENT (Right) model, from
+	// inside the table loop below, so a relationship whose parent names no
+	// table in the model is iterated by nothing: no relation, and with it no
+	// relNameWarning and no relSynonymsWarning, since both are reported from
+	// that same loop. Reported here instead — the mirror image of the
+	// left-endpoint case dbt, lightdash and databricks-metric-view report,
+	// which supersimple does not have because it hangs the relation off the
+	// other end.
+	models := map[string]bool{}
+	for _, t := range m.Tables {
+		models[t.Name] = true
+	}
+	for _, r := range m.Relationships {
+		if !models[r.Right] {
+			degradeNotes = append(degradeNotes, relNotEmittedWarning("supersimple", r, relEndpointMissing(r.Right,
+				"a supersimple relation is written on the parent model the join points at")))
+		}
+	}
+
+	// A supersimple ratio resolves each operand through `global`, which only
+	// holds metrics it registered as simple aggregations, so an aggregate
+	// inlined in the arithmetic cannot be an operand. Naming those aggregates
+	// registers them like any other simple metric and the ratio path below runs
+	// unchanged. Its non-division restriction still applies and still degrades
+	// loudly: ssDegradeReason has no construct for a non-division Binary.
+	hoist := hoistInlineAggs(m)
+
 	// Phase 1: build each model (properties incl. synthesized compound property.sql,
 	// and relations) and register its simple metrics.
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
 		id := strings.ToUpper(t.Name)
+		// Prefer the source dialect's own declared physical address. `table:`
+		// holds ONE opaque string, unlike cortexBaseTable's separate
+		// Database/Schema/Table fields, so a genuine table reference is used
+		// verbatim regardless of its dot-part count (a two-part schema.table
+		// resolves fine against the connection's default database). Only a
+		// source that is a QUERY rather than a reference (which the OSI spec
+		// permits) can't go here as-is — that falls back to the profile
+		// reconstruction with a warning rather than pasting a query into
+		// `table:` as if it were an address.
+		table := schema + "." + id
+		if t.Source != "" {
+			if looksLikeQuery(t.Source) {
+				degradeNotes = append(degradeNotes, querySourceWarning("supersimple", t.Name, t.Source))
+			} else {
+				table = t.Source
+			}
+		}
 		model := ssModel{
 			Name:        prettify(t.Name),
-			Table:       schema + "." + id,
+			Table:       table,
 			PrimaryKey:  upperAll(t.PrimaryKey),
-			Description: t.Description,
+			Description: appendClause(t.Description, synonymClause(t.Synonyms)),
 			Properties:  map[string]ssProperty{},
 		}
 		addProp := func(f ir.Field, typ string) {
@@ -200,6 +245,17 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
 				key += "_" + slug(suffix)
 				label += " (" + prettify(suffix) + ")"
+			}
+			// A supersimple relation identifies itself by the CHILD model it
+			// pulls in: its key is a slug of that model's name and its Name is
+			// that model's display label, both of which a consumer resolves back
+			// to the model. The join's own declared name is a different thing
+			// and has no slot here, so it (and its synonyms) are reported rather
+			// than silently replaced by the child's name.
+			for _, w := range []string{relNameWarning("supersimple", r), relSynonymsWarning("supersimple", r.Name, r)} {
+				if w != "" {
+					degradeNotes = append(degradeNotes, w)
+				}
 			}
 			model.Relations[key] = ssRelation{
 				Name: label, Type: "hasMany", ModelID: strings.ToUpper(child),
@@ -246,6 +302,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 		return mt.Name
 	}
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // as in phase 1; t is the range's own copy
 		for _, mt := range t.Metrics {
 			_, registered := global[mt.Name]
 			switch {

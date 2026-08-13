@@ -11,7 +11,7 @@
 version: 2
 models:
   - name: fct_orders
-    description: Order-grain finance fact. One row per order.
+    description: 'Order-grain finance fact. One row per order. Synonyms: purchases, sales.'
     config:
       meta:
         primary_key: order_id
@@ -28,6 +28,7 @@ models:
         metrics:
           aov:
             type: number
+            description: Average order value (net revenue / orders).
             sql: ${net_revenue} / ${orders}
     columns:
       - name: order_id
@@ -75,12 +76,14 @@ models:
             metrics:
               gross_revenue:
                 type: sum
+                description: Gross order revenue.
       - name: order_net_booked
         config:
           meta:
             metrics:
               net_revenue:
                 type: sum
+                description: Net booked revenue.
   - name: fct_order_lines
     description: Order-line grain. One row per line item.
     config:
@@ -96,6 +99,7 @@ models:
         metrics:
           net_line_revenue:
             type: sum
+            description: Net revenue for the line.
             sql: ${TABLE}.net_line_revenue
     columns:
       - name: order_line_id
@@ -128,6 +132,7 @@ models:
             metrics:
               units_sold:
                 type: sum
+                description: Units sold.
   - name: dim_customer
     description: Customer dimension.
     config:
@@ -228,12 +233,14 @@ models:
             metrics:
               obt_units_sold:
                 type: sum
+                description: Units sold on the line.
       - name: net_revenue
         config:
           meta:
             metrics:
               obt_net_revenue_line:
                 type: sum
+                description: Net revenue for the line.
   - name: dim_channel
     description: Sales channel dimension.
     config:

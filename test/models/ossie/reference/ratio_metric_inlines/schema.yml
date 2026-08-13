@@ -1,0 +1,26 @@
+# dbt equivalent of Apache Ossie's
+# TestMetricConversion.test_ratio_metric_inlines_sub_expressions, whose MSI input
+# (converters/dbt/tests/test_msi_to_osi.py) is a single semantic model `orders`
+# with a SUM measure over `amount` and a COUNT measure over `order_id`, simple
+# metrics over both, and a ratio of the two. The `CASE WHEN order_id IS NOT NULL
+# THEN 1 ELSE 0 END` seen in vendor/reference/ratio_metric_inlines.yaml is that
+# converter's desugaring of the COUNT, not something the dbt input states.
+version: 2
+
+semantic_models:
+  - name: orders
+    model: ref('orders')
+    measures:
+      - {name: revenue, agg: sum, expr: amount}
+      - {name: order_count, agg: count, expr: order_id}
+
+metrics:
+  - name: revenue
+    type: simple
+    type_params: {measure: revenue}
+  - name: order_count
+    type: simple
+    type_params: {measure: order_count}
+  - name: arpu
+    type: ratio
+    type_params: {numerator: revenue, denominator: order_count}

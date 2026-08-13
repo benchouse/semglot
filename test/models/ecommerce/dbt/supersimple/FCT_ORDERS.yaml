@@ -5,7 +5,7 @@ models:
     table: MAIN.FCT_ORDERS
     primary_key:
       - ORDER_ID
-    description: Order-grain finance fact. One row per order.
+    description: 'Order-grain finance fact. One row per order. Synonyms: purchases, sales.'
     properties:
       AOV:
         name: AOV

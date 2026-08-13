@@ -97,9 +97,30 @@ type ldDimension struct {
 	Label string `yaml:"label,omitempty"`
 }
 
+// ldMetric is a Lightdash metric definition. Description is the metric's
+// `description:` key, which Lightdash shows beside the metric in the explore.
+// It carries the SOURCE's own description for every metric and measure that
+// becomes one, plus (via ldMetricText) the synonyms Lightdash has no slot for;
+// and, for a metric semglot MINTED (agg_names.go's hoist), the synthesizedNote
+// instead — such a metric appears in the layer under a name nobody authored, so
+// without it a reader has no way to tell it from a hand-written one.
 type ldMetric struct {
-	Type string `yaml:"type"`
-	SQL  string `yaml:"sql,omitempty"`
+	Type        string `yaml:"type"`
+	Description string `yaml:"description,omitempty"`
+	SQL         string `yaml:"sql,omitempty"`
+}
+
+// ldMetricText renders what a Lightdash metric's `description:` carries: the
+// source's own description, with the metric's synonyms folded in behind it.
+//
+// Lightdash has a description key on a metric but no synonym key, so the
+// synonyms fold into prose exactly as a dimension's do (see ldColumnSet.
+// dimension) and as the nao dialects, supersimple and databricks fold what
+// their format cannot hold structurally. Folding rather than warning keeps the
+// phrasings an agent matches a question against in front of that agent, which
+// is the only reason they exist.
+func ldMetricText(description string, synonyms []string) string {
+	return appendClause(description, synonymClause(synonyms))
 }
 
 // ldColumnSet builds the ordered columns[] list, keyed by physical column name,
@@ -271,7 +292,7 @@ func simpleColumnMetric(mt ir.Metric) (string, ldMetric, bool) {
 	if !ok {
 		return "", ldMetric{}, false
 	}
-	return col.Name, ldMetric{Type: typ}, true
+	return col.Name, ldMetric{Type: typ, Description: ldMetricText(mt.Description, mt.Synonyms)}, true
 }
 
 // ldAggType maps an IR aggregation function to a Lightdash column-metric type.
@@ -370,7 +391,7 @@ func derivedModelMetric(mt ir.Metric, simple map[string]bool) (ldMetric, bool) {
 			return ldMetric{}, false
 		}
 	}
-	return ldMetric{Type: "number", SQL: sql}, true
+	return ldMetric{Type: "number", SQL: sql, Description: ldMetricText(mt.Description, mt.Synonyms)}, true
 }
 
 // derivedRepresentable reports whether mt would emit as a model-level derived
@@ -489,13 +510,70 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 	var notes []string
 	notes = append(notes, m.Notes...)
 
+	// A Lightdash join is `join: <model>` plus a sql_on: it identifies itself by
+	// the model it joins, and ldJoin has no key for the join's own declared name
+	// or its synonyms. Both are reported rather than dropped in silence. (These
+	// go into notes, which lightdash both returns and writes into the emitted
+	// schema.yml, so a reader of the artifact sees them too.)
+	//
+	// Reported only for the relationships this file actually CONTAINS: meta.joins
+	// is written from inside the table loop below, gated on r.Left == t.Name, so
+	// a relationship leaving a table the model does not declare produces no join
+	// — and saying "its name has no slot on a join" would describe a join that
+	// was never written. That one is reported as the whole loss it is.
+	models := map[string]bool{}
+	for _, t := range m.Tables {
+		models[t.Name] = true
+	}
+	for _, r := range m.Relationships {
+		if !models[r.Left] {
+			notes = append(notes, relNotEmittedWarning("lightdash", r, relEndpointMissing(r.Left,
+				"a Lightdash join is meta.joins on the model the join leaves")))
+			continue
+		}
+		for _, w := range []string{relNameWarning("lightdash", r), relSynonymsWarning("lightdash", r.Name, r)} {
+			if w != "" {
+				notes = append(notes, w)
+			}
+		}
+	}
+
 	// Default to config.meta: it has been dbt's preferred form since 1.10
 	// (2025-06-16) and top-level meta is deprecated there. Only an explicit
 	// "meta" opts back into the legacy form, for a project pinned to dbt 1.9
 	// or earlier.
 	configMeta := l.DbtMetaKeyPath != "meta"
+	// A Lightdash type: number metric may reference only other metrics, so an
+	// aggregate inlined in the arithmetic makes the whole metric
+	// non-representable. Naming those aggregates lets derivedModelMetric run on
+	// the result unchanged. Its same-model restriction still applies and still
+	// degrades loudly: a component homed on another table is a Lightdash limit,
+	// not something this rewrite may paper over.
+	hoist := hoistInlineAggs(m)
+	// A minted component exists only so the metric it was hoisted out of can
+	// be expressed. When that metric degrades anyway (classically Lightdash's
+	// same-model restriction on ${metric} references), the component is still
+	// a valid aggregate and is still emitted — dropping it would lose an
+	// aggregate the source really declared, and on a dimension-only table it
+	// is the difference between one real metric and none. But it is then an
+	// orphan: a metric under a name nobody authored that nothing references.
+	// Emitted WITH its synthesizedNote description and reported below, so the
+	// artifact explains itself either way. Recorded in declaration order, not
+	// in a map, so the note order is deterministic.
+	type mintedComponent struct{ name, table string }
+	var mintedEmitted []mintedComponent
+	referenced := map[string]bool{} // minted names an EMITTED metric refers to
 	f := ldFile{Version: 2}
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
+		// ir.Table.Source — the physical address an ossie dataset declares —
+		// has no Lightdash home. The artifact is a dbt schema.yml, and
+		// Lightdash takes each model's relation from dbt's compiled manifest;
+		// its model meta has no address key (see dbtSchemaSourceWarning).
+		// Reported rather than dropped in silence.
+		if t.Source != "" {
+			notes = append(notes, dbtSchemaSourceWarning("lightdash", t.Name, t.Source))
+		}
 		cols := newColumnSet()
 		for _, d := range t.Dimensions {
 			cols.dimension(d, ldDimensionType(d, false))
@@ -556,12 +634,25 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 				continue
 			}
 			if isSimple {
+				// met.Description is already the metric's own (a minted
+				// component's IS its synthesizedNote — see simpleColumnMetric);
+				// this only records the component so an unreferenced one can be
+				// reported below.
+				if hoist.synthesisedName(mt.Name) {
+					mintedEmitted = append(mintedEmitted, mintedComponent{mt.Name, t.Name})
+				}
 				cols.metric(col, mt.Name, met)
 				continue
 			}
 			if met, ok := derivedModelMetric(mt, simple); ok {
 				if mm.Metrics == nil {
 					mm.Metrics = map[string]ldMetric{}
+				}
+				// Every ref this metric resolves through is now carried by an
+				// emitted metric, so a minted component among them is not an
+				// orphan.
+				for _, r := range metricRefs(mt.Def) {
+					referenced[r] = true
 				}
 				mm.Metrics[mt.Name] = met
 				continue
@@ -620,7 +711,8 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 				notes = append(notes, keyCollisionNote(ms.Name, t.Name))
 				continue
 			}
-			cols.metric(col, ms.Name, ldMetric{Type: typ})
+			cols.metric(col, ms.Name, ldMetric{
+				Type: typ, Description: ldMetricText(ms.Description, ms.Synonyms)})
 			emitted[ms.Name] = true
 			usedExprs[key] = true
 		}
@@ -653,7 +745,11 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 		// remaining collision is over a droppable (non-key) column.
 		notes = append(notes, cols.resolveNameCollisions(mm, t.Name)...)
 
-		model := ldModel{Name: t.Name, Description: t.Description, Columns: cols.list()}
+		model := ldModel{
+			Name:        t.Name,
+			Description: appendClause(t.Description, synonymClause(t.Synonyms)),
+			Columns:     cols.list(),
+		}
 		if !mm.empty() {
 			model.Meta = mm
 		}
@@ -670,6 +766,16 @@ func (l lightdash) Emit(m *ir.Model, dir string) ([]string, error) {
 			}
 		}
 		f.Models = append(f.Models, model)
+	}
+
+	// Minted components left without a referencing metric (see mintedEmitted).
+	for _, mc := range mintedEmitted {
+		if referenced[mc.name] {
+			continue
+		}
+		notes = append(notes, "metric "+mc.name+" on "+mc.table+
+			" is a component semglot minted for a derived metric Lightdash could not emit; "+
+			"it is emitted on its own so the aggregate is not lost, but no metric references it")
 	}
 
 	var buf bytes.Buffer

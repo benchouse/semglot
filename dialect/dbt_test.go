@@ -1,12 +1,75 @@
 package dialect
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/benchouse/semglot/ir"
 )
+
+// writeFile writes content to name inside dir, creating any needed parent
+// directories, for tests that build a fixture on the fly rather than reading
+// one from testdata.
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestParseModelSynonyms reads model-level meta.synonyms into ir.Table.Synonyms,
+// mirroring the column-level meta.synonyms convention.
+func TestParseModelSynonyms(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "schema.yml", `
+models:
+  - name: fct_orders
+    description: Orders.
+    meta:
+      synonyms: [purchases, sales]
+    columns:
+      - name: order_id
+        data_type: number
+`)
+	m, err := dbt{}.Parse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 1 {
+		t.Fatalf("want 1 table, got %d", len(m.Tables))
+	}
+	got := m.Tables[0].Synonyms
+	want := []string{"purchases", "sales"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Synonyms = %v, want %v", got, want)
+	}
+}
+
+// TestEmitModelSynonyms round-trips table synonyms back out through dbt.
+func TestEmitModelSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_orders",
+		Synonyms:   []string{"purchases", "sales"},
+		Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id"}},
+	}}}
+	out := t.TempDir()
+	if _, err := (dbt{}).Emit(m, out); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, filepath.Join(out, "ecommerce.yml"))
+	for _, want := range []string{"synonyms:", "purchases", "sales"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("emitted dbt missing %q in:\n%s", want, got)
+		}
+	}
+}
 
 func TestDBTParseRelationshipArguments(t *testing.T) {
 	got, err := dbt{}.Parse("testdata/dbt_relargs")

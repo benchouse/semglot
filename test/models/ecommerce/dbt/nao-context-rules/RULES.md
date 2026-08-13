@@ -53,7 +53,7 @@
 
 ## Table reference
 
-- **fct_orders**: Order-grain finance fact. One row per order.
+- **fct_orders**: Order-grain finance fact. One row per order. Synonyms: purchases, sales.
 - **fct_order_lines**: Order-line grain. One row per line item.
 - **dim_customer**: Customer dimension.
 - **dim_product**: Product dimension.

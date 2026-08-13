@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/benchouse/semglot/ir"
+	"gopkg.in/yaml.v3"
 )
 
 // sampleIR mirrors the dbt fixture's expected IR so emit is tested in isolation.
@@ -75,6 +76,100 @@ func TestCortexEmitPrefersRealDataType(t *testing.T) {
 	}
 	if !strings.Contains(out, "description: Opted in.") {
 		t.Fatalf("expected column description to pass through, got:\n%s", out)
+	}
+}
+
+// TestCortexEmitPrefersDeclaredSource covers the defect task 16 fixes: an ossie
+// dataset's declared `source` is a fully-qualified physical address (e.g.
+// "PROD.SALES.orders_v1") that nothing downstream can recover if it is
+// discarded. Cortex must use it verbatim — split into its BaseTable's
+// Database/Schema/Table fields — rather than silently relocating the table to
+// the profile's database/schema under the IR's logical name.
+func TestCortexEmitPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: "PROD.SALES.orders_v1"}}}
+	dir := t.TempDir()
+	warnings, err := (cortex{Database: "WAREHOUSE", Schema: "PUBLIC", ModelName: "m"}).Emit(m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "orders") {
+			t.Errorf("unexpected warning for a cleanly-splittable source: %q", w)
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm cortexModel
+	if err := yaml.Unmarshal(b, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if len(cm.Tables) != 1 {
+		t.Fatalf("want 1 table, got %d", len(cm.Tables))
+	}
+	bt := cm.Tables[0].BaseTable
+	if bt.Database != "PROD" || bt.Schema != "SALES" || bt.Table != "orders_v1" {
+		t.Errorf("base_table = %+v, want {PROD SALES orders_v1} (the declared source, not WAREHOUSE.PUBLIC.ORDERS)", bt)
+	}
+}
+
+// TestCortexEmitUnsplittableSourceFallsBackAndWarns covers the wrinkle: Cortex's
+// BaseTable needs Database/Schema/Table as three separate fields, but
+// Table.Source is one string. When it does not split into exactly three
+// non-empty parts — a two-part name, or a source that is a query rather than a
+// table reference (which the OSI spec explicitly permits) — semglot must not
+// half-apply it (e.g. using the last segment as Table and the profile for the
+// rest, producing a plausible but wrong, unwarned address). It must fall back
+// to the profile reconstruction AND warn.
+func TestCortexEmitUnsplittableSourceFallsBackAndWarns(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{"two-part name", "public.orders"},
+		// A query carrying a FULLY-QUALIFIED table reference — the canonical
+		// OSI query form, and the shape that actually reaches this path. It
+		// has exactly the two dots a three-part address has, so splitting on
+		// dots alone "succeeds" and yields database "SELECT * FROM prod",
+		// schema "raw", table "orders WHERE deleted = false": a plausible,
+		// wrong, unwarned address emitted at exit 0. The previous probe had a
+		// single dot and so was rejected by the part count before the query
+		// shape was ever considered, which is why it passed against an
+		// emitter that never checked for a query at all.
+		{"query with a fully-qualified reference", "SELECT * FROM prod.raw.orders WHERE deleted = false"},
+		{"query with a single dot", "SELECT * FROM raw.orders WHERE deleted_at IS NULL"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: c.source}}}
+			dir := t.TempDir()
+			warnings, err := (cortex{Database: "WAREHOUSE", Schema: "PUBLIC", ModelName: "m"}).Emit(m, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found bool
+			for _, w := range warnings {
+				if strings.Contains(w, `table "orders"`) && strings.Contains(w, c.source) && strings.Contains(w, "cortex") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("want a warning naming table %q, source %q, and cortex; got %v", "orders", c.source, warnings)
+			}
+			b, err := os.ReadFile(filepath.Join(dir, "semantic_model.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cm cortexModel
+			if err := yaml.Unmarshal(b, &cm); err != nil {
+				t.Fatal(err)
+			}
+			bt := cm.Tables[0].BaseTable
+			if bt.Database != "WAREHOUSE" || bt.Schema != "PUBLIC" || bt.Table != "ORDERS" {
+				t.Errorf("base_table = %+v, want the profile-reconstructed {WAREHOUSE PUBLIC ORDERS}, not a half-applied source", bt)
+			}
+		})
 	}
 }
 
@@ -179,6 +274,30 @@ func TestCortexEmitNotesAsCustomInstructions(t *testing.T) {
 	}
 	if !strings.Contains(out, `unsupported metric type`) {
 		t.Fatalf("expected the note text to pass through:\n%s", out)
+	}
+}
+
+// TestCortexTableSynonyms emits table-level synonyms structurally.
+func TestCortexTableSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "fct_orders",
+		Synonyms:   []string{"purchases", "sales"},
+		Dimensions: []ir.Field{{Name: "order_id", Expr: "order_id"}},
+	}}}
+	out := t.TempDir()
+	e := cortex{}.WithOptions(Options{Database: "A", Schema: "M", Name: "ecommerce"})
+	if _, err := e.Emit(m, out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "semantic_model.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{"synonyms:", "purchases", "sales"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("semantic_model.yaml missing %q in:\n%s", want, got)
+		}
 	}
 }
 

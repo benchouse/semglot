@@ -99,6 +99,26 @@ func (n naoYaml) Emit(m *ir.Model, dir string) ([]string, error) {
 	notes := slices.Clone(m.Notes)
 	var own []string
 	for _, t := range m.Tables {
+		if c := synonymClause(t.Synonyms); c != "" {
+			notes = append(notes, t.Name+": "+c)
+		}
+		// ir.Table.Source — the physical address an ossie dataset declares —
+		// folds into notes: as prose, exactly as table synonyms do above, and
+		// deliberately NOT into a metric's source.table below. That key is
+		// not an address slot: nao pins the database and schema in its own
+		// directory scaffolding
+		// (databases/type=…/database=…/schema=…/table=…/, see
+		// docs/design-context-layer-emitters.md) and source.table selects a
+		// table WITHIN that pinned pair, so a fully-qualified
+		// db.schema.table there would either restate or contradict the
+		// scaffolding — a plausible, wrong address of exactly the kind the
+		// cortex base_table split is guarded against. A source that is a
+		// query (which the OSI spec permits) has no reference form at all.
+		// Prose carries either shape whole, so nothing is lost and nothing is
+		// asserted that nao would resolve differently.
+		if c := sourceClause(t.Source); c != "" {
+			notes = append(notes, t.Name+": "+c)
+		}
 		for _, d := range t.Dimensions {
 			addDim(d, "categorical")
 		}
@@ -125,6 +145,15 @@ func (n naoYaml) Emit(m *ir.Model, dir string) ([]string, error) {
 			nm.Source = &naoSource{Table: t.Name}
 			nm.Formula = renderSQL(mt.Def, resolve)
 			doc.Metrics = append(doc.Metrics, nm)
+		}
+	}
+	// nao-yaml has no joins: section, so a relationship's own declared name and
+	// its join synonyms have no structural home — but notes: is prose and
+	// carries either whole, exactly as a table's synonyms and its physical
+	// source do above. Folded rather than warned about: nothing is lost.
+	for _, r := range m.Relationships {
+		if c := relIdentityClause(r); c != "" {
+			notes = append(notes, r.Left+" -> "+r.Right+": "+c)
 		}
 	}
 	if len(notes) > 0 {

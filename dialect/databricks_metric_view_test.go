@@ -192,6 +192,135 @@ func TestDatabricksMetricViewOrders(t *testing.T) {
 	}
 }
 
+// TestDatabricksMetricViewPrefersDeclaredSource covers task 16's defect: a
+// declared ossie `source` is a fully-qualified physical address that nothing
+// downstream can recover if it is discarded. `source:` must use it verbatim
+// rather than relocating the table to the profile's catalog/schema under the
+// IR's logical name.
+func TestDatabricksMetricViewPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Source:     "PROD.SALES.orders_v1",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	for _, w := range warnings {
+		if strings.Contains(w, "orders") {
+			t.Errorf("unexpected warning for a cleanly-splittable source: %q", w)
+		}
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: PROD.SALES.orders_v1") {
+		t.Errorf("source must be the declared PROD.SALES.orders_v1, not analytics.main.orders:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewAcceptsTwoPartSourceVerbatim covers fix round 1's
+// correction: `source:` holds its reference as ONE string (unlike
+// cortexBaseTable's separate Database/Schema/Table fields), so a two-part
+// schema.table source — which resolves fine against the current catalog —
+// must be used verbatim, with no warning, rather than rejected in favour of a
+// same-shaped fabricated two-part address from the profile.
+func TestDatabricksMetricViewAcceptsTwoPartSourceVerbatim(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Source:     "crm.orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings for a usable two-part source: %v", warnings)
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: crm.orders") {
+		t.Errorf("source must use the declared two-part crm.orders verbatim:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewQuerySourceFallsBackAndWarns covers the case that
+// genuinely can't go in `source:`: the OSI spec permits `source` to be a
+// query rather than a table reference, but a metric view's `source:` needs
+// an address, not a subquery embedded as if it were one. That must fall back
+// to the profile reconstruction AND warn.
+func TestDatabricksMetricViewQuerySourceFallsBackAndWarns(t *testing.T) {
+	source := "SELECT * FROM raw.orders WHERE deleted_at IS NULL"
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Source:     source,
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, `table "orders"`) && strings.Contains(w, source) && strings.Contains(w, "databricks-metric-view") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the table, the query source, and databricks-metric-view; got %v", warnings)
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: analytics.main.orders") {
+		t.Errorf("must fall back to the profile-reconstructed reference, not paste the query into source:\n%s", got)
+	}
+}
+
+// TestDatabricksMetricViewJoinPrefersDeclaredSource covers fix round 1's
+// critical finding: a join's source was still built from the joining view's
+// own catalog/schema, ignoring the JOINED table's own declared Source —
+// producing a view whose own `source:` correctly pointed at its declared
+// address while `joins[].source:` pointed at a fabricated, unrelated location
+// for the very same entity (and orphaned any real declared source for it
+// entirely). The joined table's Source must resolve the same way the view's
+// own source does.
+func TestDatabricksMetricViewJoinPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "orders",
+				Source:     "PROD.SALES.orders_v1",
+				Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+			},
+			{
+				Name:       "customer",
+				Source:     "OTHERDB.CRM.customer_master",
+				Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
+			},
+		},
+		Relationships: []ir.Relationship{
+			{Left: "orders", Right: "customer", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
+		},
+	}
+	files, warnings := emitDbxW(t, m)
+	for _, w := range warnings {
+		if strings.Contains(w, "orders") || strings.Contains(w, "customer") {
+			t.Errorf("unexpected warning for two cleanly-declared sources: %q", w)
+		}
+	}
+	got, ok := files["orders.yaml"]
+	if !ok {
+		t.Fatalf("expected orders.yaml, got files: %v", files)
+	}
+	if !strings.Contains(got, "source: PROD.SALES.orders_v1") {
+		t.Errorf("view's own source must be the declared PROD.SALES.orders_v1:\n%s", got)
+	}
+	if !strings.Contains(got, "source: OTHERDB.CRM.customer_master") {
+		t.Errorf("join's source must be the JOINED table's declared OTHERDB.CRM.customer_master, not the view's own catalog/schema:\n%s", got)
+	}
+	if strings.Contains(got, "source: analytics.main.customer") {
+		t.Errorf("join must not fall back to a fabricated analytics.main.customer when customer declares its own source:\n%s", got)
+	}
+}
+
 // TestDatabricksMetricViewNoDimensionFile: a pure dimension table (no metrics,
 // no measures) still gets its own metric view — a Databricks metric view
 // requires >=1 measure, so one is synthesised as a row count. This mirrors the
@@ -645,5 +774,406 @@ func TestDatabricksMetricViewFieldSurvivesWhenNamesDiffer(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("pings.yaml missing %q\n--- got ---\n%s", want, got)
 		}
+	}
+}
+
+// TestDatabricksMetricViewQuerySourceWarnedOnce pins the dedup. Every view
+// resolves the physical source of every table it joins as well as its own, so
+// one unusable source is reached once per referencing view (and twice more for
+// a role-playing dimension, which joins the same table twice). The warning
+// names the table and the source, so repeats carry nothing new — the CLI must
+// print it once.
+func TestDatabricksMetricViewQuerySourceWarnedOnce(t *testing.T) {
+	source := "SELECT * FROM prod.raw.customer WHERE deleted = false"
+	m := &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "orders",
+				Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+			},
+			{
+				Name:       "customer",
+				Source:     source,
+				Dimensions: []ir.Field{{Name: "region", Expr: "region"}},
+			},
+		},
+		Relationships: []ir.Relationship{
+			// A role-playing dimension: orders references customer twice, so
+			// buildView(orders) resolves customer's source twice on its own,
+			// and buildView(customer) resolves it a third time.
+			{Left: "orders", Right: "customer", Columns: []ir.ColumnPair{{Left: "customer_id", Right: "customer_id"}}},
+			{Left: "orders", Right: "customer", Columns: []ir.ColumnPair{{Left: "billing_customer_id", Right: "customer_id"}}},
+		},
+	}
+	files, warnings := emitDbxW(t, m)
+	n := 0
+	for _, w := range warnings {
+		if strings.Contains(w, source) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("query-source warning emitted %d times, want exactly 1: %v", n, warnings)
+	}
+	// Each artifact still carries it, since a reader of one file must see why
+	// that file's source was reconstructed — and once per file, not twice.
+	for _, name := range []string{"orders.yaml", "customer.yaml"} {
+		got, ok := files[name]
+		if !ok {
+			t.Fatalf("expected %s, got %v", name, keysOfDbx(files))
+		}
+		if c := strings.Count(got, source); c != 1 {
+			t.Errorf("%s carries the query-source note %d times, want 1:\n%s", name, c, got)
+		}
+	}
+}
+
+// A metric view's `joins:` and its `measures:` must agree about what each
+// joined relation is CALLED. renderSQL qualifies a cross-table column with the
+// IR TABLE name ("count(distinct customer.c_customer_sk)"); the view's only
+// relations are `source` and the join aliases. That reconciliation used to be
+// an accident — the alias was strings.ToLower(r.Right), byte-identical to the
+// qualifier — and preferring a DECLARED relationship name broke it silently:
+// the join became `store_sales_to_customer` while the measure still said
+// `customer.…`, and Databricks rejects the ENTIRE view for the dangling
+// relation. The tests below pin the coupling from both ends.
+
+// dbxMeasureQualifiers returns every `<relation>.` qualifier appearing in a
+// view's measure expressions, and the view's join names, so a test can assert
+// the first is a subset of the second.
+func dbxMeasureQualifiers(t *testing.T, file string) (quals, joins []string) {
+	t.Helper()
+	var v struct {
+		Joins []struct {
+			Name string `yaml:"name"`
+		} `yaml:"joins"`
+		Measures []struct {
+			Expr string `yaml:"expr"`
+		} `yaml:"measures"`
+	}
+	if err := yaml.Unmarshal([]byte(file), &v); err != nil {
+		t.Fatalf("parse emitted view: %v\n%s", err, file)
+	}
+	for _, j := range v.Joins {
+		joins = append(joins, j.Name)
+	}
+	re := regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]`)
+	for _, ms := range v.Measures {
+		for _, m := range re.FindAllStringSubmatch(ms.Expr, -1) {
+			quals = append(quals, m[1])
+		}
+	}
+	return quals, joins
+}
+
+// assertMeasureQualifiersResolve is the invariant itself: every relation a
+// measure expression names must be one this view actually declares. `source`
+// is the base relation's own alias and is always valid.
+func assertMeasureQualifiersResolve(t *testing.T, name, file string) {
+	t.Helper()
+	quals, joins := dbxMeasureQualifiers(t, file)
+	known := map[string]bool{"source": true}
+	for _, j := range joins {
+		known[j] = true
+	}
+	for _, q := range quals {
+		if !known[q] {
+			t.Errorf("%s: measure expression references relation %q, but the view declares only %v; Databricks rejects the whole view for this:\n%s",
+				name, q, append([]string{"source"}, joins...), file)
+		}
+	}
+}
+
+// dbxCrossTableModel is a fact with a metric whose denominator counts a column
+// on the JOINED table — the shape of TPC-DS's customer_lifetime_value, which is
+// where this regression surfaced.
+func dbxCrossTableModel(relName string) *ir.Model {
+	return &ir.Model{
+		Tables: []ir.Table{
+			{
+				Name:       "store_sales",
+				Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+				Metrics: []ir.Metric{{
+					Name: "clv",
+					Def: ir.Binary{
+						Op:   "/",
+						Left: ir.Agg{Func: "sum", Table: "store_sales", Arg: ir.Col{Table: "store_sales", Name: "ss_ext_sales_price"}},
+						Right: ir.Agg{Func: "count_distinct", Table: "customer",
+							Arg: ir.Col{Table: "customer", Name: "c_customer_sk"}},
+					},
+				}},
+			},
+			{
+				Name:       "customer",
+				Dimensions: []ir.Field{{Name: "c_customer_sk", Expr: "c_customer_sk"}},
+			},
+		},
+		Relationships: []ir.Relationship{{
+			Name: relName, Left: "store_sales", Right: "customer",
+			Columns: []ir.ColumnPair{{Left: "ss_customer_sk", Right: "c_customer_sk"}},
+		}},
+	}
+}
+
+// TestDatabricksCrossTableQualifierFollowsJoinAlias: whatever the join ends up
+// called, the measure expression must name that same alias. Run with a
+// declared name (the case that broke) and without one (the case that used to
+// work by accident), so the test fails if the two ever diverge again.
+func TestDatabricksCrossTableQualifierFollowsJoinAlias(t *testing.T) {
+	for _, tc := range []struct {
+		declared  string
+		wantAlias string
+	}{
+		{"store_sales_to_customer", "store_sales_to_customer"},
+		{"", "customer"},
+	} {
+		name := tc.declared
+		if name == "" {
+			name = "(anonymous)"
+		}
+		t.Run(name, func(t *testing.T) {
+			files := emitDbx(t, dbxCrossTableModel(tc.declared))
+			got, ok := files["store_sales.yaml"]
+			if !ok {
+				t.Fatalf("expected store_sales.yaml, got %v", keysOfDbx(files))
+			}
+			assertMeasureQualifiersResolve(t, "store_sales.yaml", got)
+			if !strings.Contains(got, "name: "+tc.wantAlias+"\n") {
+				t.Errorf("want join named %q:\n%s", tc.wantAlias, got)
+			}
+			if !strings.Contains(got, "count(distinct "+tc.wantAlias+".c_customer_sk)") {
+				t.Errorf("measure must qualify the joined column with the join alias %q:\n%s", tc.wantAlias, got)
+			}
+			// The IR table name must not survive as a qualifier once it differs
+			// from the alias — that is exactly the dangling relation.
+			if tc.wantAlias != "customer" && strings.Contains(got, "customer.c_customer_sk)") &&
+				!strings.Contains(got, tc.wantAlias+".c_customer_sk)") {
+				t.Errorf("measure still qualifies with the IR table name:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestDatabricksUnjoinableQualifierDegrades: a metric qualifying a table this
+// view does not join has no valid rendering at all. It must be dropped and
+// noted, never emitted with a relation the view does not declare — one bad
+// measure takes every other measure, dimension and join of the file with it.
+func TestDatabricksUnjoinableQualifierDegrades(t *testing.T) {
+	m := dbxCrossTableModel("store_sales_to_customer")
+	m.Relationships = nil // the metric still references customer; nothing joins it now
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	// assertMeasureQualifiersResolve is the check that matters here: it looks
+	// at the measure EXPRESSIONS only. The note itself legitimately quotes the
+	// rejected expression (that is how a reader knows what was dropped), so a
+	// whole-file substring check would match its own explanation.
+	assertMeasureQualifiersResolve(t, "store_sales.yaml", got)
+	if strings.Contains(got, "expr: sum(store_sales.ss_ext_sales_price)") {
+		t.Errorf("the degraded metric must not be emitted as a measure at all:\n%s", got)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "clv") && strings.Contains(w, "customer") && strings.Contains(w, "does not join") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note naming the metric and the unjoinable relation; got %v", warnings)
+	}
+	// The view still stands: the degraded metric leaves it measure-less, so the
+	// synthesised row count keeps it valid rather than dropping the table.
+	if !strings.Contains(got, "name: row_count") {
+		t.Errorf("want the synthesised row-count measure:\n%s", got)
+	}
+}
+
+// TestDatabricksRolePlayingQualifierIsAmbiguous: two joins to the same table
+// (ship-to vs bill-to) mean a bare `customer.x` qualifier names neither. The
+// old alias-equals-table-name accident did not hold here either — both joins
+// are suffixed — so this closes a case that was already broken, silently.
+func TestDatabricksRolePlayingQualifierIsAmbiguous(t *testing.T) {
+	m := dbxCrossTableModel("")
+	m.Relationships = append(m.Relationships, ir.Relationship{
+		Left: "store_sales", Right: "customer",
+		Columns: []ir.ColumnPair{{Left: "ss_bill_customer_sk", Right: "c_customer_sk"}},
+	})
+	files, warnings := emitDbxW(t, m)
+	assertMeasureQualifiersResolve(t, "store_sales.yaml", files["store_sales.yaml"])
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "clv") && strings.Contains(w, "exactly once") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note that the qualifier cannot be resolved to one join; got %v", warnings)
+	}
+}
+
+// TestDatabricksEveryEmittedViewResolvesItsQualifiers sweeps the shared test
+// model, so any future change that reintroduces a dangling qualifier anywhere
+// in the fixture fails here rather than in a Databricks deploy log.
+func TestDatabricksEveryEmittedViewResolvesItsQualifiers(t *testing.T) {
+	for name, file := range emitDbx(t, dbxTestModel()) {
+		assertMeasureQualifiersResolve(t, name, file)
+	}
+}
+
+// TestDatabricksNestedColumnAccessSurvives: `payload.amount` inside a measure is
+// EITHER a struct/map field access OR a qualifier naming a table the model
+// never declared — dbxRewriteQualifiers cannot tell the two apart from the text
+// alone (ir.Col.Table is assigned purely syntactically wherever a metric
+// expression is parsed), so it keeps the only reading that also works for the
+// struct case: pass it through unresolved, exactly as the SAME view's `fields:`
+// already emit `expr: payload.amount` verbatim. Treating every `a.b` as a
+// table qualifier used to drop the whole measure with a note; passing every
+// unresolved `a.b` through with no report at all would silently mis-resolve a
+// genuine phantom table qualifier the other way (see
+// TestDatabricksPhantomTableQualifierIsWarned) — so this still emits, but now
+// also reports the ambiguity rather than staying quiet about it.
+//
+// dbxMeasureQualifiers/assertMeasureQualifiersResolve deliberately do not run
+// here: their regex reads any `ident.` as a relation, which a nested column is
+// not. TestDatabricksUnjoinableQualifierDegrades is the counterpart that keeps
+// this from becoming a licence to emit dangling RELATIONS.
+func TestDatabricksNestedColumnAccessSurvives(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "store_sales",
+		Dimensions: []ir.Field{{Name: "nested_amount", Expr: "payload.amount"}},
+		Measures: []ir.Measure{
+			{Field: ir.Field{Name: "struct_sum", Expr: "payload.amount"}, Agg: "sum"},
+		},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	if !strings.Contains(got, "expr: sum(payload.amount)") {
+		t.Errorf("want the nested-column measure emitted verbatim:\n%s", got)
+	}
+	if !strings.Contains(got, "expr: payload.amount") {
+		t.Errorf("the same nested column must still emit as a field:\n%s", got)
+	}
+	// A bare, unqualified-by-self `payload.amount` is exactly as ambiguous as a
+	// phantom table qualifier (neither carries any signal telling this apart
+	// from a table reference the model never declared), so it must be reported
+	// — naming the measure and the qualifier — rather than resolved silently
+	// either way.
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "struct_sum") {
+			found = true
+			if !strings.Contains(w, `"payload"`) {
+				t.Errorf("want the warning to name the ambiguous qualifier %q; got %q", "payload", w)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming struct_sum's ambiguous qualifier; got %v", warnings)
+	}
+	if strings.Contains(got, "row_count") {
+		t.Errorf("the measure survived, so nothing should have been synthesised:\n%s", got)
+	}
+}
+
+// TestDatabricksSelfQualifiedNestedColumnSurvivesQuietly: once a dotted run's
+// leading segment is explicitly self (stripped, exactly as any other
+// self-qualified column is), every further segment in that SAME run is
+// unambiguously a nested column on self's own row — there is no table
+// reading left to guess wrong, so — unlike the bare `payload.amount` case in
+// TestDatabricksNestedColumnAccessSurvives — this must emit with NO warning.
+// A warning on every legitimate struct access would be noise that trains
+// users to ignore warnings, which would be its own failure.
+func TestDatabricksSelfQualifiedNestedColumnSurvivesQuietly(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "store_sales",
+		Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+		Metrics: []ir.Metric{{
+			Name: "struct_sum",
+			Def: ir.Agg{Func: "sum", Table: "store_sales",
+				Arg: ir.Raw{SQL: "store_sales.payload.amount"}},
+		}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	if !strings.Contains(got, "expr: sum(payload.amount)") {
+		t.Errorf("want the self-qualified nested column stripped of its self prefix and emitted verbatim:\n%s", got)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "struct_sum") {
+			t.Errorf("a nested column following an explicit self qualifier is not ambiguous; got %q", w)
+		}
+	}
+}
+
+// TestDatabricksPhantomTableQualifierIsWarned reproduces the regression this
+// task closes: a measure expression qualifying a table the model does not
+// declare at all (not self, not a table of the model under any name) used to
+// be silently rewritten as if it were a nested column access, with zero
+// warnings — trading a noted single-measure drop for an unwarned qualifier
+// that Databricks cannot resolve, which rejects the ENTIRE view (every other
+// measure, dimension and join in the file goes with it). The expression must
+// still emit exactly as before (see dbxRewriteQualifiers' doc comment for why
+// dropping it is not an option — that would also refuse a legitimate struct
+// access), but the ambiguity must now be reported.
+func TestDatabricksPhantomTableQualifierIsWarned(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "store_sales",
+		Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+		Metrics: []ir.Metric{{
+			Name: "mixed_phantom",
+			Def: ir.Binary{
+				Op:   "/",
+				Left: ir.Agg{Func: "sum", Table: "store_sales", Arg: ir.Col{Table: "store_sales", Name: "amount"}},
+				Right: ir.Agg{Func: "count_distinct", Table: "nonexistent_table",
+					Arg: ir.Col{Table: "nonexistent_table", Name: "col"}},
+			},
+		}},
+	}}}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	if !strings.Contains(got, "expr: sum(amount) / count(distinct nonexistent_table.col)") {
+		t.Errorf("want the metric emitted with its self qualifier stripped and the phantom qualifier kept verbatim:\n%s", got)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "mixed_phantom") && strings.Contains(w, `"nonexistent_table"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming mixed_phantom and its unresolved qualifier nonexistent_table; got %v", warnings)
+	}
+}
+
+// TestDatabricksJoinToAbsentTableIsWarned: when the joined table is not in the
+// model there is no declared source to resolve, so the profile reconstruction
+// is a guess — a well-formed address for a table this build has never seen.
+// splitSource's doc comment forbids exactly that shape going out unwarned.
+func TestDatabricksJoinToAbsentTableIsWarned(t *testing.T) {
+	m := &ir.Model{
+		Tables: []ir.Table{{
+			Name:       "store_sales",
+			Dimensions: []ir.Field{{Name: "ss_customer_sk", Expr: "ss_customer_sk"}},
+			Measures:   []ir.Measure{{Field: ir.Field{Name: "amount", Expr: "amount"}, Agg: "sum"}},
+		}},
+		Relationships: []ir.Relationship{{
+			Left: "store_sales", Right: "ghost_dim",
+			Columns: []ir.ColumnPair{{Left: "ss_customer_sk", Right: "g_id"}},
+		}},
+	}
+	files, warnings := emitDbxW(t, m)
+	got := files["store_sales.yaml"]
+	// The join is still written — dropping it would lose a relationship the
+	// source really declared — but the fabricated address is named.
+	if !strings.Contains(got, "source: analytics.main.ghost_dim") {
+		t.Errorf("want the join kept with a reconstructed source:\n%s", got)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "ghost_dim") && strings.Contains(w, "reconstructed from the profile") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the absent joined table; got %v", warnings)
 	}
 }

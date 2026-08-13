@@ -145,6 +145,106 @@ func TestSupersimpleCompoundKeyNoClobber(t *testing.T) {
 	}
 }
 
+// TestSupersimpleTableSynonyms folds table synonyms into the model description,
+// since supersimple has no synonyms slot. This closes the gap dialect/README.md
+// recorded under "Gaps vs. limits".
+func TestSupersimpleTableSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:        "fct_orders",
+		Description: "Orders.",
+		Synonyms:    []string{"purchases", "sales"},
+		Dimensions:  []ir.Field{{Name: "order_id", Expr: "order_id"}},
+	}}}
+	out := t.TempDir()
+	if _, err := (supersimple{}).Emit(m, out); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, filepath.Join(out, "FCT_ORDERS.yaml"))
+	if !strings.Contains(got, "Synonyms: purchases, sales.") {
+		t.Errorf("emitted supersimple missing folded synonyms in:\n%s", got)
+	}
+}
+
+// TestSupersimpleEmitPrefersDeclaredSource covers task 16's defect: a declared
+// ossie `source` is a fully-qualified physical address that nothing
+// downstream can recover if it is discarded. `table:` must use it verbatim
+// rather than relocating the model to the profile's schema under the IR's
+// logical name.
+func TestSupersimpleEmitPrefersDeclaredSource(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: "PROD.SALES.orders_v1"}}}
+	dir := t.TempDir()
+	warnings, err := (supersimple{Schema: "PUBLIC"}).Emit(m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "orders") {
+			t.Errorf("unexpected warning for a cleanly-splittable source: %q", w)
+		}
+	}
+	got := readFile(t, filepath.Join(dir, "ORDERS.yaml"))
+	if !strings.Contains(got, "table: PROD.SALES.orders_v1") {
+		t.Errorf("table must reference the declared source PROD.SALES.orders_v1, not PUBLIC.ORDERS:\n%s", got)
+	}
+}
+
+// TestSupersimpleEmitAcceptsTwoPartSourceVerbatim covers fix round 1's
+// correction: `table:` holds its reference as ONE string (unlike
+// cortexBaseTable's separate Database/Schema/Table fields), so a two-part
+// schema.table source — which resolves fine against the connection's default
+// database — must be used verbatim, with no warning, rather than rejected in
+// favour of a same-shaped fabricated two-part address from the profile. This
+// is the exact regression the fix-round review caught: given
+// `source: CRM.customer_master`, the previous 3-part gate warned it "could
+// not be expressed as supersimple's database/schema/table shape" and then
+// fell back to a same-shaped-but-fabricated PUBLIC.CUSTOMER_MASTER.
+func TestSupersimpleEmitAcceptsTwoPartSourceVerbatim(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{Name: "customer_master", Source: "CRM.customer_master"}}}
+	dir := t.TempDir()
+	warnings, err := (supersimple{Schema: "PUBLIC"}).Emit(m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings for a usable two-part source: %v", warnings)
+	}
+	got := readFile(t, filepath.Join(dir, "CUSTOMER_MASTER.yaml"))
+	if !strings.Contains(got, "table: CRM.customer_master") {
+		t.Errorf("table must use the declared two-part CRM.customer_master verbatim:\n%s", got)
+	}
+	if strings.Contains(got, "table: PUBLIC.CUSTOMER_MASTER") {
+		t.Errorf("must not fall back to a fabricated PUBLIC.CUSTOMER_MASTER for a usable source:\n%s", got)
+	}
+}
+
+// TestSupersimpleEmitQuerySourceFallsBackAndWarns covers the case that
+// genuinely can't go in `table:`: the OSI spec permits `source` to be a
+// query rather than a table reference, but supersimple's `table:` needs an
+// address, not a subquery embedded as if it were one. That must fall back to
+// the profile reconstruction AND warn.
+func TestSupersimpleEmitQuerySourceFallsBackAndWarns(t *testing.T) {
+	source := "SELECT * FROM raw.orders WHERE deleted_at IS NULL"
+	m := &ir.Model{Tables: []ir.Table{{Name: "orders", Source: source}}}
+	dir := t.TempDir()
+	warnings, err := (supersimple{Schema: "PUBLIC"}).Emit(m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, `table "orders"`) && strings.Contains(w, source) && strings.Contains(w, "supersimple") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a warning naming the table, the query source, and supersimple; got %v", warnings)
+	}
+	got := readFile(t, filepath.Join(dir, "ORDERS.yaml"))
+	if !strings.Contains(got, "table: PUBLIC.ORDERS") {
+		t.Errorf("must fall back to the profile-reconstructed reference, not paste the query into table:\n%s", got)
+	}
+}
+
 func readFile(t *testing.T, p string) string {
 	t.Helper()
 	b, err := os.ReadFile(p)

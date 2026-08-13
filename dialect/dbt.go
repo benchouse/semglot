@@ -34,6 +34,7 @@ type dbtFile struct {
 type dbtModel struct {
 	Name        string          `yaml:"name"`
 	Description string          `yaml:"description"`
+	Meta        dbtColumnMeta   `yaml:"meta"`
 	Constraints []dbtConstraint `yaml:"constraints"`
 	Columns     []dbtColumn     `yaml:"columns"`
 	// TimeSpine, when present, marks a dbt MetricFlow date-spine model —
@@ -359,6 +360,7 @@ func (dbt) Parse(sources ...string) (*ir.Model, error) {
 		} else {
 			t.Description = sm.Description
 		}
+		t.Synonyms = md.Meta.Synonyms
 		t.Grain = sm.Defaults.AggTimeDimension
 
 		used := map[string]bool{}
@@ -679,108 +681,6 @@ func filterExpr(table, filter string, cols []string) ir.Expr {
 		return ir.Col{Table: table, Name: filter}
 	}
 	return ir.Raw{SQL: filter, Columns: cols}
-}
-
-// parseDerivedExpr parses a dbt derived-metric expression (arithmetic over metric
-// names and numeric literals: + - * / with precedence and parens) into an
-// ir.Binary/Ref/Lit tree. ok=false if the expression is not cleanly parseable as
-// such (the caller then degrades it to a note).
-func parseDerivedExpr(expr string) (ir.Expr, bool) {
-	var toks []sqlToken
-	for _, tk := range sqlTokens(expr) {
-		if tk.typ == sqlOther && strings.TrimSpace(tk.val) == "" {
-			continue // drop whitespace
-		}
-		toks = append(toks, tk)
-	}
-	if len(toks) == 0 {
-		return nil, false
-	}
-	p := &derivedParser{toks: toks}
-	e := p.parseAddSub()
-	if p.err || p.pos != len(p.toks) {
-		return nil, false
-	}
-	return e, true
-}
-
-// derivedParser is a minimal recursive-descent parser over sqlTokens.
-type derivedParser struct {
-	toks []sqlToken
-	pos  int
-	err  bool
-}
-
-func (p *derivedParser) peek() (sqlToken, bool) {
-	if p.pos < len(p.toks) {
-		return p.toks[p.pos], true
-	}
-	return sqlToken{}, false
-}
-
-func (p *derivedParser) isOp(want ...string) (string, bool) {
-	tk, ok := p.peek()
-	if !ok || tk.typ != sqlOther {
-		return "", false
-	}
-	for _, w := range want {
-		if tk.val == w {
-			return w, true
-		}
-	}
-	return "", false
-}
-
-func (p *derivedParser) parseAddSub() ir.Expr {
-	left := p.parseMulDiv()
-	for {
-		op, ok := p.isOp("+", "-")
-		if !ok {
-			return left
-		}
-		p.pos++
-		left = ir.Binary{Op: op, Left: left, Right: p.parseMulDiv()}
-	}
-}
-
-func (p *derivedParser) parseMulDiv() ir.Expr {
-	left := p.parseFactor()
-	for {
-		op, ok := p.isOp("*", "/")
-		if !ok {
-			return left
-		}
-		p.pos++
-		left = ir.Binary{Op: op, Left: left, Right: p.parseFactor()}
-	}
-}
-
-func (p *derivedParser) parseFactor() ir.Expr {
-	tk, ok := p.peek()
-	if !ok {
-		p.err = true
-		return nil
-	}
-	switch {
-	case tk.typ == sqlOther && tk.val == "(":
-		p.pos++
-		e := p.parseAddSub()
-		if _, ok := p.isOp(")"); !ok {
-			p.err = true
-			return nil
-		}
-		p.pos++
-		return e
-	case tk.typ == sqlIdent:
-		p.pos++
-		return ir.Ref{Metric: tk.val}
-	case tk.typ == sqlNumber:
-		p.pos++
-		return ir.Lit{Value: tk.val}
-	default:
-		p.err = true
-		return nil
-	}
 }
 
 // collectRefs returns the metric names referenced by a derived expression tree.

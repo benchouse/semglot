@@ -595,3 +595,213 @@ func TestLightdashNoRowCountWhenMetricsExist(t *testing.T) {
 		t.Errorf("must not synthesise a row count when a metric exists\n%s", out)
 	}
 }
+
+// ldModelByName returns the parsed model of that name from an emitted doc.
+func ldModelByName(t *testing.T, out, name string) ldDocModel {
+	t.Helper()
+	var doc ldDoc
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, m := range doc.Models {
+		if m.Name == name {
+			return m
+		}
+	}
+	t.Fatalf("model %q not found in:\n%s", name, out)
+	return ldDocModel{}
+}
+
+// crossTableHoistModel is the TPC-DS shape that produces an orphan component:
+// customer_lifetime_value inlines one aggregate per table, so hoistInlineAggs
+// mints a component onto EACH — and Lightdash's ${metric} references may not
+// cross models, so the metric they were minted for degrades anyway, leaving
+// both components emitted with nothing referencing them.
+func crossTableHoistModel() *ir.Model {
+	return &ir.Model{Tables: []ir.Table{
+		{
+			Name:       "store_sales",
+			Dimensions: []ir.Field{{Name: "ss_sold_date", Expr: "ss_sold_date"}},
+			Metrics: []ir.Metric{{
+				Name:        "customer_lifetime_value",
+				Description: "Average spend per distinct customer.",
+				Def: ir.Binary{Op: "/",
+					Left:  ir.Agg{Func: "sum", Table: "store_sales", Arg: ir.Col{Table: "store_sales", Name: "ss_net_paid"}},
+					Right: ir.Agg{Func: "count_distinct", Table: "customer", Arg: ir.Col{Table: "customer", Name: "c_customer_sk"}},
+				},
+			}},
+		},
+		{
+			Name:       "customer",
+			PrimaryKey: []string{"c_customer_sk"},
+			Dimensions: []ir.Field{{Name: "c_customer_sk", Expr: "c_customer_sk"}},
+		},
+	}}
+}
+
+// TestLightdashMintedMetricCarriesDescription pins the fix for a metric under a
+// name nobody authored appearing in the layer with nothing to explain it.
+// Lightdash's metric meta takes a description; the minted metric's
+// synthesizedNote is exactly what belongs there.
+func TestLightdashMintedMetricCarriesDescription(t *testing.T) {
+	out := emitLightdash(t, crossTableHoistModel(), Options{})
+	cust := ldModelByName(t, out, "customer")
+	i, ok := cust.column("c_customer_sk")
+	if !ok {
+		t.Fatalf("customer must keep its c_customer_sk column:\n%s", out)
+	}
+	met, ok := cust.Columns[i].Meta.Metrics["c_customer_sk_count_distinct"]
+	if !ok {
+		t.Fatalf("minted component not emitted on customer:\n%s", out)
+	}
+	if met.Description != synthesizedNote("customer_lifetime_value") {
+		t.Errorf("minted metric description = %q, want the synthesizedNote naming the metric it was minted for", met.Description)
+	}
+}
+
+// TestLightdashOrphanMintedMetricIsReported: the component is kept (it is a
+// real aggregate, and on a dimension-only table the only metric there is), but
+// keeping it silently would leave an unexplained, unreferenced metric in the
+// layer. The choice must be visible either way — this pins the note.
+func TestLightdashOrphanMintedMetricIsReported(t *testing.T) {
+	dir := t.TempDir()
+	warnings, err := lightdash{DbtMetaKeyPath: "meta"}.Emit(crossTableHoistModel(), dir)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	for _, want := range []string{"c_customer_sk_count_distinct", "ss_net_paid_sum"} {
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, want) && strings.Contains(w, "no metric references it") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("want an orphan note for the minted component %q; got %v", want, warnings)
+		}
+	}
+	// The degrade of the metric they were minted for is still reported: the
+	// orphan note explains a consequence, it does not replace the cause.
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "customer_lifetime_value") && strings.Contains(w, "not emitted to Lightdash") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want the referencing metric's own degrade note; got %v", warnings)
+	}
+}
+
+// TestLightdashReferencedMintedMetricIsNotAnOrphan is the control: the same
+// hoist on ONE table produces a derived metric Lightdash can express, so its
+// components are referenced and must NOT be reported as orphans.
+func TestLightdashReferencedMintedMetricIsNotAnOrphan(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+		Metrics: []ir.Metric{{
+			Name: "aov",
+			Def: ir.Binary{Op: "/",
+				Left:  ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}},
+				Right: ir.Agg{Func: "count_distinct", Table: "orders", Arg: ir.Col{Table: "orders", Name: "order_id"}},
+			},
+		}},
+	}}}
+	dir := t.TempDir()
+	warnings, err := lightdash{DbtMetaKeyPath: "meta"}.Emit(m, dir)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "no metric references it") {
+			t.Errorf("component is referenced by the emitted aov metric, so it is no orphan: %q", w)
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "schema.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "${amount_sum} / ${order_id_count_distinct}") {
+		t.Errorf("aov should be emitted over its minted components:\n%s", b)
+	}
+}
+
+// TestLightdashCarriesSourceMetricDescriptions: ldMetric has a description key,
+// and semglot filled it only for the components it MINTED itself — so a metric
+// nobody authored explained itself while the author's own metric, description
+// and synonyms went out bare and unreported. Lightdash has no synonym key, so
+// those fold into the same description, as a dimension's already do.
+//
+// Covers all three routes a metric takes into the file: a column-level simple
+// metric, a model-level derived one, and a raw ir.Measure (which
+// databricks-metric-view has always emitted with its comment, so lightdash was
+// the outlier).
+func TestLightdashCarriesSourceMetricDescriptions(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:       "orders",
+		Dimensions: []ir.Field{{Name: "status", Expr: "status"}},
+		Measures: []ir.Measure{{
+			Field: ir.Field{
+				Name: "shipments", Expr: "shipment_count",
+				Description: "Shipments raised for the order.",
+				Synonyms:    []string{"deliveries"},
+			},
+			Agg: "sum",
+		}},
+		Metrics: []ir.Metric{
+			{
+				Name:        "net_revenue",
+				Description: "Net booked revenue.",
+				Synonyms:    []string{"net sales", "booked revenue"},
+				Def:         ir.Agg{Func: "sum", Table: "orders", Arg: ir.Col{Table: "orders", Name: "amount"}},
+			},
+			{
+				Name: "order_count",
+				Def:  ir.Agg{Func: "count_distinct", Table: "orders", Arg: ir.Col{Table: "orders", Name: "order_id"}},
+			},
+			{
+				Name:        "aov",
+				Description: "Average order value.",
+				Synonyms:    []string{"basket size"},
+				Def: ir.Binary{Op: "/",
+					Left: ir.Ref{Metric: "net_revenue"}, Right: ir.Ref{Metric: "order_count"}},
+			},
+		},
+	}}}
+	got := emitLightdash(t, m, Options{})
+	var doc ldDoc
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("parse emitted schema: %v\n%s", err, got)
+	}
+	found := map[string]ldMetric{}
+	for name, met := range doc.Models[0].Meta.Metrics {
+		found[name] = met
+	}
+	for _, c := range doc.Models[0].Columns {
+		for name, met := range c.Meta.Metrics {
+			found[name] = met
+		}
+	}
+	for name, want := range map[string][]string{
+		"net_revenue": {"Net booked revenue.", "net sales", "booked revenue"},
+		"aov":         {"Average order value.", "basket size"},
+		"shipments":   {"Shipments raised for the order.", "deliveries"},
+	} {
+		met, ok := found[name]
+		if !ok {
+			t.Errorf("metric %s not emitted at all:\n%s", name, got)
+			continue
+		}
+		for _, w := range want {
+			if !strings.Contains(met.Description, w) {
+				t.Errorf("metric %s: description %q does not carry %q", name, met.Description, w)
+			}
+		}
+	}
+	// A metric the source did not describe stays bare rather than gaining an
+	// empty or invented description.
+	if met := found["order_count"]; met.Description != "" {
+		t.Errorf("order_count has no source description; got %q", met.Description)
+	}
+}

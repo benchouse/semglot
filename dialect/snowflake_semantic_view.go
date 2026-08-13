@@ -57,21 +57,55 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	notes := slices.Clone(m.Notes)
 	var own []string
 
+	// A derived metric here must REFER to its components by name, so an
+	// aggregate inlined in the arithmetic is fatal to the whole metric. Naming
+	// those aggregates first turns a dropped metric into an emitted one plus the
+	// component metrics it now refers to; nothing below changes.
+	hoist := hoistInlineAggs(m)
+
 	// metricTableOf maps each metric name to its owning table (uppercased) so a
 	// derived metric can reference its component metrics by qualified name.
 	metricTableOf := map[string]string{}
 	for _, t := range m.Tables {
-		for _, mt := range t.Metrics {
+		for _, mt := range hoist.metricsFor(t) {
 			metricTableOf[mt.Name] = strings.ToUpper(t.Name)
 		}
 	}
 
-	var tables, rels, dims, metrics []string
+	// components holds the synthesised leaf aggregates. The metrics () clause is
+	// ONE flat list built table by table, so a component homed on a later table
+	// would otherwise trail the metric referring to it. Whether Snowflake
+	// requires definition-before-reference here is not documented either way;
+	// emitting components first removes the question at no cost, and is safe
+	// because a component is always a leaf aggregate that refers to nothing.
+	var tables, rels, dims, components, metrics []string
 	for _, t := range m.Tables {
+		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
 		u := strings.ToUpper(t.Name)
-		line := fmt.Sprintf("%s as %s.%s.%s", u, s.Database, schema, u)
+		// Prefer the source dialect's own declared physical address. Unlike
+		// cortexBaseTable, the TABLES clause holds its reference as ONE
+		// string, so a genuine table reference is used verbatim regardless
+		// of how many dot-separated parts it has (a two-part schema.table
+		// resolves fine against the session database). Only a source that is
+		// a QUERY rather than a reference (which the OSI spec permits) can't
+		// go here — that falls back to the profile reconstruction with a
+		// warning rather than pasting a subquery into the TABLES clause.
+		physRef := fmt.Sprintf("%s.%s.%s", s.Database, schema, u)
+		if t.Source != "" {
+			if looksLikeQuery(t.Source) {
+				note := querySourceWarning("snowflake-semantic-view", t.Name, t.Source)
+				notes = append(notes, note)
+				own = append(own, note)
+			} else {
+				physRef = t.Source
+			}
+		}
+		line := fmt.Sprintf("%s as %s", u, physRef)
 		if len(t.PrimaryKey) > 0 {
 			line += fmt.Sprintf(" primary key (%s)", strings.Join(upperAll(t.PrimaryKey), ","))
+		}
+		if syn := svSynonyms(t.Synonyms); syn != "" {
+			line += " " + syn
 		}
 		if t.Description != "" {
 			line += fmt.Sprintf(" comment='%s'", sqlQuote(t.Description))
@@ -110,7 +144,11 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 			if mt.Description != "" {
 				ml += fmt.Sprintf(" comment='%s'", sqlQuote(mt.Description))
 			}
-			metrics = append(metrics, ml)
+			if hoist.synthesisedName(mt.Name) {
+				components = append(components, ml)
+			} else {
+				metrics = append(metrics, ml)
+			}
 			seen[name] = true
 		}
 		for _, d := range append(append([]ir.Field{}, t.Dimensions...), t.TimeDimensions...) {
@@ -129,7 +167,25 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 			dims = append(dims, dl)
 		}
 	}
-	for _, r := range m.Relationships {
+	// Prefer the source's own declared relationship name, upper-cased like every
+	// other identifier in this DDL, and fall back to the generated
+	// LEFT_RIGHT name (with a warning) when there is none, when it collides, or
+	// when it is not a bare identifier this clause can hold unquoted.
+	//
+	// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
+	// ship-to vs bill-to customer) would otherwise collide on that generated
+	// name — Snowflake requires relationship names to be unique in a semantic
+	// view — so relRoleSuffix disambiguates all of the pair's relationships by
+	// their own left column(s), giving each a distinct, deterministic name.
+	relNames, relWarn := relationshipNames(m.Relationships, "snowflake-semantic-view", relHasColumns,
+		func(r ir.Relationship) string {
+			name := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				name += "_" + strings.ToUpper(suffix)
+			}
+			return name
+		}, isIdent)
+	for i, r := range m.Relationships {
 		if len(r.Columns) == 0 {
 			continue
 		}
@@ -138,14 +194,13 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 			leftCols = append(leftCols, strings.ToUpper(cp.Left))
 			rightCols = append(rightCols, strings.ToUpper(cp.Right))
 		}
-		relName := strings.ToUpper(r.Left) + "_" + strings.ToUpper(r.Right)
-		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
-		// ship-to vs bill-to customer) would otherwise collide on this same name —
-		// Snowflake requires relationship names to be unique in a semantic view.
-		// Disambiguate all of the pair's relationships by their own left column(s)
-		// so each gets a distinct, deterministic name.
-		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
-			relName += "_" + strings.ToUpper(suffix)
+		relName := strings.ToUpper(relNames[i])
+		for _, w := range []string{relWarn[i], relSynonymsWarning("snowflake-semantic-view", relName, r)} {
+			if w == "" {
+				continue
+			}
+			notes = append(notes, w)
+			own = append(own, w)
 		}
 		rels = append(rels, fmt.Sprintf("%s as %s(%s) references %s(%s)",
 			relName,
@@ -164,7 +219,7 @@ func (s snowflakeSemanticView) Emit(m *ir.Model, dir string) ([]string, error) {
 	writeSection(&b, "tables", tables)
 	writeSection(&b, "relationships", rels)
 	writeSection(&b, "dimensions", dims)
-	writeSection(&b, "metrics", metrics)
+	writeSection(&b, "metrics", append(components, metrics...))
 	var commentParts []string
 	if s.Description != "" {
 		commentParts = append(commentParts, s.Description)

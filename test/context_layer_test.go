@@ -161,6 +161,35 @@ func TestNaoYamlGolden(t *testing.T) {
 	}
 }
 
+// ossieGoldenPath is the pinned ossie semantic_model.yaml, generated with
+// UPDATE_GOLDEN=1 and read through for a well-formed OSI document (spec
+// version, one semantic_model entry, datasets with a qualified source and
+// dimension.is_time on every field, a model-scoped metrics list whose
+// expressions are fully table-qualified, and named relationships).
+const ossieGoldenPath = "models/ecommerce/dbt/ossie/semantic_model.yaml"
+
+// TestOssieGolden pins the full emitted OSI document, mirroring
+// TestNaoYamlGolden's shape. ossie is a target like any other and gets the same
+// byte-level regression lock the other seven have.
+func TestOssieGolden(t *testing.T) {
+	got := emitTarget(t, "ossie", "semantic_model.yaml")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(ossieGoldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ossieGoldenPath, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(ossieGoldenPath)
+	if err != nil {
+		t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create it): %v", err)
+	}
+	if got != string(want) {
+		t.Fatalf("semantic_model.yaml output != golden:\n--- got ---\n%s", got)
+	}
+}
+
 func TestContextRulesStructure(t *testing.T) {
 	got := emitTarget(t, "nao-context-rules", "RULES.md")
 	for _, want := range []string{

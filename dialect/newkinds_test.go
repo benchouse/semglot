@@ -147,6 +147,26 @@ func TestRenderFilteredRawQualifies(t *testing.T) {
 	}
 }
 
+// COUNT(*) is the one aggregate with no argument (sqlexpr.go rejects `*` for
+// any other function). Rendering the missing argument as nothing produced
+// `count()`, which no SQL dialect accepts — a silently WRONG expression, not a
+// dropped one, shipped to every emitter that renders a metric as SQL. It must
+// round-trip: parse -> render -> parse yields the same AST.
+func TestRenderCountStar(t *testing.T) {
+	def, ok := parseAggExpr("COUNT(*)")
+	if !ok {
+		t.Fatal("COUNT(*) did not parse")
+	}
+	got := renderSQL(def, func(string) (ir.Expr, bool) { return nil, false })
+	if want := "count(*)"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	back, ok := parseAggExpr(got)
+	if !ok || !reflect.DeepEqual(back, def) {
+		t.Fatalf("re-parse of %q = %+v (ok=%v), want %+v", got, back, ok, def)
+	}
+}
+
 func TestDBTFilteredSupersimpleDegrades(t *testing.T) {
 	m, err := dbt{}.Parse("testdata/dbt_filtered")
 	if err != nil {

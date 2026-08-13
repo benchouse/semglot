@@ -2,6 +2,7 @@ package dialect
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,7 @@ type dbtEmitFile struct {
 type dbtEmitModel struct {
 	Name        string          `yaml:"name"`
 	Description string          `yaml:"description,omitempty"`
+	Meta        *dbtEmitMeta    `yaml:"meta,omitempty"`
 	Columns     []dbtEmitColumn `yaml:"columns,omitempty"`
 }
 
@@ -129,32 +131,94 @@ type dbtEmitConversionParams struct {
 	Window            string `yaml:"window,omitempty"`
 }
 
-// Emit writes the IR as a single dbt YAML file, <dir>/ecommerce.yml. dbt
-// generates no degrade notes of its own; it always returns nil warnings.
+// Emit writes the IR as a single dbt YAML file, <dir>/ecommerce.yml.
+//
+// It returns a warning for every metric it could not express. That used to be
+// dead weight — dbt was both the only source and a target, so dbt -> dbt was
+// lossless by construction and the emitter genuinely had nothing to report.
+// Adding ossie as a second source ended that: an IR shape dbt has no form for
+// now reaches this emitter, and a source construct that vanishes with exit
+// code 0 and no message is exactly what this codebase's other degrading
+// emitters (snowflake-semantic-view, supersimple, lightdash) exist not to do.
+//
+// hoistInlineAggs runs first so the shapes dbt CAN express after naming their
+// inlined aggregates are emitted rather than reported; what remains is a
+// genuine dbt limit. It is applied before emitModel too, so a physical column
+// that only a synthesised measure references still gets a columns[] entry.
 func (dbt) Emit(m *ir.Model, dir string) ([]string, error) {
 	var f dbtEmitFile
+	var warnings []string
+	// A relationship reaches dbt as a `relationships` data test on the FK
+	// column, which states only the target ref() and its field. There is no
+	// slot for the join's own declared name or its synonyms, so both are
+	// reported here rather than dropped in silence — the same posture
+	// dbtSchemaSourceWarning takes for ir.Table.Source below.
+	//
+	// Reported only for the relationships this file actually CONTAINS.
+	// emitModel writes that data test from inside the table loop, gated on
+	// r.Left == t.Name and on the relationship having column pairs, so a
+	// relationship failing either test reaches the artifact not at all — and
+	// "its name has no slot on a join" would then describe a join that was
+	// never written. Those are reported as the whole loss they are.
+	models := map[string]bool{}
+	for _, t := range m.Tables {
+		models[t.Name] = true
+	}
+	for _, r := range m.Relationships {
+		switch {
+		case !models[r.Left]:
+			warnings = append(warnings, relNotEmittedWarning("dbt", r, relEndpointMissing(r.Left,
+				"a dbt `relationships` test hangs off a foreign-key column of the model the join leaves")))
+		case len(r.Columns) == 0:
+			warnings = append(warnings, relNotEmittedWarning("dbt", r,
+				"it declares no join columns, and a dbt `relationships` test is written on the foreign-key column"))
+		default:
+			for _, w := range []string{relNameWarning("dbt", r), relSynonymsWarning("dbt", r.Name, r)} {
+				if w != "" {
+					warnings = append(warnings, w)
+				}
+			}
+		}
+	}
+	hoist := hoistInlineAggs(m)
 	for _, t := range m.Tables {
 		pk := stringSet(t.PrimaryKey)
 		fk := fkColumns(m, t.Name)
+		// t is the range's own copy and both lists are freshly built, so this
+		// does not write through to m.
+		t.Metrics = hoist.metricsFor(t)
+		t.Measures = hoist.measuresFor(t)
+
+		// ir.Table.Source — the physical address an ossie dataset declares —
+		// has no dbt counterpart. A dbt properties file annotates a model dbt
+		// already builds and resolves through ref(); it never states where
+		// the data lives. See dbtSchemaSourceWarning for why config's
+		// database/schema/alias is not that slot either. Reported rather than
+		// dropped in silence.
+		if t.Source != "" {
+			warnings = append(warnings, dbtSchemaSourceWarning("dbt", t.Name, t.Source))
+		}
 
 		f.Models = append(f.Models, emitModel(m, t, pk, fk))
 		f.SemanticModels = append(f.SemanticModels, emitSemantic(t, pk, fk))
-		f.Metrics = append(f.Metrics, emitMetrics(t)...)
+		metrics, warn := emitMetrics(t)
+		f.Metrics = append(f.Metrics, metrics...)
+		warnings = append(warnings, warn...)
 	}
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(f); err != nil {
-		return nil, err
+		return warnings, err
 	}
 	if err := enc.Close(); err != nil {
-		return nil, err
+		return warnings, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+		return warnings, err
 	}
-	return nil, os.WriteFile(filepath.Join(dir, "ecommerce.yml"), buf.Bytes(), 0o644)
+	return warnings, os.WriteFile(filepath.Join(dir, "ecommerce.yml"), buf.Bytes(), 0o644)
 }
 
 // emitModel builds the classic model-properties block: one column per field that
@@ -219,6 +283,9 @@ func emitModel(m *ir.Model, t ir.Table, pk, fk map[string]bool) dbtEmitModel {
 	}
 
 	em := dbtEmitModel{Name: t.Name, Description: t.Description}
+	if len(t.Synonyms) > 0 {
+		em.Meta = &dbtEmitMeta{Synonyms: t.Synonyms}
+	}
 	for _, col := range order {
 		c := *info[col]
 		// Enum round-trips as an accepted_values test (ordered value list) plus
@@ -307,16 +374,27 @@ func emitSemantic(t ir.Table, pk, fk map[string]bool) dbtEmitSemantic {
 // its filter when present; a ratio carries numerator/denominator; a derived
 // metric re-renders its arithmetic tree; cumulative/conversion re-emit their
 // (provisional) params.
-func emitMetrics(t ir.Table) []dbtEmitMetric {
+//
+// It also returns one warning per metric it could not express. Both misses were
+// once justified by an invariant that only held while dbt was the sole source
+// (see Emit); each now names the metric and why dbt has no form for it, rather
+// than dropping it silently.
+func emitMetrics(t ir.Table) ([]dbtEmitMetric, []string) {
 	var out []dbtEmitMetric
+	var warnings []string
 	for _, mt := range t.Metrics {
 		switch def := mt.Def.(type) {
 		case ir.Agg:
 			meas, ok := measureFor(t, def)
 			if !ok {
-				// Intentional drop: measureFor is guaranteed to find a backing
-				// measure for dbt-sourced IR; a genuine miss here would be a bug
-				// caught by TestDBTRoundTrip, not an expected case to handle.
+				// A dbt simple metric must point at a measure. hoistInlineAggs
+				// synthesises one for a COUNT(*) or a compound aggregate that
+				// has none, so reaching here means the aggregate has no measure
+				// form at all (e.g. an argument that is itself arithmetic), or
+				// it belongs to a different semantic model than the metric.
+				warnings = append(warnings, fmt.Sprintf(
+					"metric %q on model %q not emitted: a dbt simple metric must point at a measure, and no measure on that model expresses %s",
+					mt.Name, t.Name, renderSQL(def, noMetricResolve)))
 				continue
 			}
 			em := dbtEmitMetric{
@@ -343,10 +421,14 @@ func emitMetrics(t ir.Table) []dbtEmitMetric {
 			}
 			expr, refs, ok := renderDerived(def)
 			if !ok {
-				// Intentional drop: every derived operand originates from a
-				// Ref/Lit/Binary tree built from dbt-sourced IR, so renderDerived
-				// is expected to succeed; a genuine miss is caught by
-				// TestDBTRoundTrip, not an expected case to handle.
+				// A dbt derived metric's operands are metric references and
+				// literals only. hoistInlineAggs has already named every
+				// aggregate it could, so an operand still failing here is one
+				// naming cannot rescue — a bare column, or an aggregate over an
+				// argument that has no measure form.
+				warnings = append(warnings, fmt.Sprintf(
+					"metric %q not emitted: a dbt derived metric's operands must be metric references or literals, and %s still inlines an expression that is neither",
+					mt.Name, renderSQL(def, noMetricResolve)))
 				continue
 			}
 			var metrics []dbtEmitMetricRef
@@ -377,7 +459,7 @@ func emitMetrics(t ir.Table) []dbtEmitMetric {
 			})
 		}
 	}
-	return out
+	return out, warnings
 }
 
 // emitFilterSQL renders a metric filter Expr back to the dbt filter: string form
@@ -443,18 +525,30 @@ func dedupeStrs(ss []string) []string {
 	return out
 }
 
-// measureFor finds the table measure backing a simple metric's aggregation: the
-// measure whose Agg matches Func and whose expr matches the Agg's Arg (a Col's
-// Name or a Raw's SQL). Guaranteed to exist for dbt-sourced models.
-func measureFor(t ir.Table, a ir.Agg) (string, bool) {
+// measureFor finds the table measure backing a simple metric's aggregation.
+// Guaranteed to exist for dbt-sourced models; for an ossie-sourced one
+// hoistInlineAggs synthesises the missing ones before Emit gets here.
+func measureFor(t ir.Table, a ir.Agg) (string, bool) { return measureNameFor(t.Measures, a) }
+
+// measureNameFor is measureFor over a bare measure list, so the hoist can ask
+// the same question of a list it is still building. The match is the measure
+// whose Agg matches Func and whose expr matches the Agg's Arg: a Col's Name, a
+// Raw's SQL, or `1` for the absent argument of a COUNT(*), which is how dbt
+// spells a row count (`agg: count`, `expr: 1`) and what measureExprOf
+// synthesises for one.
+func measureNameFor(measures []ir.Measure, a ir.Agg) (string, bool) {
 	want := ""
 	switch arg := a.Arg.(type) {
 	case ir.Col:
 		want = arg.Name
 	case ir.Raw:
 		want = arg.SQL
+	case nil:
+		if strings.EqualFold(a.Func, "count") {
+			want = "1"
+		}
 	}
-	for _, ms := range t.Measures {
+	for _, ms := range measures {
 		if strings.EqualFold(ms.Agg, a.Func) && ms.Expr == want {
 			return ms.Name, true
 		}

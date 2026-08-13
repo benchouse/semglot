@@ -76,19 +76,48 @@ func (naoContextRules) Emit(m *ir.Model, dir string) ([]string, error) {
 	if len(m.Relationships) > 0 {
 		b.WriteString("\n## Joins & routing\n\n")
 		for _, r := range m.Relationships {
-			for _, c := range r.Columns {
-				fmt.Fprintf(&b, "- `%s.%s → %s.%s`\n", r.Left, c.Left, r.Right, c.Right)
+			// The join's declared name and its synonyms fold into the line as
+			// prose. This target is a routing guide for an agent choosing a
+			// join from a natural-language question, so "when the sale
+			// occurred" is precisely the phrase that has to reach it; a
+			// structural target with no synonym slot has to report them lost
+			// instead (see relSynonymsWarning).
+			suffix := ""
+			if c := relIdentityClause(r); c != "" {
+				suffix = " " + c
+			}
+			for i, c := range r.Columns {
+				// One line per column pair, but the identity clause goes on the
+				// FIRST line only: a composite-key join is one join, and
+				// repeating "Join name: X. Synonyms: …" under every column pair
+				// reads as several joins that happen to share a name.
+				line := suffix
+				if i > 0 {
+					line = ""
+				}
+				fmt.Fprintf(&b, "- `%s.%s → %s.%s`%s\n", r.Left, c.Left, r.Right, c.Right, line)
 			}
 		}
 	}
-	// Table reference: each table's grain + purpose (its description). NOT
+	// Table reference: each table's grain + purpose (its description), and the
+	// physical address it reads from when the source dialect declared one. NOT
 	// "traps" — this is a glossary, and deliberately carries only what the dbt
 	// model documents; the withheld data-quirk discriminators never appear here.
+	//
+	// ir.Table.Source needs no structural slot here and loses nothing by having
+	// none: this target is prose, so it carries a fully-qualified
+	// db.schema.table and an OSI `source` that is a QUERY equally well, where
+	// every structured target has to choose one shape and degrade the other.
+	// Folding it into the entry body (rather than appending after the emptiness
+	// check) also gives a table that declares only a source an entry of its own.
 	var tables []string
 	for _, t := range m.Tables {
-		if t.Description != "" {
-			tables = append(tables, fmt.Sprintf("- **%s**: %s", t.Name, t.Description))
+		body := appendClause(strings.TrimSpace(t.Description), synonymClause(t.Synonyms))
+		body = appendClause(body, sourceClause(t.Source))
+		if body == "" {
+			continue
 		}
+		tables = append(tables, fmt.Sprintf("- **%s**: %s", t.Name, body))
 	}
 	tables = append(tables, notesToBullets(m.Notes)...)
 	if len(tables) > 0 {

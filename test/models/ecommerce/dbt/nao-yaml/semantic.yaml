@@ -94,3 +94,4 @@ metrics:
     source:
       table: fct_order_lines
     formula: sum(fct_order_lines.quantity) / count(distinct fct_orders.order_id)
+notes: 'fct_orders: Synonyms: purchases, sales.'

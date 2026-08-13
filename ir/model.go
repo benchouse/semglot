@@ -16,8 +16,19 @@ type Model struct {
 
 // Table is one grain/entity in the layer.
 type Table struct {
-	Name           string
-	Description    string
+	Name string
+	// Source is the physical table this entity reads, as the source dialect
+	// declared it (e.g. "PROD.SALES.orders_v1"). Empty when the source has no
+	// physical address of its own — dbt models resolve theirs through ref() —
+	// in which case emitters reconstruct it from the profile's database/schema.
+	Source      string
+	Description string
+	// Synonyms are alternative names for the entity itself, as distinct from a
+	// field's synonyms. Sourced from a model-level meta.synonyms (dbt) or a
+	// dataset's ai_context.synonyms (ossie). Emitters render it structurally
+	// where the target has a table-level slot, else fold it into the table
+	// description.
+	Synonyms       []string
 	PrimaryKey     []string // column exprs
 	Dimensions     []Field  // categorical / id / plain
 	TimeDimensions []Field
@@ -69,9 +80,24 @@ type Metric struct {
 
 // Relationship is a join between two tables.
 type Relationship struct {
-	Left    string
-	Right   string
-	Columns []ColumnPair
+	// Name is the join's own declared identifier, as the source dialect named
+	// it (e.g. "store_sales_to_date"). Empty when the source declares none — a
+	// dbt `relationships` test is anonymous, and only the two endpoints and the
+	// column pair identify it — in which case emitters generate one from the
+	// endpoints. Emitters prefer this name when it is set, unique within the
+	// model, and legal for the target, and fall back to the generated one with
+	// a warning otherwise (see dialect.relationshipNames).
+	Name  string
+	Left  string
+	Right string
+	// Synonyms are alternative phrasings for the JOIN itself, as distinct from
+	// a table's or a field's synonyms ("sales date relationship", "when the
+	// sale occurred"). Sourced from an ossie relationship's ai_context.synonyms.
+	// They are the phrases an agent matches a natural-language question against
+	// when it has to choose which join answers it. Emitters render them where
+	// the target has a relationship-level slot; the rest report them lost.
+	Synonyms []string
+	Columns  []ColumnPair
 }
 
 // ColumnPair is one equi-join column pairing (left_column = right_column).

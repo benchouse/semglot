@@ -58,6 +58,7 @@ type cortexModel struct {
 type cortexTable struct {
 	Name           string          `yaml:"name"`
 	Description    string          `yaml:"description,omitempty"`
+	Synonyms       []string        `yaml:"synonyms,omitempty"`
 	BaseTable      cortexBaseTable `yaml:"base_table"`
 	PrimaryKey     *cortexPK       `yaml:"primary_key,omitempty"`
 	Dimensions     []cortexCol     `yaml:"dimensions,omitempty"`
@@ -122,10 +123,39 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 	resolve := metricResolver(m)
 	var degradeNotes []string
 	for _, t := range m.Tables {
+		// Prefer the source dialect's own declared physical address over the
+		// profile-reconstructed one: an ossie-declared source (e.g.
+		// "PROD.SALES.orders_v1") is a fully-qualified physical reference
+		// nothing downstream can recover if it is discarded. cortexBaseTable
+		// needs it split into separate Database/Schema/Table fields, so only
+		// a clean three-part reference can be used; anything else (a
+		// two-part name, or a source that is a query, which the OSI spec
+		// explicitly permits) falls back to the profile reconstruction WITH
+		// a warning, rather than silently half-applying it.
+		//
+		// The query case is tested FIRST and reported in its own words,
+		// because dot-counting cannot recognise it: `SELECT ... FROM
+		// db.schema.tbl` — the canonical OSI query form — has exactly two
+		// dots, so splitSource would otherwise "succeed" and emit database
+		// "SELECT * FROM db". splitSource refuses a query itself as a
+		// backstop; this branch exists so the warning says a query was
+		// declared rather than that a split failed.
+		baseTable := cortexBaseTable{Database: c.Database, Schema: schema, Table: strings.ToUpper(t.Name)}
+		if t.Source != "" {
+			switch db, sch, tbl, ok := splitSource(t.Source); {
+			case looksLikeQuery(t.Source):
+				degradeNotes = append(degradeNotes, querySourceWarning("cortex", t.Name, t.Source))
+			case ok:
+				baseTable = cortexBaseTable{Database: db, Schema: sch, Table: tbl}
+			default:
+				degradeNotes = append(degradeNotes, unsplittableSourceWarning("cortex", t.Name, t.Source))
+			}
+		}
 		ct := cortexTable{
 			Name:        t.Name,
 			Description: t.Description,
-			BaseTable:   cortexBaseTable{Database: c.Database, Schema: schema, Table: strings.ToUpper(t.Name)},
+			Synonyms:    t.Synonyms,
+			BaseTable:   baseTable,
 		}
 		if len(t.PrimaryKey) > 0 {
 			ct.PrimaryKey = &cortexPK{Columns: upperAll(t.PrimaryKey)}
@@ -163,21 +193,34 @@ func (c cortex) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 		cm.Tables = append(cm.Tables, ct)
 	}
-	for _, r := range m.Relationships {
+	// Prefer the source's own declared relationship name, falling back to the
+	// generated left_to_right name (with a warning) when there is none, when it
+	// collides, or when it is not an identifier Cortex can hold. A role-playing
+	// dimension (two+ FKs from this Left to this Right, e.g. ship-to vs bill-to
+	// customer) would otherwise collide on that generated name for every
+	// relationship in the pair; relRoleSuffix disambiguates all of them by their
+	// own left column(s) so each survives with a distinct, deterministic name.
+	relNames, relWarn := relationshipNames(m.Relationships, "cortex", nil,
+		func(r ir.Relationship) string {
+			name := r.Left + "_to_" + r.Right
+			if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
+				name += "_" + suffix
+			}
+			return name
+		}, isIdent)
+	for i, r := range m.Relationships {
 		cols := make([]cortexRelCol, len(r.Columns))
-		for i, cp := range r.Columns {
-			cols[i] = cortexRelCol{LeftColumn: strings.ToUpper(cp.Left), RightColumn: strings.ToUpper(cp.Right)}
+		for j, cp := range r.Columns {
+			cols[j] = cortexRelCol{LeftColumn: strings.ToUpper(cp.Left), RightColumn: strings.ToUpper(cp.Right)}
 		}
-		name := r.Left + "_to_" + r.Right
-		// A role-playing dimension (two+ FKs from this Left to this Right, e.g.
-		// ship-to vs bill-to customer) would otherwise collide on this same name
-		// for every relationship in the pair; disambiguate all of them by their
-		// own left column(s) so each survives with a distinct, deterministic name.
-		if suffix := relRoleSuffix(m.Relationships, r); suffix != "" {
-			name += "_" + suffix
+		if relWarn[i] != "" {
+			degradeNotes = append(degradeNotes, relWarn[i])
+		}
+		if w := relSynonymsWarning("cortex", relNames[i], r); w != "" {
+			degradeNotes = append(degradeNotes, w)
 		}
 		cm.Relationships = append(cm.Relationships, cortexRel{
-			Name: name, LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
+			Name: relNames[i], LeftTable: r.Left, RightTable: r.Right, RelationshipColumns: cols,
 		})
 	}
 

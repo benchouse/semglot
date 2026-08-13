@@ -42,7 +42,15 @@ func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 		case ir.Raw: // qualify the raw fragment's columns with the owning table
 			arg = qualifyExpr(n.Table, colSet(a.Columns), a.SQL)
 		case nil:
-			arg = ""
+			// A nil Arg is COUNT(*) and nothing else: sqlexpr.go's aggregate
+			// parser is the only site that produces one, and it rejects `*` for
+			// any function but count; dbt.go always sets an Arg. Rendering it as
+			// the empty string produced `count()`, which is not valid SQL in any
+			// target dialect — a silently WRONG expression shipped to cortex,
+			// databricks-metric-view, nao-context-rules, ossie and
+			// snowflake-semantic-view alike. The star is part of the aggregate's
+			// spelling, so it belongs here rather than in each caller.
+			arg = "*"
 		default:
 			arg = renderSQL(n.Arg, resolve)
 		}
@@ -55,6 +63,15 @@ func renderSQL(e ir.Expr, resolve func(name string) (ir.Expr, bool)) string {
 				cond = qualifyExpr(n.Table, colSet(raw.Columns), raw.SQL)
 			} else {
 				cond = renderSQL(n.Filter, resolve)
+			}
+			// `case when c then * end` is not valid SQL: the star is only legal
+			// as a bare COUNT argument. A filtered row count counts 1 per
+			// matching row. No shipped path builds a filtered nil-Arg Agg (dbt
+			// is the only source that sets Filter, and it always sets Arg), so
+			// this guards a shape that does not occur rather than fixing one
+			// that does.
+			if n.Arg == nil {
+				arg = "1"
 			}
 			arg = "case when " + cond + " then " + arg + " end"
 		}

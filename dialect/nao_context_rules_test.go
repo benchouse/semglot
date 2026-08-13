@@ -51,6 +51,19 @@ func TestContextRulesEmitsColumnDescriptionsAndSynonyms(t *testing.T) {
 	}
 }
 
+// TestContextRulesTableSynonyms folds table synonyms into the Table reference
+// entry, and emits the entry even when the table carries no description.
+func TestContextRulesTableSynonyms(t *testing.T) {
+	m := &ir.Model{Tables: []ir.Table{{
+		Name:     "fct_orders",
+		Synonyms: []string{"purchases", "sales"},
+	}}}
+	out := emitContextRules(t, m)
+	if !strings.Contains(out, "- **fct_orders**: Synonyms: purchases, sales.") {
+		t.Errorf("RULES.md missing folded synonyms in:\n%s", out)
+	}
+}
+
 // TestContextRulesTableSectionRenamed verifies the table glossary is labelled
 // "Table reference", not the misleading "Table traps".
 func TestContextRulesTableSectionRenamed(t *testing.T) {
