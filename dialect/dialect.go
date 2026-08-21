@@ -45,6 +45,22 @@ type Options struct {
 	// DbtMetaKeyPath selects where Lightdash meta lives: "" / "meta" nests under
 	// meta: (dbt <=1.9); "config.meta" nests under config.meta: (dbt 1.10+).
 	DbtMetaKeyPath string
+	// TablePrefix is prepended to a table's IR name to form its PHYSICAL name.
+	// The IR carries logical names (fct_orders); a warehouse may materialise
+	// them under a prefix (ClickHouse marts__fct_orders). Consumers that bind a
+	// semantic model to a physical table need the latter.
+	TablePrefix string
+	// DbtHexMeta emits Hex's `config.meta.hex.table` binding on every semantic
+	// model. Hex's Semantic Model Sync parses dbt MetricFlow YAML straight from
+	// a repo and CANNOT resolve which physical table a semantic model reads
+	// without it, so without this the sync imports models that resolve to
+	// nothing.
+	DbtHexMeta bool
+	// LowerCaseIdentifiers keeps identifiers as the IR spells them instead of
+	// upper-casing. Snowflake folds unquoted identifiers up, so upper-case is
+	// the safe default there; ClickHouse is case-sensitive and would not
+	// resolve them.
+	LowerCaseIdentifiers bool
 }
 
 // Configurable is an Emitter that accepts model/view identity options.

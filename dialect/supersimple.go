@@ -15,9 +15,18 @@ import (
 func init() { Register(supersimple{}) }
 
 // supersimple emits one supersimple config YAML per model. Zero value usable;
-// the build command sets Schema from the profile's schema field.
+// the build command sets Schema and TablePrefix from the profile.
 type supersimple struct {
 	Schema string
+	// TablePrefix maps a logical table name to its PHYSICAL one. The IR carries
+	// logical names (fct_orders); a warehouse may materialise them under a
+	// prefix (ClickHouse marts__fct_orders), and `table:` must address the
+	// physical object or every query fails to resolve.
+	TablePrefix string
+	// LowerCase emits identifiers as-is rather than upper-casing them. The
+	// upper-case default suits Snowflake, where unquoted identifiers fold up;
+	// ClickHouse is case-SENSITIVE, so MARTS__FCT_ORDERS does not exist.
+	LowerCase bool
 }
 
 func (supersimple) Name() string { return "supersimple" }
@@ -40,7 +49,7 @@ func isRatioDef(def ir.Expr) bool {
 
 // WithOptions lets the CLI pass the profile's schema (other identity fields are unused).
 func (supersimple) WithOptions(o Options) Emitter {
-	return supersimple{Schema: o.Schema}
+	return supersimple{Schema: o.Schema, TablePrefix: o.TablePrefix, LowerCase: o.LowerCaseIdentifiers}
 }
 
 const ssHeader = "# yaml-language-server: $schema=https://assets.supersimple.io/configuration_schema/1.0.0/supersimple_configuration_schema.json\n"
@@ -69,9 +78,31 @@ type ssRelation struct {
 	ModelID      string         `yaml:"model_id"`
 	JoinStrategy ssJoinStrategy `yaml:"join_strategy"`
 }
+
+// ssJoinStrategy addresses a join. `join_key` is Supersimple's shorthand for
+// "both sides share this column name"; when the foreign key and the primary key
+// are named differently the two-sided form is REQUIRED, and the shorthand
+// silently addresses the wrong column.
+//
+// The vendor's own discovery emits the two-sided form (dim_date joins
+// fct_orders on join_key_on_base: DATE_DAY / join_key_on_related: ORDER_DATE).
+// Emitting only the shorthand made `supersimple validate` reject three
+// relations with "references unknown property 'date_day' on related model".
 type ssJoinStrategy struct {
-	JoinKey string `yaml:"join_key"`
+	JoinKey          string `yaml:"join_key,omitempty"`
+	JoinKeyOnBase    string `yaml:"join_key_on_base,omitempty"`
+	JoinKeyOnRelated string `yaml:"join_key_on_related,omitempty"`
 }
+
+// joinStrategy renders the shorthand when both sides agree and the explicit
+// two-sided form when they differ.
+func joinStrategy(base, related string) ssJoinStrategy {
+	if base == related || related == "" {
+		return ssJoinStrategy{JoinKey: base}
+	}
+	return ssJoinStrategy{JoinKeyOnBase: base, JoinKeyOnRelated: related}
+}
+
 type ssMetric struct {
 	Name        string        `yaml:"name"`
 	ModelID     string        `yaml:"model_id"`
@@ -122,11 +153,30 @@ type ssRelationRef struct {
 
 // Emit does not mutate m; it reads m.Notes and accumulates its own degrade
 // notes locally before writing the combined text to NOTES.md.
-func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
-	schema := s.Schema
-	if schema == "" {
-		schema = "MAIN"
+// fold renders an identifier in the casing the target warehouse resolves.
+// Snowflake folds unquoted identifiers to upper case, so upper is the safe
+// default; ClickHouse is case-sensitive and MARTS__FCT_ORDERS does not exist.
+func (s supersimple) fold(v string) string {
+	if s.LowerCase {
+		return v
 	}
+	return strings.ToUpper(v)
+}
+
+// foldAll is fold over a slice.
+func (s supersimple) foldAll(vs []string) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = s.fold(v)
+	}
+	return out
+}
+
+func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
+	// An EXPLICIT empty schema is honoured (ClickHouse has a two-part namespace,
+	// so "MAIN.marts__fct_orders" resolves to nothing); only an unset one
+	// defaults.
+	schema := s.Schema
 	// relationships grouped by parent (Right) table
 	relsByParent := map[string][]ir.Relationship{}
 	for _, r := range m.Relationships {
@@ -182,7 +232,7 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 	// and relations) and register its simple metrics.
 	for _, t := range m.Tables {
 		t.Metrics = hoist.metricsFor(t) // t is the range's own copy; m is untouched
-		id := strings.ToUpper(t.Name)
+		id := s.fold(t.Name)
 		// Prefer the source dialect's own declared physical address. `table:`
 		// holds ONE opaque string, unlike cortexBaseTable's separate
 		// Database/Schema/Table fields, so a genuine table reference is used
@@ -192,7 +242,10 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 		// permits) can't go here as-is — that falls back to the profile
 		// reconstruction with a warning rather than pasting a query into
 		// `table:` as if it were an address.
-		table := schema + "." + id
+		table := s.TablePrefix + id
+		if schema != "" {
+			table = schema + "." + table
+		}
 		if t.Source != "" {
 			if looksLikeQuery(t.Source) {
 				degradeNotes = append(degradeNotes, querySourceWarning("supersimple", t.Name, t.Source))
@@ -203,12 +256,12 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 		model := ssModel{
 			Name:        prettify(t.Name),
 			Table:       table,
-			PrimaryKey:  upperAll(t.PrimaryKey),
+			PrimaryKey:  s.foldAll(t.PrimaryKey),
 			Description: appendClause(t.Description, synonymClause(t.Synonyms)),
 			Properties:  map[string]ssProperty{},
 		}
 		addProp := func(f ir.Field, typ string) {
-			col := strings.ToUpper(f.Expr)
+			col := s.fold(f.Expr)
 			if _, ok := model.Properties[col]; ok {
 				return
 			}
@@ -229,9 +282,13 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 		}
 		for _, r := range relsByParent[t.Name] {
 			child := r.Left
-			join := ""
+			// r.Right is the PARENT (this model, the base); r.Left is the child.
+			// Column pairs are (Left=child column, Right=parent column), so the
+			// base key is the parent's and the related key is the child's.
+			var baseKey, relatedKey string
 			if len(r.Columns) > 0 {
-				join = strings.ToUpper(r.Columns[0].Right)
+				baseKey = s.fold(r.Columns[0].Right)
+				relatedKey = s.fold(r.Columns[0].Left)
 			}
 			if model.Relations == nil {
 				model.Relations = map[string]ssRelation{}
@@ -258,8 +315,8 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 				}
 			}
 			model.Relations[key] = ssRelation{
-				Name: label, Type: "hasMany", ModelID: strings.ToUpper(child),
-				JoinStrategy: ssJoinStrategy{JoinKey: join},
+				Name: label, Type: "hasMany", ModelID: s.fold(child),
+				JoinStrategy: joinStrategy(baseKey, relatedKey),
 			}
 		}
 
@@ -271,12 +328,12 @@ func (s supersimple) Emit(m *ir.Model, dir string) ([]string, error) {
 			var key string
 			switch a := arg.(type) {
 			case ir.Col:
-				key = strings.ToUpper(a.Name)
+				key = s.fold(a.Name)
 			case ir.Raw:
 				// raw.SQL is unqualified; wrap its columns and synthesize a
 				// property keyed by the metric name, guarding against clobbering
 				// a physical column that already owns that key.
-				key = strings.ToUpper(mt.Name)
+				key = s.fold(mt.Name)
 				for {
 					if _, taken := model.Properties[key]; !taken {
 						break

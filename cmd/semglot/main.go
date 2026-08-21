@@ -66,12 +66,15 @@ func buildCmd(args []string) int {
 	}
 	if c, ok := emitter.(dialect.Configurable); ok {
 		emitter = c.WithOptions(dialect.Options{
-			Database:       spec.Database,
-			Schema:         spec.Schema,
-			ViewSchema:     spec.ViewSchema,
-			Name:           spec.ModelName,
-			Description:    spec.Description,
-			DbtMetaKeyPath: spec.DbtMetaKeyPath,
+			Database:             spec.Database,
+			Schema:               spec.Schema,
+			ViewSchema:           spec.ViewSchema,
+			Name:                 spec.ModelName,
+			Description:          spec.Description,
+			DbtMetaKeyPath:       spec.DbtMetaKeyPath,
+			TablePrefix:          spec.TablePrefix,
+			DbtHexMeta:           spec.DbtHexMeta,
+			LowerCaseIdentifiers: spec.LowerCaseIdentifiers,
 		})
 	}
 
